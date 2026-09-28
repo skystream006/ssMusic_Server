@@ -872,7 +872,7 @@ function makeTranscriptionAudio() {
   return audio;
 }
 
-test('transcription persists lyrics inclusion and resets it when retranscribing without lyrics', async (testContext) => {
+test('transcription persists settings without lyrics across retranscriptions and reloads', async (testContext) => {
   const outputDir = path.join(path.dirname(process.env.DATABASE_PATH), 'lyrics-status');
   await fs.mkdir(outputDir);
   const songName = 'Song.wav';
@@ -889,16 +889,44 @@ test('transcription persists lyrics inclusion and resets it when retranscribing 
     if (previousEndpoint === undefined) delete process.env.TRANSCRIPTION_ENDPOINT;
     else process.env.TRANSCRIPTION_ENDPOINT = previousEndpoint;
   });
-  testContext.mock.method(globalThis, 'fetch', async () => new Response(audio));
+  const readTranscription = () => JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(job.id).data).transcriptions[songName];
+  let expectedOptions;
+  let expectedLyricsIncluded;
+  let responseStatus = 200;
+  testContext.mock.method(globalThis, 'fetch', async () => {
+    const sent = readTranscription();
+    assert.equal(sent.status, 'sent');
+    assert.equal(sent.lyricsIncluded, expectedLyricsIncluded);
+    assert.deepEqual(sent.options, expectedOptions);
+    assert.doesNotMatch(JSON.stringify(sent), /Known words|Private input/);
+    return new Response(audio, { status: responseStatus });
+  });
   for (const mode of [undefined, 'align', undefined, 'prompt', 'correct']) {
-    const options = mode ? { lyrics: 'Known words', lyrics_mode: mode } : {};
+    expectedLyricsIncluded = Boolean(mode);
+    expectedOptions = {
+      Multilingual: Boolean(mode), NoVocals: false, VietLyricsFallback: Boolean(mode),
+      language: mode ? 'vi' : 'en', ...(mode ? { lyrics_mode: mode } : {})
+    };
+    const options = { ...expectedOptions, language: 'en', ...(mode ? { lyrics: 'Known words' } : {}), privateNotes: 'Private input' };
     await manager.transcribeJobFile(job.id, songName, options, owner);
-    const storedJob = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(job.id).data);
-    assert.equal(storedJob.transcriptions[songName].status, 'transcribed');
-    assert.equal(storedJob.transcriptions[songName].lyricsIncluded, Boolean(mode));
+    const completed = readTranscription();
+    assert.equal(completed.status, 'transcribed');
+    assert.equal(completed.lyricsIncluded, expectedLyricsIncluded);
+    assert.deepEqual(completed.options, expectedOptions);
+    assert.doesNotMatch(JSON.stringify(completed), /Known words|Private input/);
   }
   const restarted = await import(`../src/jobManager.js?lyrics-status-restart=${Date.now()}`);
   assert.equal(restarted.getJob(job.id).transcriptions[songName].lyricsIncluded, true);
+  assert.deepEqual(restarted.getJob(job.id).transcriptions[songName].options, expectedOptions);
+  responseStatus = 503;
+  expectedLyricsIncluded = false;
+  expectedOptions = { Multilingual: false, NoVocals: true, VietLyricsFallback: false };
+  await assert.rejects(manager.transcribeJobFile(job.id, songName, expectedOptions, owner), /HTTP 503/);
+  const failed = readTranscription();
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.lyricsIncluded, false);
+  assert.deepEqual(failed.options, expectedOptions);
+  assert.doesNotMatch(JSON.stringify(failed), /Known words|Private input/);
 });
 
 test('transcription sends multipart lyrics, replaces audio and persists NoVocals safely', async (testContext) => {

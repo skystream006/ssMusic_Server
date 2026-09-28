@@ -239,6 +239,7 @@ test('transcription status distinguishes supplied lyrics from AI transcription',
     assert.match(html, /Requested:/);
     assert.match(html, /Finished:/);
     assert.doesNotMatch(html, />Transcribed</);
+    assert.doesNotMatch(html, /Language:|Multilingual:|Lyrics mode:/);
   }
 });
 
@@ -251,6 +252,35 @@ test('transcription status preserves pending, failed and interrupted labels', ()
     assert.doesNotMatch(html, /Lyrics included|AI transcription/);
   }
   assert.equal(renderToStaticMarkup(createElement(TranscriptionStatus)), '');
+});
+
+test('transcription status tooltips show saved settings without lyric text', () => {
+  for (const [status, mode, label] of [['sent', 'prompt', 'Prompt'], ['transcribed', 'align', 'Align'], ['failed', 'correct', 'Correct'], ['interrupted', 'align', 'Align']]) {
+    const html = renderToStaticMarkup(createElement(TranscriptionStatus, {
+      transcription: {
+        status, requestedAt: '2026-09-28T10:00:00Z', lyricsIncluded: true,
+        options: { language: 'vi', Multilingual: true, NoVocals: false, VietLyricsFallback: true, lyrics_mode: mode, lyrics: 'Private lyric text' }
+      }
+    }));
+    const tooltip = html.match(/title="([^"]*)"/)[1];
+    for (const detail of ['Language: Vietnamese', 'Multilingual: On', 'No vocals (karaoke): Off', 'Viet Lyrics Fallback: On', 'Add lyrics: Yes', `Lyrics mode: ${label}`]) {
+      assert.ok(tooltip.includes(detail), detail);
+    }
+    assert.doesNotMatch(html, /Private lyric text/);
+  }
+});
+
+test('transcription status tooltips distinguish unchecked options from service defaults', () => {
+  for (const [options, label] of [[{ Multilingual: false, NoVocals: false, VietLyricsFallback: false }, 'Off'], [{}, 'Service default']]) {
+    const html = renderToStaticMarkup(createElement(TranscriptionStatus, {
+      transcription: { status: 'transcribed', requestedAt: '2026-09-28T10:00:00Z', lyricsIncluded: false, options }
+    }));
+    const tooltip = html.match(/title="([^"]*)"/)[1];
+    for (const detail of ['Language: Auto-detect', `Multilingual: ${label}`, `No vocals (karaoke): ${label}`, `Viet Lyrics Fallback: ${label}`, 'Add lyrics: No']) {
+      assert.ok(tooltip.includes(detail), detail);
+    }
+    assert.doesNotMatch(tooltip, /Lyrics mode:/);
+  }
 });
 
 test('transcription dialog exposes upstream options with unchecked defaults', () => {

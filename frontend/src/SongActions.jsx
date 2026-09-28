@@ -352,9 +352,18 @@ export function TranscriptionStatus({ transcription }) {
   const state = states[transcription?.status];
   if (!state) return null;
   const { label, Icon } = state;
+  const options = transcription.options;
+  const optionDetails = options ? [
+    `Language: ${transcriptionLanguages.find(([code]) => code === options.language)?.[1] || options.language || 'Auto-detect'}`,
+    ...[['Multilingual', 'Multilingual'], ['NoVocals', 'No vocals (karaoke)'], ['VietLyricsFallback', 'Viet Lyrics Fallback']]
+      .map(([key, name]) => `${name}: ${options[key] === undefined ? 'Service default' : options[key] ? 'On' : 'Off'}`),
+    `Add lyrics: ${transcription.lyricsIncluded ? 'Yes' : 'No'}`,
+    options.lyrics_mode && `Lyrics mode: ${{ prompt: 'Prompt', align: 'Align', correct: 'Correct' }[options.lyrics_mode] || options.lyrics_mode}`
+  ] : [];
   const details = [
     `Requested: ${formatDate(transcription.requestedAt)}`,
     transcription.completedAt && `Finished: ${formatDate(transcription.completedAt)}`,
+    ...optionDetails,
     transcription.error
   ].filter(Boolean).join('\n');
   return <span className={`song-transcription song-transcription-${transcription.status}`} title={details}>

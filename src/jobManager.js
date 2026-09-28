@@ -652,15 +652,17 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   if (!job.outputDir || !job.files.includes(fileName)) {
     throw Object.assign(new Error('Song not found'), { statusCode: 404 });
   }
-  validateTranscriptionOptions(options);
+  const fields = validateTranscriptionOptions(options);
+  const { lyrics, ...savedOptions } = fields;
   const queue = existingQueue || { job, files: new Set(), tail: Promise.resolve() };
   const requestedAt = new Date().toISOString();
-  job.transcriptions = { ...job.transcriptions, [fileName]: { ...job.transcriptions?.[fileName], status: 'sent', requestedAt } };
+  const transcription = { requestedAt, lyricsIncluded: Boolean(lyrics), options: savedOptions };
+  job.transcriptions = { ...job.transcriptions, [fileName]: { ...job.transcriptions?.[fileName], ...transcription, status: 'sent' } };
   job.updatedAt = requestedAt;
   writeJob(database, { ...getJob(id), transcriptions: job.transcriptions, updatedAt: requestedAt });
   queue.files.add(fileName);
   transcriptionQueues.set(id, queue);
-  const operation = queue.tail.then(() => executeTranscription(job, fileName, options, requestedAt));
+  const operation = queue.tail.then(() => executeTranscription(job, fileName, fields, transcription));
   queue.tail = operation.catch(() => {});
   try {
     return await operation;
@@ -670,7 +672,7 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   }
 }
 
-async function executeTranscription(job, fileName, options, requestedAt) {
+async function executeTranscription(job, fileName, options, transcription) {
   try {
     const filePath = getFilePath(job, fileName);
     const realPath = await fs.realpath(filePath).catch(() => null);
@@ -685,8 +687,7 @@ async function executeTranscription(job, fileName, options, requestedAt) {
     await mutateJobFiles(job.id, () => replaceTranscribedFiles(job, fileName, results, async (updatedJob) => {
       const noVocals = results.find((result) => !result.original);
       updatedJob.transcriptions[fileName] = {
-        status: 'transcribed', requestedAt, completedAt: new Date().toISOString(),
-        lyricsIncluded: Boolean(options?.lyrics),
+        ...transcription, status: 'transcribed', completedAt: new Date().toISOString(),
         noVocalsName: noVocals ? `[NoVocals]/${noVocals.name}` : updatedJob.transcriptions[fileName]?.noVocalsName
       };
       await persistJob(updatedJob);
@@ -695,7 +696,7 @@ async function executeTranscription(job, fileName, options, requestedAt) {
   } catch (error) {
     job.updatedAt = new Date().toISOString();
     job.transcriptions[fileName] = {
-      status: 'failed', requestedAt, completedAt: job.updatedAt, error: error.message,
+      ...transcription, status: 'failed', completedAt: job.updatedAt, error: error.message,
       noVocalsName: job.transcriptions[fileName]?.noVocalsName
     };
     await persistJob(job);
