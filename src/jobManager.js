@@ -686,6 +686,7 @@ async function executeTranscription(job, fileName, options, requestedAt) {
       const noVocals = results.find((result) => !result.original);
       updatedJob.transcriptions[fileName] = {
         status: 'transcribed', requestedAt, completedAt: new Date().toISOString(),
+        lyricsIncluded: Boolean(options?.lyrics),
         noVocalsName: noVocals ? `[NoVocals]/${noVocals.name}` : updatedJob.transcriptions[fileName]?.noVocalsName
       };
       await persistJob(updatedJob);

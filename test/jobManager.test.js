@@ -855,11 +855,7 @@ test('transcription options are forwarded as multipart fields without losing fal
   assert.equal(payload.has('language'), false);
 });
 
-test('transcription sends multipart lyrics, replaces audio and persists NoVocals safely', async (testContext) => {
-  const directory = path.dirname(process.env.DATABASE_PATH);
-  const outputDir = path.join(directory, 'songs');
-  await fs.mkdir(outputDir);
-  const songName = 'Song 100% #1.wav';
+function makeTranscriptionAudio() {
   const audio = Buffer.alloc(48);
   audio.write('RIFF');
   audio.writeUInt32LE(40, 4);
@@ -873,6 +869,44 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   audio.writeUInt16LE(16, 34);
   audio.write('data', 36);
   audio.writeUInt32LE(4, 40);
+  return audio;
+}
+
+test('transcription persists lyrics inclusion and resets it when retranscribing without lyrics', async (testContext) => {
+  const outputDir = path.join(path.dirname(process.env.DATABASE_PATH), 'lyrics-status');
+  await fs.mkdir(outputDir);
+  const songName = 'Song.wav';
+  const audio = makeTranscriptionAudio();
+  await fs.writeFile(path.join(outputDir, songName), audio);
+  const manager = await import(`../src/jobManager.js?lyrics-status=${Date.now()}`);
+  const owner = { id: 'owner', role: 'user' };
+  const job = { id: 'lyrics-status', url: 'https://music.youtube.com/watch?v=lyrics', status: 'completed',
+    outputDir, files: [songName], initiatedBy: owner, createdAt: new Date().toISOString() };
+  writeJob(openDatabase(), job);
+  const previousEndpoint = process.env.TRANSCRIPTION_ENDPOINT;
+  process.env.TRANSCRIPTION_ENDPOINT = 'http://transcriber.test/api/transcribe';
+  testContext.after(() => {
+    if (previousEndpoint === undefined) delete process.env.TRANSCRIPTION_ENDPOINT;
+    else process.env.TRANSCRIPTION_ENDPOINT = previousEndpoint;
+  });
+  testContext.mock.method(globalThis, 'fetch', async () => new Response(audio));
+  for (const mode of [undefined, 'align', undefined, 'prompt', 'correct']) {
+    const options = mode ? { lyrics: 'Known words', lyrics_mode: mode } : {};
+    await manager.transcribeJobFile(job.id, songName, options, owner);
+    const storedJob = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(job.id).data);
+    assert.equal(storedJob.transcriptions[songName].status, 'transcribed');
+    assert.equal(storedJob.transcriptions[songName].lyricsIncluded, Boolean(mode));
+  }
+  const restarted = await import(`../src/jobManager.js?lyrics-status-restart=${Date.now()}`);
+  assert.equal(restarted.getJob(job.id).transcriptions[songName].lyricsIncluded, true);
+});
+
+test('transcription sends multipart lyrics, replaces audio and persists NoVocals safely', async (testContext) => {
+  const directory = path.dirname(process.env.DATABASE_PATH);
+  const outputDir = path.join(directory, 'songs');
+  await fs.mkdir(outputDir);
+  const songName = 'Song 100% #1.wav';
+  const audio = makeTranscriptionAudio();
   await fs.writeFile(path.join(outputDir, songName), audio);
   const manager = await import(`../src/jobManager.js?transcribe=${Date.now()}`);
   const owner = { id: 'owner', role: 'user' };
@@ -924,6 +958,7 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   await pending;
   const transcribed = manager.getJob(job.id).transcriptions[songName];
   assert.equal(transcribed.status, 'transcribed');
+  assert.equal(transcribed.lyricsIncluded, true);
   assert.equal(transcribed.requestedAt, sent.requestedAt);
   assert.ok(Date.parse(transcribed.completedAt) >= Date.parse(sent.requestedAt));
   gate = Promise.resolve();
@@ -939,6 +974,7 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   zip.addFile('songs/instrumental.wav', audio);
   responseData = zip.toBuffer();
   await manager.transcribeJobFile(job.id, songName, {}, { id: 'contributor' });
+  assert.equal(manager.getJob(job.id).transcriptions[songName].lyricsIncluded, false);
   assert.equal(payload.has('lyrics'), false);
   assert.equal(payload.has('lyrics_mode'), false);
   assert.equal(payload.has('language'), false);
@@ -973,6 +1009,7 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   assert.equal(payload.has('lyrics_mode'), false);
   for (const lyrics_mode of ['prompt', 'correct']) {
     await manager.transcribeJobFile(job.id, songName, { lyrics: 'Words', lyrics_mode }, owner);
+    assert.equal(manager.getJob(job.id).transcriptions[songName].lyricsIncluded, true);
     assert.equal(payload.get('lyrics_mode'), lyrics_mode);
   }
   const rollbackJob = manager.getJob(job.id);

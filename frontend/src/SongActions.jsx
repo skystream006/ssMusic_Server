@@ -345,7 +345,7 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
 export function TranscriptionStatus({ transcription }) {
   const states = {
     sent: { label: 'Transcription request sent', Icon: RefreshCw },
-    transcribed: { label: 'Transcribed', Icon: Check },
+    transcribed: { label: transcription?.lyricsIncluded ? 'Lyrics included' : 'AI transcription', Icon: Check },
     failed: { label: 'Transcription failed', Icon: CircleAlert },
     interrupted: { label: 'Interrupted', Icon: Clock3 }
   };

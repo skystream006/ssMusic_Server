@@ -9,6 +9,7 @@ let SongActions;
 let SongRating;
 let ListSongRating;
 let TranscriptionDialog;
+let TranscriptionStatus;
 let SongGroups;
 let findNoVocals;
 let queueSongNext;
@@ -19,7 +20,7 @@ let canRunJobAction;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, SongRating, ListSongRating, TranscriptionDialog, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, SongRating, ListSongRating, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -226,6 +227,30 @@ test('copying SYLT preserves timestamps while USLT stays plain text', () => {
     assert.equal(formatLyricsForCopy(null, mode), '');
     assert.equal(formatLyricsForCopy({ sylt: [], uslt: '' }, mode), '');
   }
+});
+
+test('transcription status distinguishes supplied lyrics from AI transcription', () => {
+  for (const [lyricsIncluded, label] of [[true, 'Lyrics included'], [false, 'AI transcription'], [undefined, 'AI transcription']]) {
+    const html = renderToStaticMarkup(createElement(TranscriptionStatus, {
+      transcription: { status: 'transcribed', lyricsIncluded, requestedAt: '2026-09-28T10:00:00Z', completedAt: '2026-09-28T10:01:00Z' }
+    }));
+    assert.ok(html.includes(`<span>${label}</span>`));
+    assert.match(html, /song-transcription-transcribed/);
+    assert.match(html, /Requested:/);
+    assert.match(html, /Finished:/);
+    assert.doesNotMatch(html, />Transcribed</);
+  }
+});
+
+test('transcription status preserves pending, failed and interrupted labels', () => {
+  for (const [status, label] of [['sent', 'Transcription request sent'], ['failed', 'Transcription failed'], ['interrupted', 'Interrupted']]) {
+    const html = renderToStaticMarkup(createElement(TranscriptionStatus, {
+      transcription: { status, lyricsIncluded: true, requestedAt: '2026-09-28T10:00:00Z' }
+    }));
+    assert.ok(html.includes(`<span>${label}</span>`));
+    assert.doesNotMatch(html, /Lyrics included|AI transcription/);
+  }
+  assert.equal(renderToStaticMarkup(createElement(TranscriptionStatus)), '');
 });
 
 test('transcription dialog exposes upstream options with unchecked defaults', () => {
