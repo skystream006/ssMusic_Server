@@ -73,7 +73,9 @@ function registerUserRecord(name, userHandle, credential) {
       id: credential.id,
       publicKey: Buffer.from(credential.publicKey).toString('base64url'),
       counter: credential.counter,
-      transports: credential.transports || []
+      transports: credential.transports || [],
+      createdAt: now,
+      lastUsedAt: null
     }],
     createdAt: now,
     updatedAt: now
@@ -82,13 +84,73 @@ function registerUserRecord(name, userHandle, credential) {
   return publicUser(user);
 }
 
+export function getUserPasskeys(userId) {
+  const user = readUser(database, userId);
+  return user ? {
+    userHandle: user.userHandle,
+    credentials: user.credentials.map(({ id, transports, createdAt, lastUsedAt }) => ({ id, transports, createdAt, lastUsedAt }))
+  } : null;
+}
+
+export async function addCredential(userId, credential) {
+  return database.transaction(() => {
+    const user = readUser(database, userId);
+    if (!user || user.status !== 'approved') {
+      const error = new Error('Approved user required');
+      error.statusCode = 403;
+      throw error;
+    }
+    if (findCredential(credential.id)) {
+      const error = new Error('That passkey is already registered');
+      error.statusCode = 409;
+      throw error;
+    }
+    const now = new Date().toISOString();
+    user.credentials.push({
+      id: credential.id,
+      publicKey: Buffer.from(credential.publicKey).toString('base64url'),
+      counter: credential.counter,
+      transports: credential.transports || [],
+      createdAt: now,
+      lastUsedAt: null
+    });
+    user.updatedAt = now;
+    writeUser(database, user);
+    return publicUser(user);
+  }).immediate();
+}
+
 export async function updateCredentialCounter(userId, credentialId, counter) {
   return database.transaction(() => {
-    const result = database.prepare('UPDATE credentials SET counter = ? WHERE id = ? AND user_id = ?')
-      .run(counter, credentialId, userId);
+    const now = new Date().toISOString();
+    const result = database.prepare(`UPDATE credentials SET counter = ?, last_used_at =
+      CASE WHEN (SELECT status FROM users WHERE id = ?) = 'approved' THEN ? ELSE last_used_at END
+      WHERE id = ? AND user_id = ?`).run(counter, userId, now, credentialId, userId);
     if (!result.changes) return false;
-    database.prepare('UPDATE users SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), userId);
+    database.prepare('UPDATE users SET updated_at = ? WHERE id = ?').run(now, userId);
     return true;
+  }).immediate();
+}
+
+export async function deleteCredential(userId, credentialId) {
+  return database.transaction(() => {
+    const user = readUser(database, userId);
+    if (!user || !user.credentials.some(({ id }) => id === credentialId)) return null;
+    if (user.status !== 'approved') {
+      const error = new Error('Approved user required');
+      error.statusCode = 403;
+      throw error;
+    }
+    if (user.credentials.length <= 1) {
+      const error = new Error('You must keep at least one passkey');
+      error.statusCode = 409;
+      throw error;
+    }
+    database.prepare('DELETE FROM credentials WHERE id = ? AND user_id = ?').run(credentialId, userId);
+    user.credentials = user.credentials.filter(({ id }) => id !== credentialId);
+    user.updatedAt = new Date().toISOString();
+    database.prepare('UPDATE users SET updated_at = ? WHERE id = ?').run(user.updatedAt, userId);
+    return publicUser(user);
   }).immediate();
 }
 

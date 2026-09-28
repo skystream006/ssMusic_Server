@@ -198,6 +198,282 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
 
   await context.test('passkey options select the configured secondary browser origin', testSecondaryPasskeyOptions);
 
+  await context.test('approved users add multiple account-bound passkeys and log in with each', async (passkeyContext) => {
+    const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
+    const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+    const rpID = 'music.example.com';
+    const origin = `https://${rpID}`;
+    process.env.PASSKEY_RP_ID = rpID;
+    process.env.PASSKEY_ORIGIN = origin;
+    process.env.PASSKEY_RP_ID_SECONDARY = 'local.example.com';
+    process.env.PASSKEY_ORIGIN_SECONDARY = 'https://local.example.com:4123';
+    passkeyContext.after(() => {
+      for (const key of envKeys) {
+        if (originalEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = originalEnv[key];
+      }
+    });
+
+    function authenticator() {
+      const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+      const jwk = publicKey.export({ format: 'jwk' });
+      const credentialId = crypto.randomBytes(32);
+      const id = credentialId.toString('base64url');
+      const keyBytes = isoCBOR.encode(new Map([[1, 2], [3, -7], [-1, 1],
+        [-2, Buffer.from(jwk.x, 'base64url')], [-3, Buffer.from(jwk.y, 'base64url')]]));
+      return {
+        credential: { id, publicKey: keyBytes, counter: 0, transports: ['internal'] },
+        register(options, registeredOrigin = origin, registeredRPID = rpID, flags = 69) {
+          const idLength = Buffer.alloc(2);
+          idLength.writeUInt16BE(credentialId.length);
+          const authData = Buffer.concat([crypto.createHash('sha256').update(registeredRPID).digest(),
+            Buffer.from([flags, 0, 0, 0, 0]), Buffer.alloc(16), idLength, credentialId, keyBytes]);
+          const attestation = isoCBOR.encode(new Map([['fmt', 'none'], ['attStmt', new Map()], ['authData', authData]]));
+          return { id, rawId: id, type: 'public-key', clientExtensionResults: {}, response: {
+            clientDataJSON: Buffer.from(JSON.stringify({ type: 'webauthn.create', challenge: options.challenge, origin: registeredOrigin })).toString('base64url'),
+            attestationObject: Buffer.from(attestation).toString('base64url'), transports: ['internal']
+          } };
+        },
+        login(options, loginOrigin = origin, loginRPID = rpID) {
+          const clientData = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: options.challenge, origin: loginOrigin }));
+          const authData = Buffer.concat([crypto.createHash('sha256').update(loginRPID).digest(), Buffer.from([5, 0, 0, 0, 0])]);
+          const signature = crypto.sign('sha256', Buffer.concat([authData, crypto.createHash('sha256').update(clientData).digest()]), privateKey);
+          return { id, rawId: id, type: 'public-key', clientExtensionResults: {}, response: {
+            clientDataJSON: clientData.toString('base64url'), authenticatorData: authData.toString('base64url'), signature: signature.toString('base64url')
+          } };
+        }
+      };
+    }
+
+    const first = authenticator();
+    const second = authenticator();
+    const third = authenticator();
+    const userHandle = crypto.randomBytes(32).toString('base64url');
+    const account = await store.registerUser('Multiple Passkeys', userHandle, first.credential);
+    const session = await store.createSession(account.id);
+    const headers = { Cookie: `ssytdlp_session=${session.token}`, Origin: origin };
+    assert.equal((await call('/api/auth/passkeys/options', 'POST', headers)).status, 401);
+    assert.equal((await call('/api/auth/passkeys', 'GET', headers)).status, 401);
+    assert.equal((await call(`/api/auth/passkeys/${first.credential.id}`, 'DELETE', headers)).status, 401);
+    await store.updateUser(account.id, { status: 'approved' }, admin.id);
+    const token = await store.createPrivateAccessToken(account.id, 'No enrollment');
+    for (const unauthorized of [{}, { 'X-PAT': token.token }]) {
+      assert.equal((await call('/api/auth/passkeys', 'GET', unauthorized)).status, 401);
+      assert.equal((await call(`/api/auth/passkeys/${first.credential.id}`, 'DELETE', unauthorized)).status, 401);
+      for (const endpoint of ['options', 'verify']) {
+        assert.equal((await call(`/api/auth/passkeys/${endpoint}`, 'POST', unauthorized, {})).status, 401);
+      }
+    }
+    assert.equal((await call('/api/auth/passkeys/options', 'POST', headers, { client: 'browser-app' })).status, 400);
+    const start = async (requestHeaders = headers) => {
+      const result = await call('/api/auth/passkeys/options', 'POST', requestHeaders, { userId: admin.id, name: 'Ignored name' });
+      assert.equal(result.status, 200);
+      assert.equal(result.headers.get('cache-control'), 'no-store');
+      return result.json();
+    };
+    const verify = (attempt, response, requestHeaders = headers) => call('/api/auth/passkeys/verify', 'POST', requestHeaders, {
+      requestId: attempt.requestId, response, userId: admin.id
+    });
+    const originalUserCount = store.listUsers().length;
+    for (const key of [second, third]) {
+      const attempt = await start();
+      assert.equal(attempt.options.user.id, userHandle);
+      assert.equal(attempt.options.user.name, account.name);
+      assert.equal(attempt.options.rp.id, rpID);
+      assert.equal(attempt.options.authenticatorSelection.residentKey, 'required');
+      assert.equal(attempt.options.authenticatorSelection.userVerification, 'required');
+      assert.deepEqual(attempt.options.excludeCredentials.map(({ id }) => id).sort(),
+        [first, ...(key === third ? [second] : [])].map(({ credential: value }) => value.id).sort());
+      assert.ok(attempt.options.excludeCredentials.every(({ transports }) => transports.includes('internal')));
+      const response = key.register(attempt.options);
+      const added = await verify(attempt, response);
+      assert.equal(added.status, 201);
+      assert.equal(added.headers.get('cache-control'), 'no-store');
+      const result = await added.json();
+      assert.equal(result.user.id, account.id);
+      assert.equal(result.user.name, account.name);
+      assert.equal(result.user.role, 'user');
+      assert.equal(result.user.status, 'approved');
+      assert.equal(result.user.credentialCount, key === second ? 2 : 3);
+      assert.equal(result.user.credentials, undefined);
+      assert.equal(result.passkeys.length, result.user.credentialCount);
+      assert.ok(result.passkeys.some(({ id }) => id === key.credential.id));
+      const enrolled = result.passkeys.find(({ id }) => id === key.credential.id);
+      assert.equal(enrolled.createdAt, result.user.updatedAt);
+      assert.equal(enrolled.lastUsedAt, null);
+      assert.ok(Number.isFinite(Date.parse(enrolled.createdAt)));
+      assert.equal((await verify(attempt, response)).status, 400);
+    }
+    assert.equal(store.listUsers().length, originalUserCount);
+    for (const key of [first, second, third]) {
+      const before = store.findCredential(key.credential.id).credential;
+      assert.equal(before.lastUsedAt, null);
+      const login = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
+      const loginStartedAt = Date.now();
+      const loggedIn = await call('/api/auth/login/verify', 'POST', { Origin: origin }, {
+        requestId: login.requestId, response: key.login(login.options)
+      });
+      assert.equal(loggedIn.status, 200);
+      assert.match(loggedIn.headers.get('set-cookie'), /ssytdlp_session=.*HttpOnly/);
+      assert.equal((await loggedIn.json()).user.id, account.id);
+      const after = store.findCredential(key.credential.id).credential;
+      assert.equal(after.createdAt, before.createdAt);
+      assert.ok(Date.parse(after.lastUsedAt) >= loginStartedAt);
+      assert.ok(Date.parse(after.lastUsedAt) <= Date.now());
+    }
+
+    const beforeFailedLogin = store.getUserPasskeys(account.id).credentials;
+    for (const invalid of ['origin', 'signature']) {
+      const login = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
+      const response = first.login(login.options, invalid === 'origin' ? 'https://untrusted.example' : origin);
+      if (invalid === 'signature') response.response.signature = second.login(login.options).response.signature;
+      const denied = await call('/api/auth/login/verify', 'POST', { Origin: origin }, { requestId: login.requestId, response });
+      assert.ok([400, 401].includes(denied.status));
+      assert.deepEqual(store.getUserPasskeys(account.id).credentials, beforeFailedLogin);
+    }
+
+    const otherAccount = await start();
+    assert.equal((await verify(otherAccount, authenticator().register(otherAccount.options), adminHeaders)).status, 403);
+    assert.equal(store.getUser(admin.id).credentialCount, 1);
+    for (const [badOrigin, badRPID, flags] of [['https://untrusted.example', rpID, 69], [origin, 'wrong.example.com', 69], [origin, rpID, 65]]) {
+      const attempt = await start();
+      assert.equal((await verify(attempt, authenticator().register(attempt.options, badOrigin, badRPID, flags))).status, 400);
+    }
+    const wrongChallenge = await start();
+    assert.equal((await verify(wrongChallenge, authenticator().register({ challenge: 'wrong-challenge' }))).status, 400);
+    const duplicate = await start();
+    assert.equal((await verify(duplicate, first.register(duplicate.options))).status, 409);
+    const switchedOrigin = await start();
+    assert.equal((await verify(switchedOrigin, authenticator().register(switchedOrigin.options),
+      { ...headers, Origin: process.env.PASSKEY_ORIGIN_SECONDARY })).status, 403);
+    const wrongCeremony = await start();
+    assert.equal((await call('/api/auth/register/verify', 'POST', headers, {
+      requestId: wrongCeremony.requestId, response: authenticator().register(wrongCeremony.options)
+    })).status, 400);
+    assert.equal(store.getUser(account.id).credentialCount, 3);
+
+    const secondaryHeaders = { ...headers, Origin: process.env.PASSKEY_ORIGIN_SECONDARY };
+    const secondaryKey = authenticator();
+    const secondaryAttempt = await start(secondaryHeaders);
+    assert.equal(secondaryAttempt.options.rp.id, process.env.PASSKEY_RP_ID_SECONDARY);
+    assert.equal(secondaryAttempt.options.user.id, userHandle);
+    assert.equal((await verify(secondaryAttempt, secondaryKey.register(secondaryAttempt.options,
+      process.env.PASSKEY_ORIGIN_SECONDARY, process.env.PASSKEY_RP_ID_SECONDARY), secondaryHeaders)).status, 201);
+    const secondaryLogin = await (await call('/api/auth/login/options', 'POST', { Origin: secondaryHeaders.Origin }, {})).json();
+    const secondaryLoggedIn = await call('/api/auth/login/verify', 'POST', { Origin: secondaryHeaders.Origin }, {
+      requestId: secondaryLogin.requestId,
+      response: secondaryKey.login(secondaryLogin.options, secondaryHeaders.Origin, process.env.PASSKEY_RP_ID_SECONDARY)
+    });
+    assert.equal(secondaryLoggedIn.status, 200);
+    assert.equal((await secondaryLoggedIn.json()).user.id, account.id);
+
+    await passkeyContext.test('passkey listing and deletion enforce ownership and invalidate removed keys', async (deletionContext) => {
+      const listed = await call(`/api/auth/passkeys?userId=${admin.id}`, 'GET', headers);
+      assert.equal(listed.status, 200);
+      assert.equal(listed.headers.get('cache-control'), 'no-store');
+      const listing = await listed.json();
+      assert.equal(listing.user.id, account.id);
+      assert.equal(listing.user.credentialCount, 4);
+      assert.deepEqual(listing.passkeys.map(({ id }) => id).sort(),
+        [first, second, third, secondaryKey].map(({ credential: value }) => value.id).sort());
+      for (const passkey of listing.passkeys) {
+        assert.deepEqual(Object.keys(passkey).sort(), ['createdAt', 'id', 'lastUsedAt', 'transports']);
+        assert.deepEqual(passkey.transports, ['internal']);
+        assert.ok(Number.isFinite(Date.parse(passkey.createdAt)));
+        assert.ok(Date.parse(passkey.lastUsedAt) >= Date.parse(passkey.createdAt));
+      }
+      assert.equal(listing.user.userHandle, undefined);
+      assert.equal(listing.user.credentials, undefined);
+      const bearerHeaders = { Authorization: `Bearer ${session.token}` };
+      assert.deepEqual(await (await call('/api/auth/passkeys', 'GET', bearerHeaders)).json(), listing);
+      const mixedAuth = await (await call('/api/auth/passkeys', 'GET', { ...userHeaders, 'X-PAT': token.token })).json();
+      assert.equal(mixedAuth.user.id, user.id);
+      assert.deepEqual(mixedAuth.passkeys.map(({ id }) => id), ['listener']);
+      assert.equal((await call('/api/auth/passkeys/admin', 'DELETE', headers)).status, 404);
+      assert.equal((await call(`/api/auth/passkeys/${first.credential.id}`, 'DELETE', adminHeaders)).status, 404);
+      assert.equal((await call('/api/auth/passkeys/missing', 'DELETE', headers)).status, 404);
+
+      const deleted = await call(`/api/auth/passkeys/${second.credential.id}`, 'DELETE', bearerHeaders, { userId: admin.id });
+      assert.equal(deleted.status, 200);
+      assert.equal(deleted.headers.get('cache-control'), 'no-store');
+      const result = await deleted.json();
+      assert.equal(result.user.id, account.id);
+      assert.equal(result.user.credentialCount, 3);
+      assert.equal(result.passkeys.length, 3);
+      assert.equal(result.passkeys.some(({ id }) => id === second.credential.id), false);
+      assert.equal((await call(`/api/auth/passkeys/${second.credential.id}`, 'DELETE', headers)).status, 404);
+      const login = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
+      const removedLogin = await call('/api/auth/login/verify', 'POST', { Origin: origin }, {
+        requestId: login.requestId, response: second.login(login.options)
+      });
+      assert.equal(removedLogin.status, 401);
+      assert.equal(removedLogin.headers.get('set-cookie'), null);
+
+      const pendingLogin = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
+      assert.equal((await call(`/api/auth/passkeys/${third.credential.id}`, 'DELETE', headers)).status, 200);
+      assert.equal((await call('/api/auth/login/verify', 'POST', { Origin: origin }, {
+        requestId: pendingLogin.requestId, response: third.login(pendingLogin.options)
+      })).status, 401);
+
+      const inflight = await (await call('/api/auth/login/options', 'POST', { Origin: secondaryHeaders.Origin }, {})).json();
+      const originalVerify = crypto.webcrypto.subtle.verify;
+      const duringVerification = deletionContext.mock.method(crypto.webcrypto.subtle, 'verify', async function (...parameters) {
+        await store.deleteCredential(account.id, secondaryKey.credential.id);
+        return originalVerify.apply(this, parameters);
+      });
+      try {
+        const removedDuringVerification = await call('/api/auth/login/verify', 'POST', { Origin: secondaryHeaders.Origin }, {
+          requestId: inflight.requestId,
+          response: secondaryKey.login(inflight.options, secondaryHeaders.Origin, process.env.PASSKEY_RP_ID_SECONDARY)
+        });
+        assert.equal(duringVerification.mock.callCount(), 1);
+        assert.equal(removedDuringVerification.status, 401);
+        assert.equal(removedDuringVerification.headers.get('set-cookie'), null);
+      } finally {
+        duringVerification.mock.restore();
+      }
+
+      const finalKey = await call(`/api/auth/passkeys/${first.credential.id}`, 'DELETE', headers);
+      assert.equal(finalKey.status, 409);
+      assert.match((await finalKey.json()).error, /at least one passkey/);
+      const remaining = await (await call('/api/auth/passkeys', 'GET', headers)).json();
+      assert.deepEqual(remaining.passkeys, [listing.passkeys.find(({ id }) => id === first.credential.id)]);
+      assert.equal(remaining.user.credentialCount, 1);
+      const remainingLogin = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
+      const stillWorks = await call('/api/auth/login/verify', 'POST', { Origin: origin }, {
+        requestId: remainingLogin.requestId, response: first.login(remainingLogin.options)
+      });
+      assert.equal(stillWorks.status, 200);
+      assert.equal((await stillWorks.json()).user.id, account.id);
+      assert.equal(store.getSessionUser(session.token).credentialCount, 1);
+      assert.equal(store.getUser(admin.id).credentialCount, 1);
+    });
+
+    const expired = await start();
+    const now = Date.now();
+    const clock = passkeyContext.mock.method(Date, 'now', () => now + 6 * 60 * 1000);
+    try {
+      assert.equal((await verify(expired, authenticator().register(expired.options))).status, 400);
+    } finally {
+      clock.mock.restore();
+    }
+    const revoked = await start();
+    await store.updateUser(account.id, { status: 'revoked' }, admin.id);
+    assert.equal((await verify(revoked, authenticator().register(revoked.options))).status, 401);
+    assert.equal((await call('/api/auth/passkeys', 'GET', headers)).status, 401);
+    assert.equal((await call(`/api/auth/passkeys/${first.credential.id}`, 'DELETE', headers)).status, 401);
+    assert.equal(store.getUser(account.id).credentialCount, 1);
+    const lastUsedBeforeDenied = store.findCredential(first.credential.id).credential.lastUsedAt;
+    for (const status of ['pending', 'revoked']) {
+      await store.updateUser(account.id, { status }, admin.id);
+      const deniedLogin = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
+      assert.equal((await call('/api/auth/login/verify', 'POST', { Origin: origin }, {
+        requestId: deniedLogin.requestId, response: first.login(deniedLogin.options)
+      })).status, 403);
+      assert.equal(store.findCredential(first.credential.id).credential.lastUsedAt, lastUsedBeforeDenied);
+    }
+  });
+
   await context.test('browser app handoff verifies passkeys and binds single-use codes to PKCE', async () => {
     const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
     const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));

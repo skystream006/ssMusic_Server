@@ -7,8 +7,10 @@ import {
   verifyRegistrationResponse
 } from '@simplewebauthn/server';
 import {
+  addCredential,
   createPrivateAccessToken,
   createSession,
+  deleteCredential,
   deletePrivateAccessToken,
   deleteSession,
   deleteUser,
@@ -16,6 +18,7 @@ import {
   getPrivateAccessTokenUser,
   getSessionUser,
   getUser,
+  getUserPasskeys,
   listPrivateAccessTokens,
   listUsers,
   registerUser,
@@ -257,6 +260,77 @@ export function registerAuthRoutes(app, limiters = {}) {
     }
   });
 
+  app.get('/api/auth/passkeys', requireSession, (req, res) => {
+    return res.json({ user: req.user, passkeys: getUserPasskeys(req.user.id).credentials });
+  });
+
+  app.delete('/api/auth/passkeys/:credentialId', requireSession, async (req, res) => {
+    try {
+      const user = await deleteCredential(req.user.id, req.params.credentialId);
+      if (!user) return res.status(404).json({ error: 'Passkey not found' });
+      return res.json({ user, passkeys: getUserPasskeys(user.id).credentials });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  app.post('/api/auth/passkeys/options', requireSession, registrationOptionsLimiter, async (req, res) => {
+    try {
+      if (req.body?.client && req.body.client !== 'web') {
+        return res.status(400).json({ error: 'Add passkeys in the web UI' });
+      }
+      const { userHandle, credentials } = getUserPasskeys(req.user.id);
+      const { rpID, origin } = getWebAuthnConfig(req);
+      const options = await generateRegistrationOptions({
+        rpName: 'ssYTDLP',
+        rpID,
+        userName: req.user.name,
+        userDisplayName: req.user.name,
+        userID: Buffer.from(userHandle, 'base64url'),
+        excludeCredentials: credentials.map(({ id, transports }) => ({ id, transports })),
+        attestationType: 'none',
+        authenticatorSelection: {
+          residentKey: 'required',
+          userVerification: 'required'
+        }
+      });
+      const requestId = rememberChallenge({
+        type: 'additional-passkey',
+        challenge: options.challenge,
+        userId: req.user.id,
+        rpID,
+        origin
+      }, req.ip);
+      return res.json({ requestId, options });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  app.post('/api/auth/passkeys/verify', requireSession, registrationVerifyLimiter, async (req, res) => {
+    try {
+      const challenge = takeChallenge(req.body?.requestId, 'additional-passkey');
+      const { rpID, origin } = getWebAuthnConfig(req);
+      if (challenge.userId !== req.user.id || challenge.rpID !== rpID || challenge.origin !== origin) {
+        return res.status(403).json({ error: 'This passkey request belongs to a different account or origin' });
+      }
+      const verification = await verifyRegistrationResponse({
+        response: req.body?.response,
+        expectedChallenge: challenge.challenge,
+        expectedOrigin: challenge.origin,
+        expectedRPID: challenge.rpID,
+        requireUserVerification: true
+      });
+      if (!verification.verified || !verification.registrationInfo) {
+        return res.status(400).json({ error: 'Passkey registration could not be verified' });
+      }
+      const user = await addCredential(req.user.id, verification.registrationInfo.credential);
+      return res.status(201).json({ user, passkeys: getUserPasskeys(user.id).credentials });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
   app.post('/api/auth/register/verify', registrationVerifyLimiter, async (req, res) => {
     try {
       const challenge = takeChallenge(req.body?.requestId, 'registration');
@@ -319,11 +393,12 @@ export function registerAuthRoutes(app, limiters = {}) {
       if (!verification.verified) {
         return res.status(401).json({ error: 'Passkey login could not be verified' });
       }
-      await updateCredentialCounter(
+      const updated = await updateCredentialCounter(
         match.user.id,
         match.credential.id,
         verification.authenticationInfo.newCounter
       );
+      if (!updated) return res.status(401).json({ error: 'Passkey is no longer registered on this server' });
       if (match.user.status === 'pending') {
         return res.status(403).json({ error: 'Your access request is waiting for administrator approval', code: 'ACCESS_PENDING' });
       }

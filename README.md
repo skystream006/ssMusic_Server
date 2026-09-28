@@ -450,6 +450,38 @@ unknown user, or `409` for a protected account.
 Complete the first registration locally before exposing a new server to other users,
 because the first verified passkey is intentionally trusted as the initial administrator.
 
+Approved users and administrators can add more passkeys from **User settings > Passkeys >
+Add passkey** while signed in. Each new passkey belongs to the existing account, keeping
+the same approval, permissions, and library; existing passkeys continue to work. Repeat
+with another device, password manager, or security key as needed. Enrollment uses the
+current hostname's RP ID and does not link accounts on unrelated hostnames.
+
+The **Passkeys** section lists every registered credential with its ID and reported
+transports, creation date, and last-used date in your local time. Creation is recorded
+at enrollment; last use updates after verified passkey authentication for an approved
+account, not when an existing session or PAT is used. New keys show **Never** until
+their first sign-in. Dates not recorded for older keys show **Unknown**; their next
+successful sign-in records last use. Existing databases are upgraded automatically.
+Use a passkey's trash button and confirm to remove it from the account.
+At least one passkey must remain. Removed passkeys cannot log in again; existing
+sessions remain signed in. Removal does not erase the saved key from your device
+or password manager.
+
+Passkey management requires a passkey session, not a PAT:
+
+- `GET /api/auth/passkeys` returns `{ "user": {...}, "passkeys": [...] }` for the
+    signed-in account. Passkey entries contain `id`, `transports`, `createdAt`, and
+    `lastUsedAt`. Dates are UTC ISO timestamps or `null` when not recorded.
+- `DELETE /api/auth/passkeys/:credentialId` removes one of your passkeys and returns
+    the updated user and passkey list. Unknown or other users' credentials return
+    `404`; removing your last passkey returns `409`.
+- `POST /api/auth/passkeys/options` returns registration options for the signed-in account,
+    reusing its user handle and excluding its existing credentials.
+- `POST /api/auth/passkeys/verify` accepts `{ "requestId": "...", "response": {...} }` and
+    returns the updated user and passkey list with `201`. Requests are single-use, expire
+    after five minutes, and are bound to the account, origin, and RP ID. Duplicate
+    credentials are rejected.
+
 Passkeys work on `localhost` without TLS, but other hosts require HTTPS. The server creates
 `data/tls/server-key.pem` and `data/tls/server-cert.pem` when certificate paths are omitted.
 Trust the generated certificate on each client before opening the app, or configure a trusted

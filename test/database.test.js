@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test, { beforeEach } from 'node:test';
 import Database from 'better-sqlite3';
-import { closeDatabases, openDatabase, readUser } from '../src/database.js';
+import { closeDatabases, openDatabase, readUser, writeUser } from '../src/database.js';
 
 beforeEach(async (testContext) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-migration-'));
@@ -48,7 +48,9 @@ test('legacy users, passkeys, sessions and complete job records migrate once wit
   await fs.writeFile(process.env.JOB_STORE_PATH, jobsText);
 
   const database = openDatabase();
-  assert.deepEqual(readUser(database, 'admin-id'), auth.users[0]);
+  assert.deepEqual(readUser(database, 'admin-id'), {
+    ...auth.users[0], credentials: [{ ...auth.users[0].credentials[0], createdAt: null, lastUsedAt: null }]
+  });
   assert.equal(database.prepare('SELECT count(*) AS count FROM jobs').get().count, 3);
   const store = await import(`../src/authStore.js?migration=${crypto.randomUUID()}`);
   assert.equal(store.getSessionUser('test-session').id, 'admin-id');
@@ -99,11 +101,46 @@ test('database constraints and indexes protect credential and session identity',
   await fs.writeFile(process.env.AUTH_STORE_PATH, JSON.stringify(legacyAuth()));
   const database = openDatabase();
   assert.throws(() => database.prepare('INSERT INTO sessions VALUES (?, ?, ?)').run('hash', 'missing-user', '2099-01-01'), /FOREIGN KEY/);
-  assert.throws(() => database.prepare('INSERT INTO credentials VALUES (?, ?, ?, ?, ?)').run('key-id', 'admin-id', 'other', 0, '[]'), /UNIQUE/);
+  assert.throws(() => database.prepare('INSERT INTO credentials (id, user_id, public_key, counter, transports) VALUES (?, ?, ?, ?, ?)')
+    .run('key-id', 'admin-id', 'other', 0, '[]'), /UNIQUE/);
   const plan = database.prepare('EXPLAIN QUERY PLAN SELECT id FROM jobs WHERE url = ? ORDER BY created_at DESC LIMIT 1').all('url');
   assert.ok(plan.some((row) => row.detail.includes('jobs_url')));
   assert.equal(database.pragma('journal_mode', { simple: true }), 'wal');
   assert.equal(database.pragma('integrity_check', { simple: true }), 'ok');
+});
+
+test('credential date migration preserves existing passkeys and sessions without fabricating history', async () => {
+  await fs.writeFile(process.env.AUTH_STORE_PATH, JSON.stringify(legacyAuth()));
+  const database = openDatabase();
+  database.exec('ALTER TABLE credentials DROP COLUMN created_at; ALTER TABLE credentials DROP COLUMN last_used_at');
+  const original = database.prepare('SELECT * FROM credentials').get();
+  const session = database.prepare('SELECT * FROM sessions').get();
+  closeDatabases();
+
+  const migrated = openDatabase();
+  assert.deepEqual(migrated.prepare('SELECT * FROM credentials').get(), {
+    ...original, created_at: null, last_used_at: null
+  });
+  assert.deepEqual(migrated.prepare('SELECT * FROM sessions').get(), session);
+  assert.equal(readUser(migrated, 'admin-id').credentials[0].createdAt, null);
+  assert.equal(readUser(migrated, 'admin-id').credentials[0].lastUsedAt, null);
+  const createdAt = '2026-09-27T13:00:00.000Z';
+  const lastUsedAt = '2026-09-28T14:30:00.000Z';
+  const user = readUser(migrated, 'admin-id');
+  user.credentials.push({ ...user.credentials[0], id: 'dated-key', createdAt, lastUsedAt });
+  writeUser(migrated, user);
+  const stale = readUser(migrated, user.id);
+  migrated.prepare('UPDATE credentials SET last_used_at = ? WHERE id = ?').run('2026-09-28T15:00:00.000Z', 'dated-key');
+  writeUser(migrated, stale);
+  closeDatabases();
+
+  const reopened = openDatabase();
+  const dated = readUser(reopened, user.id).credentials.find(({ id }) => id === 'dated-key');
+  assert.equal(dated.createdAt, createdAt);
+  assert.equal(dated.lastUsedAt, '2026-09-28T15:00:00.000Z');
+  assert.equal(readUser(reopened, user.id).credentials.find(({ id }) => id === 'key-id').createdAt, null);
+  assert.deepEqual(reopened.pragma('foreign_key_check'), []);
+  assert.equal(reopened.pragma('integrity_check', { simple: true }), 'ok');
 });
 
 test('existing backup tables migrate without losing records and retain them after account deletion and restart', async () => {

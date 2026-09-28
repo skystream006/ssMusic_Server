@@ -23,11 +23,12 @@ export function writeUser(database, user) {
     user.createdAt, user.updatedAt
   );
   for (const credential of user.credentials) {
-    const result = database.prepare(`INSERT INTO credentials (id, user_id, public_key, counter, transports)
-      VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+    const result = database.prepare(`INSERT INTO credentials (id, user_id, public_key, counter, transports, created_at, last_used_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
       public_key=excluded.public_key, counter=excluded.counter, transports=excluded.transports
       WHERE credentials.user_id = excluded.user_id`).run(
-      credential.id, user.id, credential.publicKey, credential.counter, JSON.stringify(credential.transports || [])
+      credential.id, user.id, credential.publicKey, credential.counter, JSON.stringify(credential.transports || []),
+      credential.createdAt ?? null, credential.lastUsedAt ?? null
     );
     if (!result.changes) throw new Error('A passkey cannot belong to multiple users');
   }
@@ -37,7 +38,8 @@ export function readUser(database, id) {
   const user = database.prepare(`SELECT id, name, user_handle AS userHandle, role, status,
     created_at AS createdAt, updated_at AS updatedAt FROM users WHERE id = ?`).get(id);
   if (!user) return null;
-  user.credentials = database.prepare(`SELECT id, public_key AS publicKey, counter, transports
+  user.credentials = database.prepare(`SELECT id, public_key AS publicKey, counter, transports,
+    created_at AS createdAt, last_used_at AS lastUsedAt
     FROM credentials WHERE user_id = ?`).all(id).map((credential) => ({
     ...credential, transports: JSON.parse(credential.transports)
   }));
@@ -104,7 +106,8 @@ export function openDatabase() {
         );
         CREATE TABLE IF NOT EXISTS credentials (
           id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          public_key TEXT NOT NULL, counter INTEGER NOT NULL, transports TEXT NOT NULL
+          public_key TEXT NOT NULL, counter INTEGER NOT NULL, transports TEXT NOT NULL,
+          created_at TEXT, last_used_at TEXT
         );
         CREATE INDEX IF NOT EXISTS credentials_user ON credentials(user_id);
         CREATE TABLE IF NOT EXISTS sessions (
@@ -143,6 +146,13 @@ export function openDatabase() {
           last_error TEXT
         );
       `);
+      const credentialColumns = database.pragma('table_info(credentials)');
+      if (!credentialColumns.some((column) => column.name === 'created_at')) {
+        database.exec('ALTER TABLE credentials ADD COLUMN created_at TEXT');
+      }
+      if (!credentialColumns.some((column) => column.name === 'last_used_at')) {
+        database.exec('ALTER TABLE credentials ADD COLUMN last_used_at TEXT');
+      }
       if (!database.pragma('table_info(user_preferences)').some((column) => column.name === 'theme_mode')) {
         database.exec("ALTER TABLE user_preferences ADD COLUMN theme_mode TEXT CHECK(theme_mode IN ('light', 'dark'))");
       }

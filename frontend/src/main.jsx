@@ -1126,11 +1126,13 @@ function PatDialog({ pat, onClose }) {
 }
 
 function UserSettingsPage({ userId }) {
-  const { user: currentUser } = useContext(AuthContext);
+  const { user: currentUser, setUser } = useContext(AuthContext);
   const [details, setDetails] = useState(null);
   const [tokens, setTokens] = useState(null);
+  const [passkeys, setPasskeys] = useState([]);
   const [name, setName] = useState('');
   const [secret, setSecret] = useState(null);
+  const [passkeyMessage, setPasskeyMessage] = useState(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const { confirm, dialog } = useConfirmation();
@@ -1138,8 +1140,11 @@ function UserSettingsPage({ userId }) {
 
   async function load() {
     try {
-      const result = await request(endpoint);
-      setDetails(result.user || currentUser);
+      const [result, passkeyResult] = await Promise.all([
+        request(endpoint), userId ? null : request('/api/auth/passkeys')
+      ]);
+      if (passkeyResult) updatePasskeys(passkeyResult);
+      else setDetails(result.user || currentUser);
       setTokens(result.tokens);
       setError('');
     } catch (loadError) {
@@ -1148,6 +1153,55 @@ function UserSettingsPage({ userId }) {
   }
 
   useEffect(() => { load(); }, [endpoint]);
+
+  function updatePasskeys(result) {
+    setDetails(result.user);
+    setPasskeys(result.passkeys);
+    setUser((current) => current?.id === result.user.id ? result.user : current);
+  }
+
+  async function addPasskey() {
+    if (busy) return;
+    setBusy('passkey');
+    setPasskeyMessage(null);
+    try {
+      const ceremony = await request('/api/auth/passkeys/options', { method: 'POST' });
+      const response = await startRegistration({ optionsJSON: ceremony.options });
+      const result = await request('/api/auth/passkeys/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId: ceremony.requestId, response })
+      });
+      updatePasskeys(result);
+      setPasskeyMessage({ type: 'success', text: 'Passkey added.' });
+    } catch (addError) {
+      const canceled = addError.name === 'NotAllowedError' || addError.cause?.name === 'NotAllowedError';
+      setPasskeyMessage({ type: 'error', text: canceled ? 'Passkey setup was canceled or timed out.' : addError.message });
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function removePasskey(passkey) {
+    if (busy || !await confirm({
+      title: 'Delete passkey?',
+      message: `Delete passkey "${passkey.id.slice(0, 12)}"? It will no longer sign in to this account. Existing sessions will remain signed in.`,
+      action: 'delete', label: 'Delete passkey'
+    })) return;
+    setBusy(`passkey-delete:${passkey.id}`);
+    setPasskeyMessage(null);
+    try {
+      const result = await request(`/api/auth/passkeys/${encodeURIComponent(passkey.id)}`, { method: 'DELETE' });
+      updatePasskeys(result);
+      setPasskeyMessage({ type: 'success', text: 'Passkey deleted.' });
+    } catch (deleteError) {
+      setPasskeyMessage({ type: 'error', text: deleteError.message });
+      if ([404, 409].includes(deleteError.status)) {
+        await request('/api/auth/passkeys').then(updatePasskeys).catch(() => {});
+      }
+    } finally {
+      setBusy('');
+    }
+  }
 
   async function generate(event) {
     event.preventDefault();
@@ -1192,6 +1246,32 @@ function UserSettingsPage({ userId }) {
         <UserIdentity user={details} />
         <dl><div><dt>Role</dt><dd>{details.role}</dd></div><div><dt>Joined</dt><dd>{formatDate(details.createdAt)}</dd></div><div><dt>User ID</dt><dd>{details.id}</dd></div></dl>
       </section>
+      {!userId && <section className="passkey-section" aria-labelledby="passkey-heading" aria-busy={busy === 'passkey' || busy.startsWith('passkey-delete:')}>
+        <div className="section-title"><div><Fingerprint size={19} /><h2 id="passkey-heading">Passkeys</h2></div>
+          <button className="secondary-button" type="button" onClick={addPasskey} disabled={Boolean(busy)}>
+            {busy === 'passkey' ? <RefreshCw size={17} className="spin" /> : <Plus size={17} />}
+            {busy === 'passkey' ? 'Adding passkey...' : 'Add passkey'}
+          </button>
+        </div>
+        {passkeyMessage && <div className={`notice ${passkeyMessage.type}`} role={passkeyMessage.type === 'error' ? 'alert' : 'status'}>{passkeyMessage.text}</div>}
+        <ul className="pat-list passkey-list" aria-label="Registered passkeys">
+          {passkeys.map((passkey) => <li key={passkey.id}><Fingerprint size={18} /><div>
+            <strong>Passkey {passkey.id.slice(0, 12)}</strong>
+            <code title="Credential ID">{passkey.id}</code>
+            <small>{passkey.transports.length ? passkey.transports.join(', ') : 'Transport not reported'}</small>
+            <small>Created: {passkey.createdAt ? <time dateTime={passkey.createdAt}>{new Date(passkey.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time> : 'Unknown'}</small>
+            <small>Last used: {passkey.lastUsedAt ? <time dateTime={passkey.lastUsedAt}>{new Date(passkey.lastUsedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time> : passkey.createdAt ? 'Never' : 'Unknown'}</small>
+            {passkeys.length === 1 && <small>Last passkey</small>}
+          </div>
+            <button className="danger-button pat-delete" type="button"
+              title={passkeys.length <= 1 ? 'At least one passkey is required' : `Delete passkey ${passkey.id.slice(0, 12)}`}
+              aria-label={`Delete passkey ${passkey.id.slice(0, 12)}`} disabled={Boolean(busy) || passkeys.length <= 1}
+              onClick={() => removePasskey(passkey)}>
+              {busy === `passkey-delete:${passkey.id}` ? <RefreshCw size={17} className="spin" /> : <Trash2 size={17} />}
+            </button>
+          </li>)}
+        </ul>
+      </section>}
       {!userId && <section className="theme-section" aria-labelledby="appearance-heading">
         <div className="section-title"><div><Palette size={19} /><h2 id="appearance-heading">Appearance</h2></div></div>
         <ThemeChoices />
@@ -1383,7 +1463,7 @@ function App() {
   if (user === undefined) return <div className="auth-loading"><Fingerprint className="spin" size={28} />Checking passkey session</div>;
   if (!user) return <LoginPage onLogin={setUser} />;
   if (preferences?.userId !== user.id) return <div className="auth-loading"><RefreshCw className="spin" size={24} />Loading account</div>;
-  return <AuthContext.Provider value={{ user, logout, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} request={request}><Router user={user} /></PlaybackProvider></AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, setUser, logout, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} request={request}><Router user={user} /></PlaybackProvider></AuthContext.Provider>;
 }
 
 initializeTouchControls();
