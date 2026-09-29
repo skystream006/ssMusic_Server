@@ -251,6 +251,7 @@ function TranscriptionHelp({ id, label, children }) {
 
 export function TranscriptionDialog({ file, onClose, onSubmit }) {
   const dialogRef = useRef(null);
+  const languageRef = useRef(null);
   const titleId = useId();
   const [addLyrics, setAddLyrics] = useState(false);
   const [language, setLanguage] = useState('');
@@ -270,6 +271,7 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
     const dialog = dialogRef.current;
     const previousFocus = document.activeElement;
     dialog.showModal();
+    languageRef.current.focus();
     return () => {
       dialog.close();
       if (previousFocus?.isConnected) previousFocus.focus();
@@ -299,7 +301,7 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
           <div className="transcription-option"><label htmlFor={`${titleId}-language`}>Language (optional)</label>
             <TranscriptionHelp id={`${titleId}-language-help`} label="Language">Choose the song's language or use Auto-detect. Viet Lyrics Fallback selects Vietnamese and locks this setting while enabled.</TranscriptionHelp>
           </div>
-          <select id={`${titleId}-language`} aria-describedby={`${titleId}-language-help`} value={language} disabled={vietLyricsFallback} onChange={(event) => setLanguage(event.target.value)}>
+          <select ref={languageRef} autoFocus id={`${titleId}-language`} aria-describedby={`${titleId}-language-help`} value={language} disabled={vietLyricsFallback} onChange={(event) => setLanguage(event.target.value)}>
             <option value="">Auto-detect</option>
             {transcriptionLanguages.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
           </select>

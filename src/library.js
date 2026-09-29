@@ -24,6 +24,10 @@ export function isNoVocals(track) {
   return track.name.toLowerCase().startsWith('[novocals]/');
 }
 
+export function songStem(name) {
+  return name.split('/').at(-1).replace(/\.[^.]+$/, '').replace(/(?:\[no[ _-]?vocals\]|[ _-]+no[ _-]?vocals)/gi, '').trim().toLowerCase();
+}
+
 export function countDownloadedFiles(files) {
   return (files || []).filter((file) => !isNoVocals(typeof file === 'string' ? { name: file } : file)).length;
 }
@@ -32,8 +36,7 @@ export function findNoVocals(track, tracks) {
   if (!track || isNoVocals(track)) return null;
   const candidates = tracks.filter((candidate) => candidate.jobId === track.jobId && isNoVocals(candidate));
   if (track.noVocalsName) return candidates.find((candidate) => candidate.name === track.noVocalsName) || null;
-  const stem = (name) => name.split('/').at(-1).replace(/\.[^.]+$/, '').replace(/(?:\[no[ _-]?vocals\]|[ _-]+no[ _-]?vocals)/gi, '').trim().toLowerCase();
-  const matches = candidates.filter((candidate) => stem(candidate.name) === stem(track.name));
+  const matches = candidates.filter((candidate) => songStem(candidate.name) === songStem(track.name));
   return matches.length === 1 ? matches[0] : null;
 }
 

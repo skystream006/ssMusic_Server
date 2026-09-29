@@ -1,12 +1,36 @@
 services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ssmusic}
+      POSTGRES_USER: ${POSTGRES_USER:-ssmusic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env or run update_docker.ps1}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 3s
+      timeout: 5s
+      retries: 20
   app:
     build: .
+    image: ssytdlp-server:local
     init: true
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "${DOCKER_BIND_ADDRESS:-127.0.0.1}:${WEB_API_PORT:-3123}:${WEB_API_PORT:-3123}"
       - "${DOCKER_BIND_ADDRESS:-127.0.0.1}:${HTTPS_WEB_PORT:-4123}:${HTTPS_WEB_PORT:-4123}"
     environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-ssmusic}
+      PGUSER: ${POSTGRES_USER:-ssmusic}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env or run update_docker.ps1}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-10}
       WEB_API_PORT: ${WEB_API_PORT:-3123}
       HTTPS_WEB_PORT: ${HTTPS_WEB_PORT:-4123}
       PASSKEY_RP_ID: ${PASSKEY_RP_ID:-192-168-6-66.sslip.io}
@@ -35,3 +59,4 @@ services:
 volumes:
   data:
   output:
+  postgres_data:

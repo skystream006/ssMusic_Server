@@ -1,4 +1,5 @@
-import { openDatabase } from './database.js';
+import { openDatabase, withTransaction } from './database.js';
+import { rebuildPostgresLibrary } from './postgresCatalog.js';
 import path from 'node:path';
 import { getPlaylistTracks, individualSongsId, orderFiles, reconcileLibrary, songKey, themes } from './library.js';
 import { isPlayableFile } from './media.js';
@@ -17,25 +18,25 @@ function invalid(message, statusCode = 400) {
   throw Object.assign(new Error(message), { statusCode });
 }
 
-export function getPreferences(userId) {
-  const row = openDatabase().prepare('SELECT theme, theme_mode FROM user_preferences WHERE user_id = ?').get(userId);
+export async function getPreferences(userId) {
+  const row = (await openDatabase().prepare('SELECT theme, theme_mode FROM user_preferences WHERE user_id = $1').get(userId));
   const theme = row?.theme || 'light';
   return { theme, mode: row?.theme_mode || (['black', 'midnight'].includes(theme) ? 'dark' : 'light') };
 }
 
-export function setTheme(userId, theme, mode) {
-  const current = getPreferences(userId);
+export async function setTheme(userId, theme, mode) {
+  const current = (await getPreferences(userId));
   if (theme === undefined) theme = current.theme;
   if (mode === undefined) mode = current.mode;
   if (!themes.some((option) => option.id === theme)) invalid('Unknown theme');
   if (!['light', 'dark'].includes(mode)) invalid('Unknown theme mode');
-  openDatabase().prepare(`INSERT INTO user_preferences (user_id, theme, theme_mode) VALUES (?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET theme = excluded.theme, theme_mode = excluded.theme_mode`).run(userId, theme, mode);
+  (await openDatabase().prepare(`INSERT INTO user_preferences (user_id, theme, theme_mode) VALUES ($1, $2, $3)
+    ON CONFLICT(user_id) DO UPDATE SET theme = excluded.theme, theme_mode = excluded.theme_mode`).run(userId, theme, mode));
   return { theme, mode };
 }
 
-export function getLibrary(userId, jobs) {
-  const row = openDatabase().prepare('SELECT library, library_version FROM user_preferences WHERE user_id = ?').get(userId);
+export async function getLibrary(userId, jobs) {
+  const row = (await openDatabase().prepare('SELECT library, library_version FROM user_preferences WHERE user_id = $1').get(userId));
   const library = row ? JSON.parse(row.library) : { entries: [], songOrder: {} };
   return { version: row?.library_version || 0, ...reconcileLibrary(library, jobs) };
 }
@@ -124,39 +125,40 @@ function validateLibrary(value, jobs, current) {
   return library;
 }
 
-function writeLibrary(userId, library, version) {
-  openDatabase().prepare(`INSERT INTO user_preferences (user_id, library, library_version) VALUES (?, ?, ?)
+async function writeLibrary(userId, library, version) {
+  (await openDatabase().prepare(`INSERT INTO user_preferences (user_id, library, library_version) VALUES ($1, $2, $3)
     ON CONFLICT(user_id) DO UPDATE SET library = excluded.library, library_version = excluded.library_version`)
-    .run(userId, JSON.stringify(library), version);
+    .run(userId, JSON.stringify(library), version));
+  await rebuildPostgresLibrary(openDatabase(), userId);
 }
 
-export function linkLibraryJob(userId, job, jobs) {
+export async function linkLibraryJob(userId, job, jobs) {
   const database = openDatabase();
-  return database.transaction(() => {
-    const { version, ...current } = getLibrary(userId, jobs);
+  return (await withTransaction(database, async () => {
+    const { version, ...current } = (await getLibrary(userId, jobs));
     if (job.isPlaylist === false && !current.singleJobIds.includes(job.id)) {
       current.singleJobIds.push(job.id);
-      writeLibrary(userId, reconcileLibrary(current, jobs), version + 1);
+      (await writeLibrary(userId, reconcileLibrary(current, jobs), version + 1));
     }
-    return getLibrary(userId, jobs);
-  }).immediate();
+    return (await getLibrary(userId, jobs));
+  }));
 }
 
-export function setLibrary(userId, value, jobs) {
+export async function setLibrary(userId, value, jobs) {
   const database = openDatabase();
-  return database.transaction(() => {
-    const current = getLibrary(userId, jobs);
+  return (await withTransaction(database, async () => {
+    const current = (await getLibrary(userId, jobs));
     const library = validateLibrary(value, jobs, current);
     if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
-    writeLibrary(userId, library, current.version + 1);
-    return getLibrary(userId, jobs);
-  }).immediate();
+    (await writeLibrary(userId, library, current.version + 1));
+    return (await getLibrary(userId, jobs));
+  }));
 }
 
-export function mutateLibraryEntry(userId, value, jobs) {
+export async function mutateLibraryEntry(userId, value, jobs) {
   const database = openDatabase();
-  return database.transaction(() => {
-    const current = getLibrary(userId, jobs);
+  return (await withTransaction(database, async () => {
+    const current = (await getLibrary(userId, jobs));
     if (!value || !Number.isSafeInteger(value.version) || value.version < 0) invalid('Invalid library version');
     if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
     if (value.action !== 'create-folders' && typeof value.id !== 'string') invalid('Invalid library entry');
@@ -202,8 +204,8 @@ export function mutateLibraryEntry(userId, value, jobs) {
         }
       } else invalid('Invalid library entry action');
     }
-    return setLibrary(userId, { ...current, entries }, jobs);
-  }).immediate();
+    return (await setLibrary(userId, { ...current, entries }, jobs));
+  }));
 }
 
 function selectedItems(items, keys, keyFor) {
@@ -215,9 +217,9 @@ function selectedItems(items, keys, keyFor) {
   return result;
 }
 
-export function moveLibraryPlaylists(userId, value, jobs) {
-  return openDatabase().transaction(() => {
-    const current = getLibrary(userId, jobs);
+export async function moveLibraryPlaylists(userId, value, jobs) {
+  return (await withTransaction(openDatabase(), async () => {
+    const current = (await getLibrary(userId, jobs));
     if (!Number.isSafeInteger(value?.version) || value.version < 0) invalid('Invalid library version');
     if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
     if (!(value.parentId === null || current.entries.some((entry) => entry.id === value.parentId && entry.type === 'folder'))) {
@@ -228,13 +230,13 @@ export function moveLibraryPlaylists(userId, value, jobs) {
     const ids = new Set(selected.map((entry) => entry.id));
     const entries = [...current.entries.filter((entry) => !ids.has(entry.id)),
       ...selected.map((entry) => ({ ...entry, parentId: value.parentId }))];
-    return setLibrary(userId, { ...current, entries }, jobs);
-  }).immediate();
+    return (await setLibrary(userId, { ...current, entries }, jobs));
+  }));
 }
 
-export function transferLibrarySongs(userId, value, jobs) {
-  return openDatabase().transaction(() => {
-    const current = getLibrary(userId, jobs);
+export async function transferLibrarySongs(userId, value, jobs) {
+  return (await withTransaction(openDatabase(), async () => {
+    const current = (await getLibrary(userId, jobs));
     if (!Number.isSafeInteger(value?.version) || value.version < 0) invalid('Invalid library version');
     if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
     if (!['move', 'link'].includes(value.action)) invalid('Choose move or link');
@@ -256,17 +258,17 @@ export function transferLibrarySongs(userId, value, jobs) {
     const songAdds = [...current.songAdds.filter((track) => !moving || !selectedKeys.has(songKey(track))
       || (track.playlistId !== value.sourcePlaylistId && !(primary.has(songKey(track)) && track.playlistId === value.playlistId))),
       ...placements.filter((track) => !existing.has(songKey(track)) && (!moving || !primary.has(songKey(track))))];
-    return setLibrary(userId, { ...current, songMoves, songAdds, playlistSongOrder: { ...current.playlistSongOrder,
+    return (await setLibrary(userId, { ...current, songMoves, songAdds, playlistSongOrder: { ...current.playlistSongOrder,
       ...(moving ? { [value.sourcePlaylistId]: (current.playlistSongOrder[value.sourcePlaylistId] || []).filter((key) => !selectedKeys.has(key)) } : {}),
       [value.playlistId]: [...destination, ...selected.map(songKey).filter((key) => !existing.has(key))]
-    } }, jobs);
-  }).immediate();
+    } }, jobs));
+  }));
 }
 
-export function reorderLibrarySong(userId, value, jobs) {
+export async function reorderLibrarySong(userId, value, jobs) {
   const database = openDatabase();
-  return database.transaction(() => {
-    const current = getLibrary(userId, jobs);
+  return (await withTransaction(database, async () => {
+    const current = (await getLibrary(userId, jobs));
     if (!value || !Number.isSafeInteger(value.version) || value.version < 0) invalid('Invalid library version');
     if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
     if (typeof value.jobId !== 'string' || typeof value.name !== 'string'
@@ -290,16 +292,16 @@ export function reorderLibrarySong(userId, value, jobs) {
       const reordered = new Set(names);
       songOrder[jobId] = [...names, ...(songOrder[jobId] || []).filter((name) => !reordered.has(name))];
     }
-    return setLibrary(userId, { ...current, songOrder,
+    return (await setLibrary(userId, { ...current, songOrder,
       playlistSongOrder: { ...current.playlistSongOrder, [value.playlistId]: tracks.map(songKey) }
-    }, jobs);
-  }).immediate();
+    }, jobs));
+  }));
 }
 
-export function moveLibrarySong(userId, value, jobs) {
+export async function moveLibrarySong(userId, value, jobs) {
   const database = openDatabase();
-  return database.transaction(() => {
-    const current = getLibrary(userId, jobs);
+  return (await withTransaction(database, async () => {
+    const current = (await getLibrary(userId, jobs));
     if (!value || !Number.isSafeInteger(value.version)) invalid('Invalid library version');
     if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
     if (!current.entries.some((entry) => entry.id === value.playlistId && entry.type === 'playlist')) {
@@ -325,14 +327,14 @@ export function moveLibrarySong(userId, value, jobs) {
       [sourceId]: (current.playlistSongOrder[sourceId] || []).filter((item) => item !== key),
       [value.playlistId]: destination.includes(key) ? destination : [...destination, key]
     };
-    return setLibrary(userId, { ...current, songMoves, songAdds, playlistSongOrder }, jobs);
-  }).immediate();
+    return (await setLibrary(userId, { ...current, songMoves, songAdds, playlistSongOrder }, jobs));
+  }));
 }
 
-export function addLibraryJobFiles(userId, value, jobs) {
+export async function addLibraryJobFiles(userId, value, jobs) {
   const database = openDatabase();
-  return database.transaction(() => {
-    const current = getLibrary(userId, jobs);
+  return (await withTransaction(database, async () => {
+    const current = (await getLibrary(userId, jobs));
     if (!value || !Number.isSafeInteger(value.version)) invalid('Invalid library version');
     if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
     const playlists = getPlaylistTracks(current, jobs);
@@ -346,22 +348,22 @@ export function addLibraryJobFiles(userId, value, jobs) {
     const additions = files.map((name) => ({ jobId: job.id, name, playlistId: value.playlistId }))
       .filter((track) => !existing.has(songKey(track)));
     if (!additions.length) return { ...current, addedCount: 0 };
-    const library = setLibrary(userId, { ...current,
+    const library = (await setLibrary(userId, { ...current,
       songAdds: [...current.songAdds, ...additions],
       playlistSongOrder: { ...current.playlistSongOrder, [value.playlistId]: [...destination, ...additions.map(songKey)] }
-    }, jobs);
+    }, jobs));
     return { ...library, addedCount: additions.length };
-  }).immediate();
+  }));
 }
 
-export function countLibraryFileLinks(job, name, jobs) {
+export async function countLibraryFileLinks(job, name, jobs) {
   let count = 0;
   const aliases = new Set(jobs.filter((item) => item.id === job.id || (item.outputDir && job.outputDir
     && path.resolve(item.outputDir, name) === path.resolve(job.outputDir, name))).map((item) => item.id));
-  for (const { id } of openDatabase().prepare('SELECT id FROM users').all()) {
+  for (const { id } of (await openDatabase().prepare('SELECT id FROM users').all())) {
     const available = jobs.filter((item) => item.initiatedBy?.id === id || item.contributors?.some((user) => user.id === id));
     if (!available.some((item) => aliases.has(item.id))) continue;
-    const library = getLibrary(id, available);
+    const library = (await getLibrary(id, available));
     for (const tracks of getPlaylistTracks(library, available).values()) {
       count += tracks.filter((track) => aliases.has(track.jobId) && track.name === name).length;
     }
@@ -369,9 +371,9 @@ export function countLibraryFileLinks(job, name, jobs) {
   return count;
 }
 
-export function removeLibrarySongLink(userId, value, jobs, allJobs) {
-  return openDatabase().transaction(() => {
-    const current = getLibrary(userId, jobs);
+export async function removeLibrarySongLink(userId, value, jobs, allJobs) {
+  return (await withTransaction(openDatabase(), async () => {
+    const current = (await getLibrary(userId, jobs));
     if (!Number.isSafeInteger(value?.version) || value.version < 0) invalid('Invalid library version');
     if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
     const key = songKey(value);
@@ -379,7 +381,7 @@ export function removeLibrarySongLink(userId, value, jobs, allJobs) {
     const tracks = getPlaylistTracks(current, jobs).get(value.playlistId);
     if (!tracks?.some((track) => songKey(track) === key)) invalid('Song is no longer in the playlist');
     const job = jobs.find((item) => item.id === value.jobId);
-    if (countLibraryFileLinks(job, value.name, allJobs) <= 1) return false;
+    if ((await countLibraryFileLinks(job, value.name, allJobs)) <= 1) return false;
     const primaryId = current.songMoves.find((track) => songKey(track) === key)?.playlistId
       || (current.singleJobIds.includes(job.id) ? individualSongsId : job.id);
     const songRemovals = [...current.songRemovals];
@@ -391,7 +393,7 @@ export function removeLibrarySongLink(userId, value, jobs, allJobs) {
       playlistSongOrder: { ...current.playlistSongOrder,
         [value.playlistId]: (current.playlistSongOrder[value.playlistId] || []).filter((item) => item !== key) }
     }, jobs);
-    writeLibrary(userId, library, current.version + 1);
+    (await writeLibrary(userId, library, current.version + 1));
     return true;
-  }).immediate();
+  }));
 }

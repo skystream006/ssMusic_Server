@@ -7,6 +7,8 @@ import test from 'node:test';
 import express from 'express';
 import { isoCBOR } from '@simplewebauthn/server/helpers';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
+import { readPostgresJob } from '../src/postgresCatalog.js';
+import { createTestDatabase } from '../test-support/postgres.js';
 
 async function testSecondaryPasskeyOptions(context) {
   const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
@@ -67,10 +69,10 @@ async function testSecondaryPasskeyOptions(context) {
 }
 
 test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-pat-http-'));
-  process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
-  process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
-  process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
+  let server;
+  const { directory } = await createTestDatabase(context, { beforeCleanup: async () => {
+    if (server) await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  } });
   const store = await import('../src/authStore.js');
   const { attachUser, registerAuthRoutes, requireAuth } = await import('../src/auth.js');
   const credential = (id) => ({ id, publicKey: Buffer.from(id), counter: 0 });
@@ -85,13 +87,8 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
   app.use(express.json(), attachUser);
   registerAuthRoutes(app);
   app.post('/protected', requireAuth, (req, res) => res.json({ userId: req.user.id }));
-  const server = app.listen(0, '127.0.0.1');
+  server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
-  context.after(async () => {
-    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    closeDatabases();
-    await fs.rm(directory, { recursive: true, force: true });
-  });
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = (url, method = 'GET', headers = {}, body) => fetch(`${base}${url}`, {
     method, headers: { ...headers, 'Content-Type': 'application/json' },
@@ -146,48 +143,48 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     const adminToken = await store.createPrivateAccessToken(admin.id, 'Admin automation');
     const route = `/api/admin/users/${target.id}`;
     const database = openDatabase();
-    database.prepare('INSERT INTO user_preferences (user_id) VALUES (?)').run(target.id);
-    database.prepare('INSERT INTO library_backups (user_id) VALUES (?)').run(target.id);
-    const backup = database.prepare('SELECT * FROM library_backups WHERE user_id = ?').get(target.id);
+    (await database.prepare('INSERT INTO user_preferences (user_id) VALUES ($1)').run(target.id));
+    (await database.prepare('INSERT INTO library_backups (user_id) VALUES ($1)').run(target.id));
+    const backup = (await database.prepare('SELECT * FROM library_backups WHERE user_id = $1').get(target.id));
     const job = { id: 'retained-job', url: 'https://example.com/music', status: 'completed', initiatedBy: target };
-    writeJob(database, job);
+    (await writeJob(database, job));
 
     assert.equal((await call(route, 'DELETE')).status, 401);
     assert.equal((await call(route, 'DELETE', userHeaders)).status, 403);
     assert.equal((await call(route, 'DELETE', { 'X-PAT': adminToken.token })).status, 401);
     assert.equal((await call(route, 'DELETE', { ...userHeaders, 'X-PAT': adminToken.token })).status, 403);
-    assert.ok(store.getUser(target.id));
+    assert.ok((await store.getUser(target.id)));
     const selfDelete = await call(`/api/admin/users/${admin.id}`, 'DELETE', adminHeaders);
     assert.equal(selfDelete.status, 409);
     assert.match((await selfDelete.json()).error, /own account/);
     await assert.rejects(store.deleteUser(admin.id, user.id), /At least one approved admin/);
-    assert.ok(store.getSessionUser(adminSession.token));
+    assert.ok((await store.getSessionUser(adminSession.token)));
     assert.equal((await call('/api/admin/users/missing', 'DELETE', adminHeaders)).status, 404);
 
     const deleted = await call(route, 'DELETE', adminHeaders);
     assert.equal(deleted.status, 204);
     assert.equal(deleted.headers.get('cache-control'), 'no-store');
     assert.equal(await deleted.text(), '');
-    assert.equal(store.getUser(target.id), null);
-    assert.equal(store.findCredential('delete-listener'), null);
+    assert.equal((await store.getUser(target.id)), null);
+    assert.equal((await store.findCredential('delete-listener')), null);
     for (const table of ['credentials', 'sessions', 'private_access_tokens', 'user_preferences']) {
-      assert.equal(database.prepare(`SELECT count(*) AS count FROM ${table} WHERE user_id = ?`).get(target.id).count, 0);
+      assert.equal((await database.prepare(`SELECT count(*) AS count FROM ${table} WHERE user_id = $1`).get(target.id)).count, 0);
     }
-    assert.deepEqual(database.prepare('SELECT * FROM library_backups WHERE user_id = ?').get(target.id), backup);
+    assert.deepEqual((await database.prepare('SELECT * FROM library_backups WHERE user_id = $1').get(target.id)), backup);
     for (const headers of [{ Cookie: `ssytdlp_session=${session.token}` }, { Authorization: `Bearer ${mobile.token}` }, { 'X-PAT': token.token }]) {
       assert.equal((await call('/protected', 'POST', headers)).status, 401);
     }
     assert.equal((await call(route, 'GET', adminHeaders)).status, 404);
     assert.equal((await call(route, 'DELETE', adminHeaders)).status, 404);
     assert.equal((await (await call('/api/admin/users', 'GET', adminHeaders)).json()).users.some((account) => account.id === target.id), false);
-    assert.deepEqual(JSON.parse(database.prepare('SELECT data FROM jobs WHERE id = ?').get(job.id).data), job);
+    assert.deepEqual(await readPostgresJob(database, job.id), { ...job, files: [] });
     assert.equal((await call('/protected', 'POST', userHeaders)).status, 200);
 
     for (const status of ['pending', 'revoked', 'approved']) {
       const account = await store.registerUser(`Delete ${status}`, status, credential(`delete-${status}`));
       await store.updateUser(account.id, { status, role: status === 'approved' ? 'admin' : 'user' }, admin.id);
       assert.equal((await call(`/api/admin/users/${account.id}`, 'DELETE', { Authorization: `Bearer ${adminSession.token}` })).status, 204);
-      assert.equal(store.getUser(account.id), null);
+      assert.equal((await store.getUser(account.id)), null);
     }
     const replacement = await store.registerUser('Delete Listener', 'replacement', credential('replacement'));
     assert.notEqual(replacement.id, target.id);
@@ -274,7 +271,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     const verify = (attempt, response, requestHeaders = headers) => call('/api/auth/passkeys/verify', 'POST', requestHeaders, {
       requestId: attempt.requestId, response, userId: admin.id
     });
-    const originalUserCount = store.listUsers().length;
+    const originalUserCount = (await store.listUsers()).length;
     for (const key of [second, third]) {
       const attempt = await start();
       assert.equal(attempt.options.user.id, userHandle);
@@ -304,9 +301,9 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.ok(Number.isFinite(Date.parse(enrolled.createdAt)));
       assert.equal((await verify(attempt, response)).status, 400);
     }
-    assert.equal(store.listUsers().length, originalUserCount);
+    assert.equal((await store.listUsers()).length, originalUserCount);
     for (const key of [first, second, third]) {
-      const before = store.findCredential(key.credential.id).credential;
+      const before = (await store.findCredential(key.credential.id)).credential;
       assert.equal(before.lastUsedAt, null);
       const login = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
       const loginStartedAt = Date.now();
@@ -316,25 +313,25 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.equal(loggedIn.status, 200);
       assert.match(loggedIn.headers.get('set-cookie'), /ssytdlp_session=.*HttpOnly/);
       assert.equal((await loggedIn.json()).user.id, account.id);
-      const after = store.findCredential(key.credential.id).credential;
+      const after = (await store.findCredential(key.credential.id)).credential;
       assert.equal(after.createdAt, before.createdAt);
       assert.ok(Date.parse(after.lastUsedAt) >= loginStartedAt);
       assert.ok(Date.parse(after.lastUsedAt) <= Date.now());
     }
 
-    const beforeFailedLogin = store.getUserPasskeys(account.id).credentials;
+    const beforeFailedLogin = (await store.getUserPasskeys(account.id)).credentials;
     for (const invalid of ['origin', 'signature']) {
       const login = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
       const response = first.login(login.options, invalid === 'origin' ? 'https://untrusted.example' : origin);
       if (invalid === 'signature') response.response.signature = second.login(login.options).response.signature;
       const denied = await call('/api/auth/login/verify', 'POST', { Origin: origin }, { requestId: login.requestId, response });
       assert.ok([400, 401].includes(denied.status));
-      assert.deepEqual(store.getUserPasskeys(account.id).credentials, beforeFailedLogin);
+      assert.deepEqual((await store.getUserPasskeys(account.id)).credentials, beforeFailedLogin);
     }
 
     const otherAccount = await start();
     assert.equal((await verify(otherAccount, authenticator().register(otherAccount.options), adminHeaders)).status, 403);
-    assert.equal(store.getUser(admin.id).credentialCount, 1);
+    assert.equal((await store.getUser(admin.id)).credentialCount, 1);
     for (const [badOrigin, badRPID, flags] of [['https://untrusted.example', rpID, 69], [origin, 'wrong.example.com', 69], [origin, rpID, 65]]) {
       const attempt = await start();
       assert.equal((await verify(attempt, authenticator().register(attempt.options, badOrigin, badRPID, flags))).status, 400);
@@ -350,7 +347,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     assert.equal((await call('/api/auth/register/verify', 'POST', headers, {
       requestId: wrongCeremony.requestId, response: authenticator().register(wrongCeremony.options)
     })).status, 400);
-    assert.equal(store.getUser(account.id).credentialCount, 3);
+    assert.equal((await store.getUser(account.id)).credentialCount, 3);
 
     const secondaryHeaders = { ...headers, Origin: process.env.PASSKEY_ORIGIN_SECONDARY };
     const secondaryKey = authenticator();
@@ -445,8 +442,8 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       });
       assert.equal(stillWorks.status, 200);
       assert.equal((await stillWorks.json()).user.id, account.id);
-      assert.equal(store.getSessionUser(session.token).credentialCount, 1);
-      assert.equal(store.getUser(admin.id).credentialCount, 1);
+      assert.equal((await store.getSessionUser(session.token)).credentialCount, 1);
+      assert.equal((await store.getUser(admin.id)).credentialCount, 1);
     });
 
     const expired = await start();
@@ -462,15 +459,15 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     assert.equal((await verify(revoked, authenticator().register(revoked.options))).status, 401);
     assert.equal((await call('/api/auth/passkeys', 'GET', headers)).status, 401);
     assert.equal((await call(`/api/auth/passkeys/${first.credential.id}`, 'DELETE', headers)).status, 401);
-    assert.equal(store.getUser(account.id).credentialCount, 1);
-    const lastUsedBeforeDenied = store.findCredential(first.credential.id).credential.lastUsedAt;
+    assert.equal((await store.getUser(account.id)).credentialCount, 1);
+    const lastUsedBeforeDenied = (await store.findCredential(first.credential.id)).credential.lastUsedAt;
     for (const status of ['pending', 'revoked']) {
       await store.updateUser(account.id, { status }, admin.id);
       const deniedLogin = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
       assert.equal((await call('/api/auth/login/verify', 'POST', { Origin: origin }, {
         requestId: deniedLogin.requestId, response: first.login(deniedLogin.options)
       })).status, 403);
-      assert.equal(store.findCredential(first.credential.id).credential.lastUsedAt, lastUsedBeforeDenied);
+      assert.equal((await store.findCredential(first.credential.id)).credential.lastUsedAt, lastUsedBeforeDenied);
     }
   });
 

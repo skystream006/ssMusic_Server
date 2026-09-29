@@ -289,14 +289,13 @@ shown until the total is known, and completion is reported only after the archiv
 is saved. Completed backups retain their song total; older backups may show only
 their status. Failed runs show an error and keep the previous ZIP available to download.
 
-Schedules persist in SQLite. The running server checks due schedules once per
+Schedules persist in the configured database. The running server checks due schedules once per
 minute and runs one catch-up backup after downtime, not every missed interval.
 Only approved accounts are processed. A failed scheduled run is retried at the
 next scheduled time; use **Back up now** or **New export** for an immediate retry.
 At most two users' archives are generated concurrently, with one run per user.
 
-ZIPs are stored in `library-backups` beside the SQLite database (normally
-`data/library-backups`). Set `LIBRARY_BACKUP_ROOT` to an absolute server directory
+ZIPs are stored in `data/library-backups`. Set `LIBRARY_BACKUP_ROOT` to an absolute server directory
 to override it. The client extraction folder is never used for server storage.
 Docker's default location is `/app/data/library-backups`, preserved by the existing
 `data` volume. An override must be on a persistent, writable mount. Keep enough
@@ -367,7 +366,22 @@ No local Node.js, Deno, yt-dlp, or FFmpeg installation is needed. The image buil
 frontend and includes Node.js 24, Deno, Linux yt-dlp, FFmpeg, and ffprobe. Linux amd64
 and arm64 are supported. The app runs as a non-root user.
 
-For a new local installation, no `.env` file is required:
+Docker Compose uses PostgreSQL 17. Set a unique `POSTGRES_PASSWORD` in `.env` before
+starting a new installation. The database port is not published to the host.
+Keep this password with your backups; changing it in `.env` does not change the
+password in an already initialized PostgreSQL volume.
+
+On PowerShell 7, the update helper generates a password when missing, builds the
+image, waits for PostgreSQL, and recreates the app:
+
+```powershell
+.\update_docker.ps1
+```
+
+Use `-NoPull` to deploy the current checkout without pulling from Git. The helper
+never removes volumes and stops if a build or service health check fails.
+
+For a fresh installation with `POSTGRES_PASSWORD` already configured:
 
 ```bash
 docker compose up -d --build
@@ -375,8 +389,10 @@ docker compose ps
 docker compose logs -f app
 ```
 
-Open `https://localhost:4000`, trust the generated local certificate, and register
-the first administrator passkey. HTTP on `http://localhost:3000` redirects to HTTPS.
+Open the configured `PASSKEY_ORIGIN`, trust the generated local certificate, and
+register the first administrator passkey. The default ports are HTTP `3123` and
+HTTPS `4123`; set `PASSKEY_RP_ID=localhost` and `PASSKEY_ORIGIN=https://localhost:4123`
+for a localhost-only installation.
 Compose publishes both ports on `127.0.0.1` by default. Stop with `docker compose down`.
 
 Compose reads settings from `.env` if present. An existing `.env` overrides the local
@@ -389,7 +405,7 @@ DOCKER_BIND_ADDRESS=0.0.0.0
 WEB_API_PORT=3123
 HTTPS_WEB_PORT=4123
 PASSKEY_RP_ID=music.example.com
-PASSKEY_ORIGIN=https://music.example.com:4000
+PASSKEY_ORIGIN=https://music.example.com:4123
 ```
 
 Passkeys are tied to the relying-party hostname. For a deployment hostname other than
@@ -399,14 +415,52 @@ hostname later requires registering passkeys for the new hostname. When changing
 `HTTPS_WEB_PORT`, also update the port in `PASSKEY_ORIGIN`. Apply configuration changes
 with `docker compose up -d`.
 
-The `data` named volume preserves SQLite accounts, sessions, job history, library
-backup ZIPs, and generated TLS certificates; `output` preserves downloaded media and download archives. They
+The `postgres_data` named volume contains accounts, sessions, jobs, songs and library
+organization. The `data` volume retains library backup ZIPs and TLS certificates;
+`output` retains media and download archives. They
 survive container recreation and `docker compose down`. **Do not use
 `docker compose down -v` unless you intend to delete all stored data and downloads.**
-Back up both volumes while the app is stopped. Local `data`, `output`, `.env`, and
-runtime directories are not copied into the image; existing host data is not migrated
-automatically. Container paths are fixed at `/app/data` and `/app/output` in this
+Back up all volumes and `.env`; use `pg_dump` for a live PostgreSQL database, or stop
+PostgreSQL before taking a filesystem backup of its volume. Local `data`, `output`, `.env`, and
+runtime directories are not copied into the image. Container paths remain `/app/data` and `/app/output` in this
 Compose configuration.
+
+### PostgreSQL storage and limits
+
+Songs, per-song metadata/transcription records, ownership and playlist memberships
+have indexed tables. Library reads use SQL pagination (50 songs by default, maximum
+100), stored counts, and a trigram search index. Metadata and ordinary transcription
+updates write only the affected song row. Only the displayed page carries song
+transcription details. PostgreSQL uses asynchronous pooled connections;
+`DATABASE_POOL_SIZE` defaults to 10.
+
+Large organization edits and inventory changes still rebuild the affected user's
+materialized library catalog, and the legacy Jobs dashboard/export paths can load
+complete jobs. Legacy playlist requests without paging parameters still return
+the complete selection for client compatibility. Deep numbered pages use SQL offsets. These operations need load
+testing before promising a particular million-song latency. Run one app instance:
+download, import, file and backup locks are still process-local. Mutation transactions
+use a PostgreSQL advisory lock to preserve the existing atomic update semantics.
+### Tests
+
+Run `npm test` with Docker available. The test runner starts a disposable PostgreSQL
+17 container, runs the suite, and removes the container afterward. Each database-backed
+fixture gets its own temporary database; no deployed database or volume is used.
+To select tests, use `npm test -- test/database.test.js test/postgres.test.js`.
+
+Alternatively, provide a dedicated PostgreSQL test service with a database named
+`ssytdlp_test` and a user allowed to create and drop databases:
+
+```powershell
+$env:TEST_POSTGRES_URL = 'postgres://user:password@127.0.0.1:5432/ssytdlp_test'
+npm test
+```
+
+Set `TEST_POSTGRES_SCALE=1` to also populate and remove a synthetic million-song
+catalog and report first-page, search, and deep-page timings. This checks database
+queries, not a million physical audio files or simultaneous playback clients.
+Do not point test configuration at production. Direct `node --test` runs require
+`TEST_POSTGRES_URL`; `npm test` provisions it automatically when omitted.
 
 For your own TLS certificate, add a read-only bind mount such as
 `./certs:/app/certs:ro` to the app's `volumes` in `compose.yaml`, then set
@@ -534,7 +588,7 @@ To use the existing account and passkey locally, keep the public HTTPS hostname 
 resolve it to the server's LAN address using local DNS, with a trusted certificate.
 
 Users, public passkey credentials, access decisions, and hashed login sessions are stored
-in SQLite alongside job history (see **Database storage** below). Private passkey keys
+in PostgreSQL alongside job history (see **Database storage** below). Private passkey keys
 remain in the user's authenticator, such as Bitwarden, and are never sent to the server.
 
 Passkey registration and login endpoints have stricter per-client rate limits than the
@@ -714,14 +768,14 @@ cannot be modified, including their contributors, even by administrators.
 
 The dashboard defaults to **My jobs (owned and contributing)** for every user,
 including administrators. **All users** and individual initiator filters remain
-available. Existing jobs start with no contributors; assignments are persisted in SQLite.
+available. Existing jobs start with no contributors; assignments are persisted in PostgreSQL.
 
 New playlist jobs use a title-and-job-ID folder name to avoid sharing files between
 jobs with the same playlist title. Existing folders are preserved. If an older folder
 is shared by multiple jobs, non-admin users need permission for the requested action
 on every job sharing the folder.
 
-Jobs are persisted in SQLite and restored after server restarts. Jobs show
+Jobs are persisted in PostgreSQL and restored after server restarts. Jobs show
 queued/running/completed/partially completed/failed status; any active job interrupted by a restart
 is restored as failed so it can be rerun safely.
 Private or unavailable videos skipped by yt-dlp produce a partially completed job rather than a failed job.
@@ -892,7 +946,7 @@ original playlist or Individual Songs. Reordering also updates the corresponding
 source-job song order shown in job details.
 
 Themes, folders, playlist order, and song order belong to the signed-in account
-and persist in SQLite across browsers and server restarts. Organizing your library
+and persist in PostgreSQL across browsers and server restarts. Organizing your library
 does not change anyone else's layout or grant additional job-management access.
 Choose the palette icon in the account bar or **User settings > Appearance** for
 Porcelain, Midnight blue, Royal purple, Gold, Green, Pink, or Black. Every color
@@ -1113,37 +1167,24 @@ is reserved for passkey sessions, including the Android login flow above.
 
 ## Database storage
 
-The app uses SQLite at `data/ssytdlp.sqlite`. Set `DATABASE_PATH` to choose another
-location on a local disk. No separate database service is required. Users, credentials,
-sessions, and per-user library preferences have separate tables; jobs are stored as individual records with indexed
-URLs, statuses, and creation dates. Flexible job metadata is encoded as JSON within
-each row, rather than rewriting a single JSON file containing the entire history.
-Only active jobs are retained in memory. Writes are transactional, with WAL journaling
-and a five-second busy timeout.
+PostgreSQL 17 is required for Docker and native execution. Configure `DATABASE_URL`
+or `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD`; Docker Compose supplies
+these values for its bundled database service. Native execution requires a reachable
+PostgreSQL server and the `pg_trgm` extension. The application initializes its schema
+on startup, so the configured role needs schema and extension creation privileges.
 
-On the first start with a new database, existing `data/auth.json` and `data/jobs.json`
-are imported automatically in one transaction. `AUTH_STORE_PATH` and `JOB_STORE_PATH`
-now specify only the legacy JSON import locations. IDs, public credentials, session
-hashes, job metadata, file paths, and existing duplicate jobs are preserved. Interrupted
-jobs are marked failed as before. An invalid import stops startup and rolls back the
-transaction; fix the source data and restart to retry.
+Users, credentials, sessions, jobs, songs and playlist memberships have indexed
+tables. Flexible metadata uses JSONB, while library paging and search execute in
+PostgreSQL. The driver uses an asynchronous connection pool; set `DATABASE_POOL_SIZE`
+to change its default of 10 connections. Private passkey keys stay in authenticators.
 
-Stop the old server before the first database-backed start. Back up both JSON files
-first, then run `npm start`. The original JSON files are left untouched, are no longer
-updated, and are not re-imported on subsequent starts. Editing them will no longer
-change application state. Verify the migrated data before archiving those backups.
-Private passkey keys remain in the authenticator; existing sessions continue to work.
+Use `pg_dump` and `pg_restore` for database backups and recovery. Back up the media,
+TLS certificates, library ZIPs, and deployment configuration separately. Protect
+database backups as sensitive data and keep them outside the public directory.
 
-For a database backup, stop the app cleanly and copy the database together with any
-adjacent `-wal` and `-shm` files. Do not copy only the main database while the app is
-running. Protect the database and backups with the same filesystem permissions as
-the old authentication store, and keep them outside the public directory.
-
-This supports a growing history on a single app server. Dashboard responses still
-list all jobs; very large dashboards may eventually need pagination. SQLite does not
-make the download scheduler, WebAuthn challenges, or rate limits multi-instance safe.
-Do not share this database over a network filesystem or run multiple app servers
-against it; horizontal scaling requires a shared database and worker coordination.
+Run one app instance: download scheduling, file mutations, WebAuthn challenges and
+rate limits still use process-local state. Some large organization/export operations
+load full job inventories; see the PostgreSQL storage limits above.
 
 ## Scheduled maintenance
 

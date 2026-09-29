@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { isPlaylistUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
-import { openDatabase, writeJob } from './database.js';
+import { openDatabase, writeJob, withTransaction } from './database.js';
+import { deletePostgresJob, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
 import { isPlayableFile } from './media.js';
 import { updateSongMetadata } from './music.js';
@@ -38,13 +39,12 @@ const privateVideoPattern = /\b(?:private video|video is private|video unavailab
 let updateGate = null;
 
 async function loadJobs() {
-  const storedJobs = database.prepare(`SELECT data FROM jobs
-    WHERE status IN ('queued', 'running', 'failed', 'warning')
-    OR json_extract(jobs.data, '$.playlistTitle') IS NULL
-    OR EXISTS (SELECT 1 FROM json_each(jobs.data, '$.transcriptions')
-      WHERE json_extract(value, '$.status') = 'sent')`).all();
-  for (const { data } of storedJobs) {
-    const job = JSON.parse(data);
+  const storedJobs = (await database.prepare(`SELECT id, data FROM jobs
+    WHERE status IN ('queued', 'running', 'failed', 'warning') OR data->>'playlistTitle' IS NULL
+    OR EXISTS (SELECT 1 FROM songs WHERE job_id = jobs.id AND transcription->>'status' = 'sent')
+    OR EXISTS (SELECT 1 FROM jsonb_each(COALESCE(data->'transcriptions', '{}'::jsonb)) WHERE value->>'status' = 'sent')`).all());
+  for (const { id } of storedJobs) {
+    const job = await readPostgresJob(database, id);
     let updatedStoredJob = false;
     if (!job.playlistTitle) {
       job.playlistTitle = inferPlaylistTitle(job);
@@ -72,12 +72,12 @@ async function loadJobs() {
       job.updatedAt = transcription.completedAt;
       updatedStoredJob = true;
     }
-    if (updatedStoredJob) writeJob(database, job);
+    if (updatedStoredJob) (await writeJob(database, job));
   }
 }
 
 async function persistJob(job) {
-  writeJob(database, job);
+  (await writeJob(database, job));
   if (job.status === 'queued' || job.status === 'running') jobs.set(job.id, job);
   else jobs.delete(job.id);
 }
@@ -310,9 +310,12 @@ function assertJobAccess(job, user, allowContributors = false) {
   }
 }
 
-function assertCanModifyJob(job, user, allowContributors = false) {
+async function assertCanModifyJob(job, user, allowContributors = false) {
   assertJobAccess(job, user, allowContributors);
-  if (user.role !== 'admin' && job.outputDir && getJobs().some((other) => (
+  if (user.role === 'admin' || !job.outputDir) return;
+  const shared = (await database.prepare("SELECT data FROM jobs WHERE data->>'outputDir' = $1 AND id <> $2").all(job.outputDir, job.id))
+    .map((row) => JSON.parse(row.data));
+  if (shared.some((other) => (
     other.id !== job.id && other.outputDir && !hasJobAccess(other, user, allowContributors)
     && path.relative(job.outputDir, other.outputDir) === ''
   ))) {
@@ -406,6 +409,7 @@ async function executeJob(job) {
 
   await persistJob(job);
 
+  let completedStatus;
   try {
     if (job.metadataOnly && metadataError) throw metadataError;
     const result = job.metadataOnly
@@ -414,26 +418,27 @@ async function executeJob(job) {
     const classification = classifyCommandOutput(result);
     job.output = formatCommandOutput(result) || 'Command completed without output.';
     job.files = await listDownloadedFiles(job.outputDir);
-    job.status = classification.hasPrivateVideoWarning ? 'partially_completed' : 'completed';
+    completedStatus = classification.hasPrivateVideoWarning ? 'partially_completed' : 'completed';
     job.warning = classification.hasPrivateVideoWarning ? 'One or more private or unavailable videos were skipped.' : null;
   } catch (error) {
     const classification = classifyCommandOutput(error);
     const privateVideosOnly = classification.hasPrivateVideoWarning && !classification.hasNonPrivateError;
-    job.status = privateVideosOnly ? 'partially_completed' : 'failed';
+    completedStatus = privateVideosOnly ? 'partially_completed' : 'failed';
     job.error = privateVideosOnly ? null : error.message;
     job.warning = privateVideosOnly ? 'One or more private or unavailable videos were skipped.' : null;
     job.output = formatCommandOutput(error) || error.message;
     job.files = await listDownloadedFiles(job.outputDir);
   } finally {
-    runningJobsCount = Math.max(0, runningJobsCount - 1);
-    if (runningJobsCount === 0) {
-      jobEvents.emit('idle');
+    try {
+      job.playlistTitle ||= inferPlaylistTitle(job);
+      job.updatedAt = new Date().toISOString();
+      await persistJob({ ...job, status: completedStatus || job.status });
+      if (completedStatus) job.status = completedStatus;
+    } finally {
+      runningJobsCount = Math.max(0, runningJobsCount - 1);
+      if (runningJobsCount === 0) jobEvents.emit('idle');
     }
   }
-
-  job.playlistTitle ||= inferPlaylistTitle(job);
-  job.updatedAt = new Date().toISOString();
-  await persistJob(job);
 }
 
 /**
@@ -485,16 +490,16 @@ export async function createJob(url, user = null, { metadataOnly = false, downlo
   }
   await ensureOutputRoot();
   const sourceUrl = url.trim();
-  const job = database.transaction(() => createJobRecord(sourceUrl, user, metadataOnly, downloadType)).immediate();
+  const job = (await withTransaction(database, async () => (await createJobRecord(sourceUrl, user, metadataOnly, downloadType))));
   jobs.set(job.id, job);
   startJob(job);
   return job;
 }
 
-function createJobRecord(sourceUrl, user, metadataOnly, downloadType) {
-  const existingJob = database.prepare(`SELECT id, status, data FROM jobs WHERE url = ?
-    AND COALESCE(json_extract(data, '$.downloadType'), 'audio') = ?
-    ORDER BY created_at DESC LIMIT 1`).get(sourceUrl, downloadType);
+async function createJobRecord(sourceUrl, user, metadataOnly, downloadType) {
+  const existingJob = (await database.prepare(`SELECT id, status, data FROM jobs WHERE url = $1
+    AND COALESCE(data->>'downloadType', 'audio') = $2
+    ORDER BY created_at DESC LIMIT 1`).get(sourceUrl, downloadType));
   if (existingJob) {
     const error = new Error('This source URL already has a job');
     error.statusCode = 409;
@@ -510,12 +515,12 @@ function createJobRecord(sourceUrl, user, metadataOnly, downloadType) {
     throw error;
   }
   const job = newJob(sourceUrl, user ? { id: user.id, name: user.name } : null, metadataOnly, downloadType);
-  writeJob(database, job);
+  (await writeJob(database, job));
   return job;
 }
 
 export async function setJobTitle(id, title, user = null) {
-  const job = getJob(id);
+  const job = (await getJob(id));
   if (!job) return null;
   assertJobAccess(job, user);
   assertJobIsIdle(job, 'rename');
@@ -536,10 +541,10 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
   if (!Array.isArray(files) || (!files.length && !linkedPlaylist) || files.some((file) => !isPlayableFile(file.name) || !file.path)) {
     throw Object.assign(new Error('Select supported audio or movie files'), { statusCode: 400 });
   }
-  const job = playlistId ? getJob(playlistId) : newJob(`import:${source}`, { id: user.id, name: user.name });
+  const job = playlistId ? (await getJob(playlistId)) : newJob(`import:${source}`, { id: user.id, name: user.name });
   if (!job) throw Object.assign(new Error('Playlist not found'), { statusCode: 404 });
   if (playlistId) {
-    assertCanModifyJob(job, user, true);
+    (await assertCanModifyJob(job, user, true));
     assertJobIsIdle(job, 'import into');
     if (job.isPlaylist === false) throw Object.assign(new Error('Select a playlist'), { statusCode: 400 });
   } else {
@@ -587,12 +592,12 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
 }
 
 export async function rerunJob(id, user = null) {
-  const job = getJob(id);
+  const job = (await getJob(id));
   if (!job) {
     return null;
   }
 
-  assertCanModifyJob(job, user, true);
+  (await assertCanModifyJob(job, user, true));
   assertJobIsIdle(job, 'rerun');
   if (job.source) throw Object.assign(new Error('Imported jobs cannot be rerun'), { statusCode: 400 });
 
@@ -611,17 +616,17 @@ export async function rerunJob(id, user = null) {
 }
 
 export async function deleteJob(id, user = null) {
-  const job = getJob(id);
+  const job = (await getJob(id));
   if (!job) {
     return false;
   }
 
-  assertCanModifyJob(job, user);
+  (await assertCanModifyJob(job, user));
   assertJobIsIdle(job, 'delete');
   jobMutations.add(id);
   try {
     await removeJobOutput(job);
-    database.prepare('DELETE FROM jobs WHERE id = ?').run(id);
+    await deletePostgresJob(database, id);
     jobs.delete(id);
     return true;
   } finally {
@@ -638,10 +643,11 @@ export function isValidJobFileName(fileName) {
 }
 
 export async function transcribeJobFile(id, fileName, options, user = null) {
+  const storedJob = await getJob(id);
+  if (!storedJob) return null;
+  await assertCanModifyJob(storedJob, user, true);
   const existingQueue = transcriptionQueues.get(id);
-  const job = existingQueue?.job || getJob(id);
-  if (!job) return null;
-  assertCanModifyJob(job, user, true);
+  const job = existingQueue?.job || storedJob;
   assertJobIsIdle(job, 'transcribe', true);
   if (existingQueue?.files.has(fileName) || deletingFiles.get(id)?.has(fileName)) {
     throw Object.assign(new Error('Another change to this song is in progress'), { statusCode: 409 });
@@ -659,10 +665,14 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   const transcription = { requestedAt, lyricsIncluded: Boolean(lyrics), options: savedOptions };
   job.transcriptions = { ...job.transcriptions, [fileName]: { ...job.transcriptions?.[fileName], ...transcription, status: 'sent' } };
   job.updatedAt = requestedAt;
-  writeJob(database, { ...getJob(id), transcriptions: job.transcriptions, updatedAt: requestedAt });
   queue.files.add(fileName);
   transcriptionQueues.set(id, queue);
-  const operation = queue.tail.then(() => executeTranscription(job, fileName, fields, transcription));
+  const persisted = updatePostgresSong(database, job, fileName, 'transcription', job.transcriptions[fileName]);
+  persisted.catch(() => {});
+  const operation = queue.tail.then(async () => {
+    await persisted;
+    return executeTranscription(job, fileName, fields, transcription);
+  });
   queue.tail = operation.catch(() => {});
   try {
     return await operation;
@@ -690,7 +700,8 @@ async function executeTranscription(job, fileName, options, transcription) {
         ...transcription, status: 'transcribed', completedAt: new Date().toISOString(),
         noVocalsName: noVocals ? `[NoVocals]/${noVocals.name}` : updatedJob.transcriptions[fileName]?.noVocalsName
       };
-      await persistJob(updatedJob);
+      if (!noVocals) await updatePostgresSong(database, updatedJob, fileName, 'transcription', updatedJob.transcriptions[fileName]);
+      else await persistJob(updatedJob);
     }));
     return job;
   } catch (error) {
@@ -699,15 +710,15 @@ async function executeTranscription(job, fileName, options, transcription) {
       ...transcription, status: 'failed', completedAt: job.updatedAt, error: error.message,
       noVocalsName: job.transcriptions[fileName]?.noVocalsName
     };
-    await persistJob(job);
+    await updatePostgresSong(database, job, fileName, 'transcription', job.transcriptions[fileName]);
     throw error;
   }
 }
 
 export async function setSongMetadata(id, fileName, value, user = null) {
-  const job = getJob(id);
+  const job = (await getJob(id));
   if (!job) return null;
-  assertCanModifyJob(job, user, true);
+  (await assertCanModifyJob(job, user, true));
   assertJobIsIdle(job, 'edit metadata for');
   if (!isValidJobFileName(fileName) || !isSongFile(fileName)) {
     throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
@@ -725,17 +736,17 @@ export async function setSongMetadata(id, fileName, value, user = null) {
       const metadata = await updateSongMetadata(realPath, value);
       job.songMetadata = { ...job.songMetadata, [fileName]: { title: metadata.title, artist: metadata.artist, album: metadata.album, rating: metadata.rating } };
       job.updatedAt = new Date().toISOString();
-      await persistJob(job);
+      await updatePostgresSong(database, job, fileName, 'metadata', job.songMetadata[fileName]);
       return metadata;
     });
   } finally { jobMutations.delete(id); }
 }
 
 export async function deleteJobFile(id, fileName, user = null, membership = null) {
-  const job = getJob(id);
+  const job = (await getJob(id));
   if (!job) return null;
 
-  assertCanModifyJob(job, user, true);
+  (await assertCanModifyJob(job, user, true));
   assertJobIsIdle(job, 'remove files from', true);
   if (transcriptionQueues.get(id)?.files.has(fileName) || deletingFiles.get(id)?.has(fileName)) {
     throw Object.assign(new Error('Another change to this song is in progress'), { statusCode: 409 });
@@ -763,20 +774,20 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
   let unlock = () => {};
   try {
     return await mutateJobFiles(id, async () => {
-      const allJobs = getJobs();
+      const allJobs = (await getJobs());
       if (membership) {
         const available = allJobs.filter((item) => item.initiatedBy?.id === user.id || item.contributors?.some((contributor) => contributor.id === user.id));
-        if (removeLibrarySongLink(user.id, { ...membership, jobId: id, name: fileName }, available, allJobs)) {
-          return { job: getJob(id), fileDeleted: false };
+        if ((await removeLibrarySongLink(user.id, { ...membership, jobId: id, name: fileName }, available, allJobs))) {
+          return { job: (await getJob(id)), fileDeleted: false };
         }
-      } else if (countLibraryFileLinks(job, fileName, allJobs) > 1) {
+      } else if ((await countLibraryFileLinks(job, fileName, allJobs)) > 1) {
         throw Object.assign(new Error('This song has other playlist links. Remove it from a playlist first.'), { statusCode: 409 });
       }
       unlock = lockLibraryFile(job, fileName, allJobs);
       await fs.unlink(filePath).catch((error) => {
         if (error.code !== 'ENOENT') throw error;
       });
-      const currentJob = transcriptionQueues.get(id)?.job || getJob(id);
+      const currentJob = transcriptionQueues.get(id)?.job || (await getJob(id));
       currentJob.files = currentJob.files.filter((name) => name !== fileName);
       if (currentJob.transcriptions) delete currentJob.transcriptions[fileName];
       if (currentJob.songMetadata) delete currentJob.songMetadata[fileName];
@@ -791,16 +802,16 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
   }
 }
 
-export function getAvailableContributors(id, user = null) {
-  const job = getJob(id);
+export async function getAvailableContributors(id, user = null) {
+  const job = (await getJob(id));
   if (!job) return null;
   assertJobAccess(job, user);
-  return database.prepare("SELECT id, name FROM users WHERE status = 'approved' AND id IS NOT ? ORDER BY name COLLATE NOCASE")
-    .all(job.initiatedBy?.id || null);
+  return (await database.prepare("SELECT id, name FROM users WHERE status = 'approved' AND id IS DISTINCT FROM $1 ORDER BY lower(name)")
+    .all(job.initiatedBy?.id || null));
 }
 
 export async function setJobContributors(id, userIds, user = null) {
-  const job = getJob(id);
+  const job = (await getJob(id));
   if (!job) return null;
   assertJobAccess(job, user);
   assertJobIsIdle(job, 'change contributors for');
@@ -809,7 +820,7 @@ export async function setJobContributors(id, userIds, user = null) {
     error.statusCode = 400;
     throw error;
   }
-  const available = new Map(getAvailableContributors(id, user).map((candidate) => [candidate.id, candidate]));
+  const available = new Map((await getAvailableContributors(id, user)).map((candidate) => [candidate.id, candidate]));
   if (userIds.some((userId) => !available.has(userId))) {
     const error = new Error('Contributors must be approved users other than the job owner');
     error.statusCode = 400;
@@ -821,15 +832,13 @@ export async function setJobContributors(id, userIds, user = null) {
   return job;
 }
 
-export function getJobs() {
-  return database.prepare('SELECT id, data FROM jobs ORDER BY created_at DESC').all()
-    .map((row) => jobs.get(row.id) || JSON.parse(row.data));
+export async function getJobs(userId) {
+  return (await readPostgresJobs(database, userId)).map((job) => jobs.get(job.id) || job);
 }
 
-export function getJob(id) {
+export async function getJob(id) {
   if (jobs.has(id)) return jobs.get(id);
-  const row = database.prepare('SELECT data FROM jobs WHERE id = ?').get(id);
-  return row ? JSON.parse(row.data) : undefined;
+  return readPostgresJob(database, id);
 }
 
 export function getFilePath(job, fileName) {

@@ -407,15 +407,16 @@ export default function MusicLibrary({ user, request, confirm }) {
   const selectedJob = sourceJobMap.get(selectedId);
   const title = selected?.type === 'folder' ? selected.name : selectedId ? jobMap.get(selectedId)?.playlistTitle || 'Preparing playlist' : 'All music';
   const allMusic = selectedId === null;
-  const searchPending = allMusic && trackSearch !== debouncedTrackSearch;
-  const tracks = trackResult?.selectedId === selectedId && (!allMusic
+  const paginated = allMusic || library?.serverPagination;
+  const searchPending = paginated && trackSearch !== debouncedTrackSearch;
+  const tracks = trackResult?.selectedId === selectedId && (!paginated
     || (trackResult.page === trackPage && trackResult.search === debouncedTrackSearch)) ? trackResult.files : null;
-  const pagination = allMusic ? {
-    page: trackPage, pageSize: 50, total: trackResult?.selectedId === null ? trackResult.total : 0,
-    totalPages: trackResult?.selectedId === null ? trackResult.totalPages : 1,
+  const pagination = paginated ? {
+    page: trackPage, pageSize: 50, total: trackResult?.selectedId === selectedId ? trackResult.total : 0,
+    totalPages: trackResult?.selectedId === selectedId ? trackResult.totalPages : 1,
     loading: tracksLoading || searchPending, onChange: setTrackPage
   } : null;
-  const jobsRevision = JSON.stringify((library?.jobs || []).map((job) => [job.id, job.updatedAt, job.songCount]));
+  const jobsRevision = JSON.stringify([library?.catalogRevision, (library?.jobs || []).map((job) => [job.id, job.updatedAt, job.songCount])]);
   const playlistSelection = entries.filter((entry) => entry.type === 'playlist' && selectedPlaylists.has(entry.id));
   const songSelection = (tracks || []).filter((track) => selectedSongs.has(songKey(track)));
 
@@ -472,16 +473,17 @@ export default function MusicLibrary({ user, request, confirm }) {
     const controller = new AbortController();
     setTracksLoading(true);
     setTrackError('');
-    const query = new URLSearchParams(selectedId ? { entryId: selectedId } : { page: trackPage, pageSize: 50, search: debouncedTrackSearch });
+    const query = new URLSearchParams({ ...(selectedId ? { entryId: selectedId } : {}),
+      ...(paginated ? { page: trackPage, pageSize: 50, search: debouncedTrackSearch } : {}) });
     request(`/api/library/tracks?${query}`, { signal: controller.signal }).then((result) => {
       if (active) {
         setTrackResult({ ...result, selectedId, search: debouncedTrackSearch });
-        if (selectedId === null && result.page !== trackPage) setTrackPage(result.page);
+        if (paginated && result.page !== trackPage) setTrackPage(result.page);
       }
     }).catch((loadError) => { if (active) setTrackError(loadError.message); })
       .finally(() => { if (active) setTracksLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, debouncedTrackSearch, searchPending]);
+  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, debouncedTrackSearch, searchPending, paginated]);
 
   function selectEntry(id) {
     setSelectedSongs(new Set());
@@ -494,12 +496,12 @@ export default function MusicLibrary({ user, request, confirm }) {
   }
 
   function songState(track) {
-    const job = sourceJobMap.get(track.jobId);
+    const job = track.sourceJob || sourceJobMap.get(track.jobId);
     const key = songKey(track);
-    const transcription = pendingTranscriptions[key] || job?.transcriptions?.[track.name];
+    const transcription = pendingTranscriptions[key] || track.transcription || job?.transcriptions?.[track.name];
     const canModify = canModifyJob(user, job);
     return { canModify, transcription, deleting: Boolean(deletingFiles[key]),
-      metadataBusy: Object.values(job?.transcriptions || {}).some((item) => item.status === 'sent')
+      metadataBusy: job?.transcriptionPending || Object.values(job?.transcriptions || {}).some((item) => item.status === 'sent')
         || [...songMutations.current].some((item) => JSON.parse(item)[0] === track.jobId),
       disabled: !canModify || ['queued', 'running'].includes(job?.status)
         || songMutations.current.has(key) || transcription?.status === 'sent' };
@@ -846,8 +848,8 @@ export default function MusicLibrary({ user, request, confirm }) {
     {transcriptionNotice && <div className="notice success library-notice" role="status">{transcriptionNotice}<button className="music-icon-button" type="button" title="Dismiss" aria-label="Dismiss transcription notice" onClick={() => setTranscriptionNotice('')}><X size={16} /></button></div>}
     <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>
     <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, loading: (tracksLoading || searchPending) && !trackError,
-      pagination, error: trackError, queueScope: allMusic ? JSON.stringify(['all', trackPage, debouncedTrackSearch]) : selectedId,
-      search: allMusic ? trackSearch : undefined, onSearch: allMusic ? setTrackSearch : undefined,
+      pagination, error: trackError, queueScope: paginated ? JSON.stringify([selectedId || 'all', trackPage, debouncedTrackSearch]) : selectedId,
+      search: paginated ? trackSearch : undefined, onSearch: paginated ? setTrackSearch : undefined,
       songSelection: selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),
         transfer: (action) => setBulkDialog({ type: 'songs', action, version: library.version, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,

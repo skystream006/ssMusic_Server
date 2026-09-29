@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
+import { createTestDatabase } from '../test-support/postgres.js';
 import http from 'node:http';
 import AdmZip from 'adm-zip';
 import { replaceTranscribedFiles } from '../src/transcription.js';
@@ -13,17 +14,13 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 
 const fixtureCleanups = new WeakMap();
+let fixtureDirectory;
 
 beforeEach(async (testContext) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-job-db-'));
-  process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
-  process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
-  process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
-  testContext.after(async () => {
-    await fixtureCleanups.get(testContext)?.();
-    closeDatabases();
-    return fs.rm(directory, { recursive: true, force: true });
-  });
+  ({ directory: fixtureDirectory } = await createTestDatabase(testContext, {
+    beforeCleanup: async () => { await fixtureCleanups.get(testContext)?.(); }
+  }));
+  process.env.YTDLP_OUTPUT_ROOT = fixtureDirectory;
 });
 
 async function makeFakeBin(dir, name, { delayMs = 0 } = {}) {
@@ -48,7 +45,7 @@ async function waitForFile(file) {
 }
 
 async function makeMetadataFixture(t, metadata) {
-  const directory = path.dirname(process.env.DATABASE_PATH);
+  const directory = fixtureDirectory;
   const configPath = path.join(directory, 'metadata.json');
   const file = (name) => path.join(directory, name);
   await fs.writeFile(configPath, JSON.stringify(metadata));
@@ -85,7 +82,7 @@ const timer = setInterval(() => {
     await fs.writeFile(file('metadata-release'), '');
     await fs.writeFile(file('download-release'), '');
     for (let attempt = 0; attempt < 500; attempt += 1) {
-      if (!manager.getJobs().some((job) => job.status === 'queued' || job.status === 'running')) return;
+      if (!(await manager.getJobs()).some((job) => job.status === 'queued' || job.status === 'running')) return;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     assert.fail('Fixture jobs did not finish');
@@ -111,7 +108,7 @@ for (const { label, url, isPlaylist } of [
     assert.equal(job.playlistTitle, null, 'creation returns before the metadata lookup completes');
     await fs.writeFile(file('metadata-release'), '');
     await waitForFile(file('download-started'));
-    const stored = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(job.id).data);
+    const stored = JSON.parse((await openDatabase().prepare('SELECT data FROM jobs WHERE id = $1').get(job.id)).data);
     assert.equal(stored.status, 'running');
     assert.equal(stored.playlistTitle, title);
     assert.equal(stored.isPlaylist, isPlaylist);
@@ -144,8 +141,8 @@ for (const { label, url, isPlaylist } of [
     await fs.writeFile(file('download-release'), '');
     await waitForJobToFinish(rerun);
     assert.equal(rerun.status, 'completed');
-    assert.equal(manager.getJob(job.id).playlistTitle, 'My custom collection');
-    assert.equal(manager.getJob(job.id).playlistTitleOverride, 'My custom collection');
+    assert.equal((await manager.getJob(job.id)).playlistTitle, 'My custom collection');
+    assert.equal((await manager.getJob(job.id)).playlistTitleOverride, 'My custom collection');
     const calls = (await fs.readFile(file('calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(calls.length, 4);
     for (const [index, args] of calls.entries()) {
@@ -181,7 +178,7 @@ for (const isPlaylist of [false, true]) {
       assert.equal(job.status, 'completed');
       assert.equal(job.error, null);
       assert.equal(job.playlistTitle, 'Filename fallback');
-      assert.equal(manager.getJob(job.id).playlistTitle, 'Filename fallback');
+      assert.equal((await manager.getJob(job.id)).playlistTitle, 'Filename fallback');
     });
   }
 }
@@ -202,7 +199,7 @@ for (const isPlaylist of [false, true]) {
     });
     syncBuiltinESMExports();
     t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
-    process.env.YTDLP_OUTPUT_ROOT = path.dirname(process.env.DATABASE_PATH);
+    process.env.YTDLP_OUTPUT_ROOT = fixtureDirectory;
     const manager = await import(`../src/jobManager.js?metadata-only=${isPlaylist}`);
     const owner = { id: 'owner', role: 'user' };
     const url = isPlaylist ? 'https://music.youtube.com/playlist?list=manual' : 'https://music.youtube.com/watch?v=manual';
@@ -220,7 +217,7 @@ for (const isPlaylist of [false, true]) {
     assert.ok(calls[0].includes('--skip-download'));
     assert.ok(calls[0].includes('--dump-single-json'));
     assert.ok(calls[0].includes(isPlaylist ? '--yes-playlist' : '--no-playlist'));
-    assert.equal(manager.getJob(job.id).metadataOnly, true);
+    assert.equal((await manager.getJob(job.id)).metadataOnly, true);
 
     if (isPlaylist) {
       const uploadPath = path.join(process.env.YTDLP_OUTPUT_ROOT, 'Upload.mp3');
@@ -237,7 +234,7 @@ for (const isPlaylist of [false, true]) {
     await waitForJobToFinish(rerun);
     assert.equal(rerun.status, 'completed');
     assert.equal(rerun.metadataOnly, false);
-    assert.equal(manager.getJob(job.id).metadataOnly, false);
+    assert.equal((await manager.getJob(job.id)).metadataOnly, false);
     assert.equal(rerun.outputDir, job.outputDir);
     assert.equal(rerun.playlistTitle, 'Custom title');
     assert.deepEqual(rerun.files, ['My own song.mp3']);
@@ -266,7 +263,7 @@ for (const metadataOnly of [false, true]) {
     });
     syncBuiltinESMExports();
     t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
-    process.env.YTDLP_OUTPUT_ROOT = path.dirname(process.env.DATABASE_PATH);
+    process.env.YTDLP_OUTPUT_ROOT = fixtureDirectory;
     const manager = await import(`../src/jobManager.js?video=${metadataOnly}`);
     const owner = { id: 'owner', role: 'user' };
     const url = 'https://www.youtube.com/watch?v=video';
@@ -278,7 +275,7 @@ for (const metadataOnly of [false, true]) {
     assert.equal(audio.downloadType, 'audio');
     assert.ok(calls.at(-1).includes('--extract-audio'));
     delete audio.downloadType;
-    writeJob(openDatabase(), audio);
+    (await writeJob(openDatabase(), audio));
     await assert.rejects(manager.createJob(url, owner), (error) => {
       assert.equal(error.code, 'JOB_ALREADY_EXISTS');
       assert.equal(error.existingJob.id, audio.id);
@@ -288,7 +285,7 @@ for (const metadataOnly of [false, true]) {
     const job = await manager.createJob(url, owner, { downloadType: 'video', metadataOnly });
     await waitForJobToFinish(job);
     assert.equal(job.status, 'completed');
-    assert.equal(manager.getJob(job.id).downloadType, 'video');
+    assert.equal((await manager.getJob(job.id)).downloadType, 'video');
     assert.notEqual(job.outputDir, audio.outputDir);
     assert.equal(calls.length, metadataOnly ? 1 : 2);
     await assert.rejects(manager.createJob(url, owner, { downloadType: 'video' }), (error) => {
@@ -327,7 +324,7 @@ test('metadata-only lookup failures fail without starting a media download', asy
   });
   syncBuiltinESMExports();
   t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
-  process.env.YTDLP_OUTPUT_ROOT = path.dirname(process.env.DATABASE_PATH);
+  process.env.YTDLP_OUTPUT_ROOT = fixtureDirectory;
   const manager = await import('../src/jobManager.js?metadata-only-failure');
   const owner = { id: 'owner', role: 'user' };
   const url = 'https://music.youtube.com/playlist?list=failure';
@@ -339,11 +336,10 @@ test('metadata-only lookup failures fail without starting a media download', asy
   assert.equal(job.status, 'failed');
   assert.match(job.output, /Unable to download webpage/);
   assert.equal(spawnMock.mock.callCount(), 1);
-  assert.equal(manager.getJob(job.id).metadataOnly, true);
+  assert.equal((await manager.getJob(job.id)).metadataOnly, true);
 });
 
 test('private video errors are classified as warnings', async () => {
-  process.env.JOB_STORE_PATH = path.join(os.tmpdir(), `ssytdlp-classify-${Date.now()}.json`);
   const { classifyCommandOutput } = await import(`../src/jobManager.js?classify=${Date.now()}`);
   const privateOnly = classifyCommandOutput({
     stderr: 'ERROR: [youtube] abc: Private video. Sign in if you have been granted access'
@@ -359,7 +355,6 @@ test('private video errors are classified as warnings', async () => {
   assert.equal(mixed.hasNonPrivateError, true);
   assert.match(mixed.stderr, /ERROR: Unable to download webpage/);
 
-  await fs.rm(process.env.JOB_STORE_PATH, { force: true });
 });
 
 test('unavailable video errors are warnings in either output stream without hiding other errors', async () => {
@@ -413,12 +408,11 @@ if (args.includes('--dump-single-json')) {
     assert.equal(job.warning, status === 'failed' ? null : 'One or more private or unavailable videos were skipped.');
     assert.deepEqual(job.files, ['Downloaded song.mp3']);
     assert.match(job.output, /WARNING: \[youtube\] abc: Video unavailable/);
-    assert.equal(manager.getJob(job.id).status, status);
+    assert.equal((await manager.getJob(job.id)).status, status);
   });
 }
 
 test('playlist metadata counts all songs independently of downloaded files', async () => {
-  process.env.JOB_STORE_PATH = path.join(os.tmpdir(), `ssytdlp-metadata-${Date.now()}.json`);
   const { parsePlaylistMetadata } = await import(`../src/jobManager.js?metadata=${Date.now()}`);
   assert.deepEqual(parsePlaylistMetadata(JSON.stringify({ title: 'My playlist', playlist_count: 12, entries: [{ id: 'one' }] })), {
     playlistTitle: 'My playlist', folderName: 'My_playlist', playlistSongCount: 12
@@ -441,21 +435,21 @@ test('legacy jobs receive readable titles without changing their output folders'
     { id: 'single', folderName: suffix, files: ['A beautiful song.mp3'], expected: 'A beautiful song' },
     { id: 'empty', folderName: suffix, files: [], expected: 'Untitled playlist' }
   ];
-  await fs.writeFile(process.env.JOB_STORE_PATH, JSON.stringify(records.map(({ expected, ...job }) => ({
+  for (const { expected, ...job } of records) await writeJob(openDatabase(), {
     ...job, url: `https://music.youtube.com/watch?v=${job.id}`, status: 'completed', outputDir: `/output/${job.folderName}`
-  }))));
+  });
   const manager = await import(`../src/jobManager.js?titles=${Date.now()}`);
   for (const record of records) {
-    const job = manager.getJob(record.id);
+    const job = (await manager.getJob(record.id));
     assert.equal(job.playlistTitle, record.expected);
     assert.equal(job.folderName, record.folderName);
     assert.equal(job.outputDir, `/output/${record.folderName}`);
-    assert.equal(JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(record.id).data).playlistTitle, record.expected);
+    assert.equal(JSON.parse((await openDatabase().prepare('SELECT data FROM jobs WHERE id = $1').get(record.id)).data).playlistTitle, record.expected);
   }
 });
 
 test('playlist titles are owner-editable metadata and survive reruns and reloads', async () => {
-  const directory = path.dirname(process.env.DATABASE_PATH);
+  const directory = fixtureDirectory;
   process.env.YTDLP_OUTPUT_ROOT = directory;
   process.env.YTDLP_PATH = process.execPath;
   const owner = { id: 'owner', role: 'user' };
@@ -463,7 +457,7 @@ test('playlist titles are owner-editable metadata and survive reruns and reloads
   const job = { id: 'rename', url: 'https://music.youtube.com/playlist?list=rename', status: 'completed',
     isPlaylist: true, playlistTitle: 'Original title', folderName: 'unchanged', outputDir: path.join(directory, 'unchanged'),
     initiatedBy: owner, contributors: [{ id: 'contributor' }], files: [], createdAt: new Date().toISOString() };
-  writeJob(openDatabase(), job);
+  (await writeJob(openDatabase(), job));
   const manager = await import(`../src/jobManager.js?rename=${Date.now()}`);
   for (const user of [null, { id: 'stranger', role: 'user' }, { id: 'contributor', role: 'user' }]) {
     await assert.rejects(manager.setJobTitle(job.id, 'Denied', user), { statusCode: 403 });
@@ -472,10 +466,10 @@ test('playlist titles are owner-editable metadata and survive reruns and reloads
     await assert.rejects(manager.setJobTitle(job.id, title, owner), { statusCode: 400 });
   }
   for (const status of ['queued', 'running']) {
-    writeJob(openDatabase(), { ...job, status });
+    (await writeJob(openDatabase(), { ...job, status }));
     await assert.rejects(manager.setJobTitle(job.id, 'Busy', owner), { statusCode: 409 });
   }
-  writeJob(openDatabase(), job);
+  (await writeJob(openDatabase(), job));
   const renamed = await manager.setJobTitle(job.id, '  Jazz / Soul: Live  ', owner);
   assert.equal(renamed.playlistTitle, 'Jazz / Soul: Live');
   assert.equal(renamed.folderName, job.folderName);
@@ -484,17 +478,14 @@ test('playlist titles are owner-editable metadata and survive reruns and reloads
   await manager.setJobTitle(job.id, 'Owner collection', admin);
   const rerun = await manager.rerunJob(job.id, owner);
   await waitForJobToFinish(rerun);
-  assert.equal(manager.getJob(job.id).playlistTitle, 'Owner collection');
+  assert.equal((await manager.getJob(job.id)).playlistTitle, 'Owner collection');
   const reloaded = await import(`../src/jobManager.js?renamed-reload=${Date.now()}`);
-  assert.equal(reloaded.getJob(job.id).playlistTitleOverride, 'Owner collection');
+  assert.equal((await reloaded.getJob(job.id)).playlistTitleOverride, 'Owner collection');
   assert.equal(await manager.setJobTitle('missing', 'Title', owner), null);
 });
 
-test('persisted private video failures become partially completed', async (t) => {
-  const storeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-private-'));
-  const jobStorePath = path.join(storeRoot, 'jobs.json');
-  process.env.JOB_STORE_PATH = jobStorePath;
-  await fs.writeFile(jobStorePath, JSON.stringify([{
+test('persisted private video failures become partially completed', async () => {
+  await writeJob(openDatabase(), {
     id: 'private-video-job',
     url: 'https://music.youtube.com/watch?v=magykigZvfE',
     status: 'failed',
@@ -505,19 +496,16 @@ test('persisted private video failures become partially completed', async (t) =>
     files: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
-  }]));
+  });
 
   const jobManager = await import(`../src/jobManager.js?private=${Date.now()}`);
-  const job = jobManager.getJob('private-video-job');
+  const job = (await jobManager.getJob('private-video-job'));
 
   assert.equal(job.status, 'partially_completed');
   assert.equal(job.error, null);
   assert.equal(job.warning, 'One or more private or unavailable videos were skipped.');
   assert.equal(job.playlistSongCount, 12);
 
-  t.after(async () => {
-    await fs.rm(storeRoot, { recursive: true, force: true });
-  });
 });
 
 test('persisted unavailable video failures are recovered unless unrelated errors are present', async () => {
@@ -528,20 +516,20 @@ test('persisted unavailable video failures are recovered unless unrelated errors
     { id: 'mixed', status: 'failed', output: 'WARNING: [youtube] abc: Video unavailable\nERROR: Unable to download webpage' }
   ];
   for (const record of records) {
-    writeJob(openDatabase(), {
+    (await writeJob(openDatabase(), {
       ...record, url: `https://music.youtube.com/watch?v=${record.id}`,
       error: 'Command failed with exit code 1', files: [], createdAt: new Date().toISOString()
-    });
+    }));
   }
   const manager = await import(`../src/jobManager.js?persisted-unavailable=${Date.now()}`);
   for (const record of records) {
-    const job = manager.getJob(record.id);
+    const job = (await manager.getJob(record.id));
     assert.equal(job.status, record.id === 'mixed' ? 'failed' : 'partially_completed');
     assert.equal(job.error, record.id === 'mixed' ? 'Command failed with exit code 1' : null);
     if (record.id !== 'mixed') {
       assert.equal(job.warning, 'One or more private or unavailable videos were skipped.');
     }
-    const stored = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(record.id).data);
+    const stored = JSON.parse((await openDatabase().prepare('SELECT data FROM jobs WHERE id = $1').get(record.id)).data);
     assert.equal(stored.status, job.status);
   }
 });
@@ -549,17 +537,16 @@ test('persisted unavailable video failures are recovered unless unrelated errors
 test('duplicate source URLs return the previous job without creating another record', async (testContext) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-duplicate-'));
   testContext.after(() => fs.rm(directory, { recursive: true, force: true }));
-  process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
   process.env.YTDLP_OUTPUT_ROOT = directory;
   const url = 'https://music.youtube.com/watch?v=existing';
-  await fs.writeFile(process.env.JOB_STORE_PATH, JSON.stringify([{
+  await writeJob(openDatabase(), {
     id: 'previous-job', url, status: 'completed', files: [],
     initiatedBy: { id: 'alice-id', name: 'Alice' },
     createdAt: new Date().toISOString()
-  }]));
+  });
   const manager = await import(`../src/jobManager.js?duplicate=${Date.now()}`);
   for (const status of ['completed', 'failed', 'partially_completed', 'queued', 'running']) {
-    writeJob(openDatabase(), { ...manager.getJob('previous-job'), status });
+    (await writeJob(openDatabase(), { ...(await manager.getJob('previous-job')), status }));
     await assert.rejects(manager.createJob(` ${url} `, { id: 'bob-id', name: 'Bob' }), (error) => {
       assert.equal(error.statusCode, 409);
       assert.equal(error.code, 'JOB_ALREADY_EXISTS');
@@ -567,8 +554,8 @@ test('duplicate source URLs return the previous job without creating another rec
       assert.equal(error.existingJob.status, status);
       return true;
     });
-    assert.equal(manager.getJobs().length, 1);
-    assert.deepEqual(manager.getJob('previous-job').initiatedBy, { id: 'alice-id', name: 'Alice' });
+    assert.equal((await manager.getJobs()).length, 1);
+    assert.deepEqual((await manager.getJob('previous-job')).initiatedBy, { id: 'alice-id', name: 'Alice' });
   }
 });
 
@@ -584,7 +571,6 @@ test('jobManager queues jobs around a maintenance update', {
   process.env.YTDLP_PATH = fakeYtDlp;
   process.env.DENO_PATH = fakeDeno;
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
-  process.env.JOB_STORE_PATH = path.join(outputRoot, 'jobs.json');
 
   const jobManager = await import(`../src/jobManager.js?t=${Date.now()}`);
 
@@ -594,7 +580,7 @@ test('jobManager queues jobs around a maintenance update', {
   events.push('job-created');
 
   // Wait until the job actually starts running before triggering the update.
-  while (jobManager.getJob(job.id).status !== 'running') {
+  while ((await jobManager.getJob(job.id)).status !== 'running') {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
@@ -606,7 +592,7 @@ test('jobManager queues jobs around a maintenance update', {
 
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(
-    jobManager.getJob(queuedJob.id).status,
+    (await jobManager.getJob(queuedJob.id)).status,
     'queued',
     'new job should stay queued while update is pending/running'
   );
@@ -614,16 +600,16 @@ test('jobManager queues jobs around a maintenance update', {
   await updatePromise;
   events.push('after-update-await');
 
-  while (jobManager.getJob(job.id).status === 'running') {
+  while ((await jobManager.getJob(job.id)).status === 'running') {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  while (jobManager.getJob(queuedJob.id).status === 'queued') {
+  while ((await jobManager.getJob(queuedJob.id)).status === 'queued') {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
   assert.equal(jobManager.isUpdateInProgress(), false);
   assert.ok(events.indexOf('update-finished') > -1);
-  assert.notEqual(jobManager.getJob(queuedJob.id).status, 'queued');
+  assert.notEqual((await jobManager.getJob(queuedJob.id)).status, 'queued');
   await waitForJobToFinish(job);
   await waitForJobToFinish(queuedJob);
 
@@ -637,7 +623,6 @@ async function assertRerunPreservesOutput(t, isPlaylist) {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-rerun-'));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = process.execPath;
-  process.env.JOB_STORE_PATH = path.join(outputRoot, 'jobs.json');
 
   const jobManager = await import(`../src/jobManager.js?rerun=${Date.now()}`);
   const url = isPlaylist ? 'https://music.youtube.com/playlist?list=abc' : 'https://music.youtube.com/watch?v=abc';
@@ -654,7 +639,7 @@ async function assertRerunPreservesOutput(t, isPlaylist) {
   job.files = ['old-output.mp3'];
   job.playlistTitle = 'My favorite songs';
   job.playlistSongCount = 99;
-  writeJob(openDatabase(), job);
+  (await writeJob(openDatabase(), job));
 
   await assert.rejects(jobManager.rerunJob(job.id, { id: 'bob-id', role: 'user' }), { statusCode: 403 });
   const rerun = await jobManager.rerunJob(job.id, { id: 'bob-id', name: 'Bob', role: 'admin' });
@@ -663,7 +648,7 @@ async function assertRerunPreservesOutput(t, isPlaylist) {
   assert.deepEqual(rerun.initiatedBy, { id: 'alice-id', name: 'Alice' });
   assert.equal(rerun.id, job.id);
   assert.notEqual(rerun, job);
-  assert.equal(jobManager.getJob(job.id), rerun);
+  assert.equal((await jobManager.getJob(job.id)), rerun);
   assert.equal(rerun.outputDir, firstOutputDir);
   assert.equal(rerun.folderName, firstFolderName);
   assert.equal(rerun.playlistTitle, 'My favorite songs');
@@ -695,7 +680,6 @@ test('deleting a finished job removes its record and output', async (t) => {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-delete-'));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = path.join(outputRoot, 'missing-yt-dlp');
-  process.env.JOB_STORE_PATH = path.join(outputRoot, 'jobs.json');
 
   const jobManager = await import(`../src/jobManager.js?delete=${Date.now()}`);
   const job = await jobManager.createJob('https://music.youtube.com/watch?v=abc');
@@ -705,7 +689,7 @@ test('deleting a finished job removes its record and output', async (t) => {
   await assert.rejects(jobManager.deleteJob(job.id), { statusCode: 403 });
   await assert.rejects(jobManager.deleteJob(job.id, { id: 'other', role: 'user' }), { statusCode: 403 });
   assert.equal(await jobManager.deleteJob(job.id, { id: 'admin', role: 'admin' }), true);
-  assert.equal(jobManager.getJob(job.id), undefined);
+  assert.equal((await jobManager.getJob(job.id)), undefined);
   await assert.rejects(fs.access(jobOutputDir));
   assert.equal(await jobManager.deleteJob('missing-job'), false);
 
@@ -730,7 +714,7 @@ test('individual song removal enforces ownership, validates paths and preserves 
   await fs.writeFile(path.join(job.outputDir, songName), 'first');
   await fs.writeFile(path.join(job.outputDir, 'second.mp3'), 'second');
   job.files = [songName, 'second.mp3', 'missing.mp3'];
-  writeJob(openDatabase(), job);
+  (await writeJob(openDatabase(), job));
 
   for (const user of [null, { id: 'stranger', role: 'user' }]) {
     await assert.rejects(manager.deleteJobFile(job.id, songName, user), { statusCode: 403 });
@@ -739,7 +723,7 @@ test('individual song removal enforces ownership, validates paths and preserves 
   }
   assert.equal(await fs.readFile(path.join(job.outputDir, songName), 'utf8'), 'first');
   for (const status of ['queued', 'running']) {
-    writeJob(openDatabase(), { ...job, status });
+    (await writeJob(openDatabase(), { ...job, status }));
     for (const user of [owner, admin]) {
       await assert.rejects(manager.deleteJobFile(job.id, songName, user), { statusCode: 409 });
       await assert.rejects(manager.deleteJob(job.id, user), { statusCode: 409 });
@@ -748,7 +732,7 @@ test('individual song removal enforces ownership, validates paths and preserves 
       await assert.rejects(manager.setSongMetadata(job.id, songName, { title: 'Busy' }, user), { statusCode: 409 });
     }
   }
-  writeJob(openDatabase(), job);
+  (await writeJob(openDatabase(), job));
   for (const name of ['../outside.mp3', '..\\outside.mp3', '/outside.mp3', 'song.mp3:stream', '.download-archive.txt', '', '\0']) {
     await assert.rejects(manager.deleteJobFile(job.id, name, owner), { statusCode: 400 });
   }
@@ -767,12 +751,12 @@ test('individual song removal enforces ownership, validates paths and preserves 
   assert.equal(await fs.readFile(path.join(job.outputDir, 'second.mp3'), 'utf8'), 'second');
   await manager.deleteJobFile(job.id, 'second.mp3', admin);
   await manager.deleteJobFile(job.id, 'missing.mp3', owner);
-  assert.deepEqual(manager.getJob(job.id).files, []);
+  assert.deepEqual((await manager.getJob(job.id)).files, []);
   assert.equal(await fs.readFile(archivePath, 'utf8'), 'youtube first\nyoutube second\n');
 
   const rerun = await manager.rerunJob(job.id, owner);
   await waitForJobToFinish(rerun);
-  assert.deepEqual(manager.getJob(job.id).files, []);
+  assert.deepEqual((await manager.getJob(job.id)).files, []);
   assert.equal(await manager.deleteJob(job.id, owner), true);
 });
 
@@ -788,8 +772,8 @@ test('legacy folders shared with another owner require an administrator to modif
     id: 'shared-one', url: 'https://music.youtube.com/watch?v=one', status: 'completed',
     outputDir: folder, files: ['song.mp3'], initiatedBy: { id: 'owner' }, createdAt: new Date().toISOString()
   };
-  writeJob(openDatabase(), job);
-  writeJob(openDatabase(), { ...job, id: 'shared-two', url: 'https://music.youtube.com/watch?v=two', initiatedBy: { id: 'other' } });
+  (await writeJob(openDatabase(), job));
+  (await writeJob(openDatabase(), { ...job, id: 'shared-two', url: 'https://music.youtube.com/watch?v=two', initiatedBy: { id: 'other' } }));
   const owner = { id: 'owner', role: 'user' };
   await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 403 });
   await assert.rejects(manager.deleteJob(job.id, owner), { statusCode: 403 });
@@ -821,7 +805,7 @@ test('transcription options validate output flags and force Vietnamese for fallb
 
 test('transcription options are forwarded as multipart fields without losing false values', async (testContext) => {
   const { requestTranscription } = await import('../src/transcription.js');
-  const filePath = path.join(path.dirname(process.env.DATABASE_PATH), 'options.wav');
+  const filePath = path.join(fixtureDirectory, 'options.wav');
   await fs.writeFile(filePath, 'test upload');
   const previousEndpoint = process.env.TRANSCRIPTION_ENDPOINT;
   process.env.TRANSCRIPTION_ENDPOINT = 'http://transcriber.test/api/transcribe';
@@ -873,7 +857,7 @@ function makeTranscriptionAudio() {
 }
 
 test('transcription persists settings without lyrics across retranscriptions and reloads', async (testContext) => {
-  const outputDir = path.join(path.dirname(process.env.DATABASE_PATH), 'lyrics-status');
+  const outputDir = path.join(fixtureDirectory, 'lyrics-status');
   await fs.mkdir(outputDir);
   const songName = 'Song.wav';
   const audio = makeTranscriptionAudio();
@@ -882,19 +866,19 @@ test('transcription persists settings without lyrics across retranscriptions and
   const owner = { id: 'owner', role: 'user' };
   const job = { id: 'lyrics-status', url: 'https://music.youtube.com/watch?v=lyrics', status: 'completed',
     outputDir, files: [songName], initiatedBy: owner, createdAt: new Date().toISOString() };
-  writeJob(openDatabase(), job);
+  (await writeJob(openDatabase(), job));
   const previousEndpoint = process.env.TRANSCRIPTION_ENDPOINT;
   process.env.TRANSCRIPTION_ENDPOINT = 'http://transcriber.test/api/transcribe';
   testContext.after(() => {
     if (previousEndpoint === undefined) delete process.env.TRANSCRIPTION_ENDPOINT;
     else process.env.TRANSCRIPTION_ENDPOINT = previousEndpoint;
   });
-  const readTranscription = () => JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get(job.id).data).transcriptions[songName];
+  const readTranscription = async () => JSON.parse((await openDatabase().prepare('SELECT transcription FROM songs WHERE job_id = $1 AND name = $2').get(job.id, songName)).transcription);
   let expectedOptions;
   let expectedLyricsIncluded;
   let responseStatus = 200;
   testContext.mock.method(globalThis, 'fetch', async () => {
-    const sent = readTranscription();
+    const sent = (await readTranscription());
     assert.equal(sent.status, 'sent');
     assert.equal(sent.lyricsIncluded, expectedLyricsIncluded);
     assert.deepEqual(sent.options, expectedOptions);
@@ -909,20 +893,20 @@ test('transcription persists settings without lyrics across retranscriptions and
     };
     const options = { ...expectedOptions, language: 'en', ...(mode ? { lyrics: 'Known words' } : {}), privateNotes: 'Private input' };
     await manager.transcribeJobFile(job.id, songName, options, owner);
-    const completed = readTranscription();
+    const completed = (await readTranscription());
     assert.equal(completed.status, 'transcribed');
     assert.equal(completed.lyricsIncluded, expectedLyricsIncluded);
     assert.deepEqual(completed.options, expectedOptions);
     assert.doesNotMatch(JSON.stringify(completed), /Known words|Private input/);
   }
   const restarted = await import(`../src/jobManager.js?lyrics-status-restart=${Date.now()}`);
-  assert.equal(restarted.getJob(job.id).transcriptions[songName].lyricsIncluded, true);
-  assert.deepEqual(restarted.getJob(job.id).transcriptions[songName].options, expectedOptions);
+  assert.equal((await restarted.getJob(job.id)).transcriptions[songName].lyricsIncluded, true);
+  assert.deepEqual((await restarted.getJob(job.id)).transcriptions[songName].options, expectedOptions);
   responseStatus = 503;
   expectedLyricsIncluded = false;
   expectedOptions = { Multilingual: false, NoVocals: true, VietLyricsFallback: false };
   await assert.rejects(manager.transcribeJobFile(job.id, songName, expectedOptions, owner), /HTTP 503/);
-  const failed = readTranscription();
+  const failed = (await readTranscription());
   assert.equal(failed.status, 'failed');
   assert.equal(failed.lyricsIncluded, false);
   assert.deepEqual(failed.options, expectedOptions);
@@ -930,7 +914,7 @@ test('transcription persists settings without lyrics across retranscriptions and
 });
 
 test('transcription sends multipart lyrics, replaces audio and persists NoVocals safely', async (testContext) => {
-  const directory = path.dirname(process.env.DATABASE_PATH);
+  const directory = fixtureDirectory;
   const outputDir = path.join(directory, 'songs');
   await fs.mkdir(outputDir);
   const songName = 'Song 100% #1.wav';
@@ -940,7 +924,7 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   const owner = { id: 'owner', role: 'user' };
   const job = { id: 'transcribe', url: 'https://music.youtube.com/watch?v=transcribe', status: 'completed',
     outputDir, files: [songName], initiatedBy: owner, contributors: [{ id: 'contributor' }], createdAt: new Date().toISOString() };
-  writeJob(openDatabase(), job);
+  (await writeJob(openDatabase(), job));
   let payload;
   let responseData = audio;
   let responseStatus = 200;
@@ -974,7 +958,7 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   }
   const pending = manager.transcribeJobFile(job.id, songName, { lyrics: ' Known words ', lyrics_mode: 'align', language: 'vi' }, owner);
   await received;
-  const sent = manager.getJob(job.id).transcriptions[songName];
+  const sent = (await manager.getJob(job.id)).transcriptions[songName];
   assert.equal(sent.status, 'sent');
   assert.ok(Number.isFinite(Date.parse(sent.requestedAt)));
   assert.equal(sent.completedAt, undefined);
@@ -984,7 +968,7 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   await assert.rejects(manager.transcribeJobFile(job.id, songName, {}, owner), { statusCode: 409 });
   releaseRequest();
   await pending;
-  const transcribed = manager.getJob(job.id).transcriptions[songName];
+  const transcribed = (await manager.getJob(job.id)).transcriptions[songName];
   assert.equal(transcribed.status, 'transcribed');
   assert.equal(transcribed.lyricsIncluded, true);
   assert.equal(transcribed.requestedAt, sent.requestedAt);
@@ -1002,14 +986,14 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   zip.addFile('songs/instrumental.wav', audio);
   responseData = zip.toBuffer();
   await manager.transcribeJobFile(job.id, songName, {}, { id: 'contributor' });
-  assert.equal(manager.getJob(job.id).transcriptions[songName].lyricsIncluded, false);
+  assert.equal((await manager.getJob(job.id)).transcriptions[songName].lyricsIncluded, false);
   assert.equal(payload.has('lyrics'), false);
   assert.equal(payload.has('lyrics_mode'), false);
   assert.equal(payload.has('language'), false);
   assert.deepEqual(await fs.readFile(path.join(outputDir, songName)), updated);
   assert.deepEqual(await fs.readFile(path.join(outputDir, '[NoVocals]', 'instrumental.wav')), audio);
-  assert.deepEqual(manager.getJob(job.id).files, [songName, '[NoVocals]/instrumental.wav']);
-  assert.equal(manager.getJob(job.id).transcriptions[songName].noVocalsName, '[NoVocals]/instrumental.wav');
+  assert.deepEqual((await manager.getJob(job.id)).files, [songName, '[NoVocals]/instrumental.wav']);
+  assert.equal((await manager.getJob(job.id)).transcriptions[songName].noVocalsName, '[NoVocals]/instrumental.wav');
   const missingSong = new AdmZip();
   missingSong.addFile('other.wav', audio);
   const duplicateSong = new AdmZip();
@@ -1025,7 +1009,7 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   }
   responseStatus = 500;
   await assert.rejects(manager.transcribeJobFile(job.id, songName, {}, owner), { statusCode: 502 });
-  const failed = manager.getJob(job.id).transcriptions[songName];
+  const failed = (await manager.getJob(job.id)).transcriptions[songName];
   assert.equal(failed.status, 'failed');
   assert.match(failed.error, /HTTP 500/);
   assert.ok(Number.isFinite(Date.parse(failed.completedAt)));
@@ -1037,10 +1021,10 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   assert.equal(payload.has('lyrics_mode'), false);
   for (const lyrics_mode of ['prompt', 'correct']) {
     await manager.transcribeJobFile(job.id, songName, { lyrics: 'Words', lyrics_mode }, owner);
-    assert.equal(manager.getJob(job.id).transcriptions[songName].lyricsIncluded, true);
+    assert.equal((await manager.getJob(job.id)).transcriptions[songName].lyricsIncluded, true);
     assert.equal(payload.get('lyrics_mode'), lyrics_mode);
   }
-  const rollbackJob = manager.getJob(job.id);
+  const rollbackJob = (await manager.getJob(job.id));
   await assert.rejects(replaceTranscribedFiles(rollbackJob, songName, [
     { name: songName, data: updated, original: true },
     { name: 'new-accompaniment.wav', data: updated, original: false }
@@ -1057,7 +1041,10 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   await firstRequest;
   const accompanimentName = '[NoVocals]/instrumental.wav';
   const secondPending = manager.transcribeJobFile(job.id, accompanimentName, {}, owner);
-  assert.equal(manager.getJob(job.id).transcriptions[accompanimentName].status, 'sent');
+  for (let attempt = 0; attempt < 100 && (await manager.getJob(job.id)).transcriptions[accompanimentName]?.status !== 'sent'; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal((await manager.getJob(job.id)).transcriptions[accompanimentName].status, 'sent');
   await assert.rejects(manager.transcribeJobFile(job.id, accompanimentName, {}, owner), { statusCode: 409 });
   let secondReceived;
   const secondRequest = new Promise((resolve) => { secondReceived = resolve; });
@@ -1066,13 +1053,13 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   gate = new Promise((resolve) => { releaseRequest = resolve; });
   await firstPending;
   await secondRequest;
-  assert.equal(manager.getJob(job.id).transcriptions[songName].status, 'transcribed');
-  assert.equal(manager.getJob(job.id).transcriptions[accompanimentName].status, 'sent');
+  assert.equal((await manager.getJob(job.id)).transcriptions[songName].status, 'transcribed');
+  assert.equal((await manager.getJob(job.id)).transcriptions[accompanimentName].status, 'sent');
   const unrelatedNames = ['delete-one.wav', 'delete-two.wav'];
   for (const name of unrelatedNames) await fs.writeFile(path.join(outputDir, name), audio);
-  const stored = manager.getJob(job.id);
+  const stored = (await manager.getJob(job.id));
   stored.files.push(...unrelatedNames);
-  writeJob(openDatabase(), stored);
+  (await writeJob(openDatabase(), stored));
   await assert.rejects(manager.deleteJobFile(job.id, accompanimentName, owner), { statusCode: 409 });
   const firstDelete = manager.deleteJobFile(job.id, unrelatedNames[0], owner);
   await assert.rejects(manager.deleteJobFile(job.id, unrelatedNames[0], owner), { statusCode: 409 });
@@ -1081,30 +1068,30 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
   await Promise.all([firstDelete, secondDelete]);
   for (const name of unrelatedNames) {
     await assert.rejects(fs.access(path.join(outputDir, name)));
-    assert.equal(manager.getJob(job.id).files.includes(name), false);
+    assert.equal((await manager.getJob(job.id)).files.includes(name), false);
   }
-  assert.equal(manager.getJob(job.id).transcriptions[accompanimentName].status, 'sent');
+  assert.equal((await manager.getJob(job.id)).transcriptions[accompanimentName].status, 'sent');
   await assert.rejects(manager.deleteJob(job.id, owner), { statusCode: 409 });
   releaseRequest();
   await secondPending;
   gate = Promise.resolve();
-  assert.equal(manager.getJob(job.id).transcriptions[songName].status, 'transcribed');
-  assert.equal(manager.getJob(job.id).transcriptions[accompanimentName].status, 'transcribed');
+  assert.equal((await manager.getJob(job.id)).transcriptions[songName].status, 'transcribed');
+  assert.equal((await manager.getJob(job.id)).transcriptions[accompanimentName].status, 'transcribed');
   process.env.YTDLP_PATH = process.execPath;
   const rerun = await manager.rerunJob(job.id, owner);
   await waitForJobToFinish(rerun);
-  assert.deepEqual(new Set(manager.getJob(job.id).files), new Set([songName, '[NoVocals]/instrumental.wav']));
+  assert.deepEqual(new Set((await manager.getJob(job.id)).files), new Set([songName, '[NoVocals]/instrumental.wav']));
   await manager.transcribeJobFile(job.id, '[NoVocals]/instrumental.wav', {}, owner);
   await manager.deleteJobFile(job.id, '[NoVocals]/instrumental.wav', owner);
-  assert.deepEqual(manager.getJob(job.id).files, [songName]);
-  assert.equal(manager.getJob(job.id).transcriptions['[NoVocals]/instrumental.wav'], undefined);
-  assert.equal(manager.getJob(job.id).transcriptions[songName].status, 'transcribed');
-  const persistedJob = manager.getJob(job.id);
+  assert.deepEqual((await manager.getJob(job.id)).files, [songName]);
+  assert.equal((await manager.getJob(job.id)).transcriptions['[NoVocals]/instrumental.wav'], undefined);
+  assert.equal((await manager.getJob(job.id)).transcriptions[songName].status, 'transcribed');
+  const persistedJob = (await manager.getJob(job.id));
   persistedJob.status = 'completed';
   persistedJob.transcriptions[songName] = { status: 'sent', requestedAt: sent.requestedAt };
-  writeJob(openDatabase(), persistedJob);
+  (await writeJob(openDatabase(), persistedJob));
   const restarted = await import(`../src/jobManager.js?transcription-restart=${Date.now()}`);
-  const interrupted = restarted.getJob(job.id).transcriptions[songName];
+  const interrupted = (await restarted.getJob(job.id)).transcriptions[songName];
   assert.equal(interrupted.status, 'interrupted');
   assert.equal(interrupted.requestedAt, sent.requestedAt);
   assert.match(interrupted.error, /server restart/);
@@ -1113,10 +1100,8 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
 
 test('job history is restored after a manager restart', async (t) => {
   const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-persist-'));
-  const jobStorePath = path.join(outputRoot, 'jobs.json');
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = process.execPath;
-  process.env.JOB_STORE_PATH = jobStorePath;
 
   const firstManager = await import(`../src/jobManager.js?persist-write=${Date.now()}`);
   const createdJob = await firstManager.createJob('https://music.youtube.com/watch?v=persist', {
@@ -1125,14 +1110,14 @@ test('job history is restored after a manager restart', async (t) => {
   await waitForJobToFinish(createdJob);
 
   while (true) {
-    const storedJob = openDatabase().prepare('SELECT status FROM jobs WHERE id = ?').get(createdJob.id);
+    const storedJob = (await openDatabase().prepare('SELECT status FROM jobs WHERE id = $1').get(createdJob.id));
     if (storedJob?.status === createdJob.status) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  closeDatabases();
+  (await closeDatabases());
   const secondManager = await import(`../src/jobManager.js?persist-read=${Date.now()}`);
-  const restoredJob = secondManager.getJob(createdJob.id);
+  const restoredJob = (await secondManager.getJob(createdJob.id));
 
   assert.equal(restoredJob.id, createdJob.id);
   assert.equal(restoredJob.url, createdJob.url);

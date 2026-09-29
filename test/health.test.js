@@ -33,18 +33,18 @@ test('media count scans at startup and hourly, while status reads retain the las
   const scan = context.mock.fn(async () => count);
   const monitor = createMediaCountMonitor(scan);
   context.after(monitor.stop);
-  assert.equal(monitor.getStatus().scanning, true);
+  assert.equal((await monitor.getStatus()).scanning, true);
   await monitor.ready;
   const initial = { totalFiles: 12, scannedAt: '2026-09-23T10:00:00.000Z', scanning: false, error: null };
-  assert.deepEqual(monitor.getStatus(), initial);
+  assert.deepEqual((await monitor.getStatus()), initial);
   count = 20;
   context.mock.timers.tick(3_599_999);
-  for (let index = 0; index < 10; index += 1) assert.deepEqual(monitor.getStatus(), initial);
+  for (let index = 0; index < 10; index += 1) assert.deepEqual((await monitor.getStatus()), initial);
   assert.equal(scan.mock.callCount(), 1);
   context.mock.timers.tick(1);
   await Promise.resolve();
   assert.equal(scan.mock.callCount(), 2);
-  assert.deepEqual(monitor.getStatus(), { ...initial, totalFiles: 20, scannedAt: '2026-09-23T11:00:00.000Z' });
+  assert.deepEqual((await monitor.getStatus()), { ...initial, totalFiles: 20, scannedAt: '2026-09-23T11:00:00.000Z' });
   monitor.stop();
   context.mock.timers.tick(3_600_000);
   assert.equal(scan.mock.callCount(), 2);
@@ -59,15 +59,15 @@ test('media scan failures preserve the last successful count and timestamp until
   });
   context.after(monitor.stop);
   await monitor.ready;
-  const initial = monitor.getStatus();
+  const initial = (await monitor.getStatus());
   failing = true;
   context.mock.timers.tick(3_600_000);
   await Promise.resolve();
-  assert.deepEqual(monitor.getStatus(), { ...initial, error: 'Media count scan failed' });
+  assert.deepEqual((await monitor.getStatus()), { ...initial, error: 'Media count scan failed' });
   failing = false;
   context.mock.timers.tick(3_600_000);
   await Promise.resolve();
-  assert.deepEqual(monitor.getStatus(), { ...initial, scannedAt: '2026-09-23T12:00:00.000Z' });
+  assert.deepEqual((await monitor.getStatus()), { ...initial, scannedAt: '2026-09-23T12:00:00.000Z' });
 });
 
 test('hourly ticks never overlap a pending media count scan', async (context) => {
@@ -78,10 +78,10 @@ test('hourly ticks never overlap a pending media count scan', async (context) =>
   context.after(monitor.stop);
   context.mock.timers.tick(7_200_000);
   assert.equal(scan.mock.callCount(), 1);
-  assert.deepEqual(monitor.getStatus(), { totalFiles: null, scannedAt: null, scanning: true, error: null });
+  assert.deepEqual((await monitor.getStatus()), { totalFiles: null, scannedAt: null, scanning: true, error: null });
   complete(5);
   await monitor.ready;
-  assert.equal(monitor.getStatus().totalFiles, 5);
+  assert.equal((await monitor.getStatus()).totalFiles, 5);
 });
 
 function configureEndpoint(context, endpoint = 'http://transcription:4317/api/transcribe') {

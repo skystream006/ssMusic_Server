@@ -229,6 +229,15 @@ test('copying SYLT preserves timestamps while USLT stays plain text', () => {
   }
 });
 
+test('transcription dialog initially focuses the language selector instead of its help button', () => {
+  const html = renderToStaticMarkup(createElement(TranscriptionDialog, {
+    file: { name: 'Song.mp3', sizeBytes: 1024 }, onClose() {}, onSubmit() {}
+  }));
+  assert.equal((html.match(/autofocus=""/g) || []).length, 1);
+  assert.match(html, /<select[^>]*autofocus=""[^>]*id="[^"]*-language"/);
+  assert.match(html, /<button type="button" aria-label="About Language" aria-describedby="[^"]+">/);
+});
+
 test('transcription status distinguishes supplied lyrics from AI transcription', () => {
   for (const [lyricsIncluded, label] of [[true, 'Lyrics included'], [false, 'AI transcription'], [undefined, 'AI transcription']]) {
     const html = renderToStaticMarkup(createElement(TranscriptionStatus, {

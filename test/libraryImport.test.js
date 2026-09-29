@@ -12,6 +12,7 @@ import * as plist from 'plist';
 import { fileTypeFromFile } from 'file-type';
 import { isPlayableFile, mediaType, videoExtensions } from '../src/media.js';
 import { getPlaylistTracks, songKey } from '../src/library.js';
+import { createTestDatabase } from '../test-support/postgres.js';
 
 test('playable media distinguishes movies from audio and non-media filenames', () => {
   for (const extension of videoExtensions) {
@@ -25,16 +26,11 @@ test('playable media distinguishes movies from audio and non-media filenames', (
 });
 
 test('music imports validate media, preserve playlists and enforce ownership', async (context) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-import-test-'));
-  process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
-  process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
-  process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
+  const { directory } = await createTestDatabase(context);
   process.env.YTDLP_OUTPUT_ROOT = path.join(directory, 'output');
   const imports = await import('../src/libraryImport.js');
   const manager = await import('../src/jobManager.js');
   const { getLibrary, linkLibraryJob } = await import('../src/libraryStore.js');
-  const { closeDatabases } = await import('../src/database.js');
-  context.after(async () => { closeDatabases(); await fs.rm(directory, { recursive: true, force: true }); });
   const { registerUser } = await import('../src/authStore.js');
   const owner = await registerUser('Owner', 'Owner', { id: 'owner', publicKey: Buffer.from('owner'), counter: 0 });
   async function countUpload(fieldname, megabytes, extraBytes = 0, request = { importBytes: 0 }) {
@@ -119,7 +115,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   const job = result.jobs[0];
   assert.equal(job.status, 'completed');
   assert.equal(job.source, 'files');
-  assert.equal(getLibrary(owner.id, manager.getJobs()).entries[0].id, job.id);
+  assert.equal((await getLibrary(owner.id, (await manager.getJobs()))).entries[0].id, job.id);
   assert.deepEqual(await fs.readFile(path.join(job.outputDir, job.files[0])), audio);
   await assert.rejects(imports.importUploadedFiles([file], { createNew: 'false', playlistId: job.id }, { id: 'other' }), /existing playlists/);
   await assert.rejects(manager.importJobFiles({ files: [file], playlistId: job.id }, { id: 'other' }), { statusCode: 403 });
@@ -132,9 +128,9 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   await assert.rejects(manager.importJobFiles({ files: [file, { name: 'Missing.wav', path: path.join(directory, 'missing') }], playlistId: job.id }, owner));
   assert.deepEqual((await fs.readdir(job.outputDir)).sort(), ['Song (2).wav', 'Song.wav']);
   const single = await manager.importJobFiles({ files: [file], playlistTitle: 'Single', individual: true }, owner);
-  linkLibraryJob(owner.id, single, manager.getJobs());
+  (await linkLibraryJob(owner.id, single, (await manager.getJobs())));
   const singles = await imports.importUploadedFiles([file], { createNew: 'false', playlistId: 'individual-songs' }, owner);
-  assert.ok(getLibrary(owner.id, manager.getJobs()).singleJobIds.includes(singles.jobs[0].id));
+  assert.ok((await getLibrary(owner.id, (await manager.getJobs()))).singleJobIds.includes(singles.jobs[0].id));
 
   await context.test('real FFmpeg preserves MP3s and converts detected WAVs in iTunes imports', async (probeContext) => {
     const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
@@ -191,10 +187,10 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     assert.deepEqual(converted.jobs[0].files, ['Converted.mp3', 'Mislabeled.mp3', 'Padded.mp3', 'Converted (2).mp3']);
     assert.deepEqual(converted.jobs[1].files, []);
     assert.equal(converted.jobs[1].playlistSongCount, 1);
-    const convertedLibrary = getLibrary(owner.id, manager.getJobs());
-    assert.deepEqual(getPlaylistTracks(convertedLibrary, manager.getJobs()).get(converted.jobs[1].id),
+    const convertedLibrary = (await getLibrary(owner.id, (await manager.getJobs())));
+    assert.deepEqual(getPlaylistTracks(convertedLibrary, (await manager.getJobs())).get(converted.jobs[1].id),
       [{ jobId: converted.jobs[0].id, name: 'Converted.mp3', playlistId: converted.jobs[1].id }]);
-    assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songOrder[converted.jobs[0].id], converted.jobs[0].files);
+    assert.deepEqual((await getLibrary(owner.id, (await manager.getJobs()))).songOrder[converted.jobs[0].id], converted.jobs[0].files);
     for (const name of ['Converted.mp3', 'Mislabeled.mp3']) {
       const output = path.join(converted.jobs[0].outputDir, name);
       assert.equal((await fileTypeFromFile(output)).ext, 'mp3');
@@ -323,12 +319,12 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   assert.equal(imported.importedFiles, 2);
   assert.equal(encoder.mock.callCount(), 2);
   assert.equal(imported.jobs[0].source, 'itunes');
-  assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songOrder[imported.jobs[0].id], ['Second.mp3', 'Song.mp3']);
+  assert.deepEqual((await getLibrary(owner.id, (await manager.getJobs()))).songOrder[imported.jobs[0].id], ['Second.mp3', 'Song.mp3']);
   assert.deepEqual(imported.jobs[1].files, []);
   assert.deepEqual(await fs.readdir(imported.jobs[1].outputDir), []);
   assert.equal(imported.jobs[1].playlistSongCount, 1);
-  const importedLibrary = getLibrary(owner.id, manager.getJobs());
-  assert.deepEqual(getPlaylistTracks(importedLibrary, manager.getJobs()).get(imported.jobs[1].id),
+  const importedLibrary = (await getLibrary(owner.id, (await manager.getJobs())));
+  assert.deepEqual(getPlaylistTracks(importedLibrary, (await manager.getJobs())).get(imported.jobs[1].id),
     [{ jobId: imported.jobs[0].id, name: 'Song.mp3', playlistId: imported.jobs[1].id }]);
   assert.deepEqual(importedLibrary.playlistSongOrder[imported.jobs[1].id],
     [songKey({ jobId: imported.jobs[0].id, name: 'Song.mp3' })]);
@@ -361,8 +357,8 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     assert.deepEqual(shared.jobs.map((job) => job.files), [['Song.mp3', 'Song (2).mp3'], ['Movie.mp4'], [], ['Unused.mp3']]);
     assert.deepEqual(shared.jobs.map((job) => job.playlistSongCount), [2, 3, 2, 1]);
     assert.equal(remaining.playlistTitle, 'iTunes Library');
-    const saved = getLibrary(owner.id, manager.getJobs());
-    const tracks = getPlaylistTracks(saved, manager.getJobs());
+    const saved = (await getLibrary(owner.id, (await manager.getJobs())));
+    const tracks = getPlaylistTracks(saved, (await manager.getJobs()));
     const firstSong = songKey({ jobId: source.id, name: 'Song.mp3' });
     const secondSong = songKey({ jobId: source.id, name: 'Song (2).mp3' });
     assert.deepEqual(tracks.get(mixed.id).map(songKey), [songKey({ jobId: mixed.id, name: 'Movie.mp4' }), secondSong, firstSong]);
@@ -377,12 +373,12 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     const exportedPaths = linkedPlaylist.content.split('\n').filter((line) => line && !line.startsWith('#'));
     assert.deepEqual(exportedPaths, ['Song (2).mp3', 'Song.mp3'].map((name) =>
       exported.files.find((file) => file.filePath === path.join(source.outputDir, name)).archivePath));
-    assert.deepEqual(getLibrary(owner.id, manager.getJobs()).songAdds, saved.songAdds);
+    assert.deepEqual((await getLibrary(owner.id, (await manager.getJobs()))).songAdds, saved.songAdds);
     for (const failureStage of ['copy', 'complete']) {
       await linkedContext.test(`failed ${failureStage} rolls back files and links`, async (rollback) => {
-        const beforeJobs = manager.getJobs().map((job) => job.id).sort();
+        const beforeJobs = (await manager.getJobs()).map((job) => job.id).sort();
         const beforeFolders = (await fs.readdir(process.env.YTDLP_OUTPUT_ROOT)).sort();
-        const beforeLibrary = getLibrary(owner.id, manager.getJobs());
+        const beforeLibrary = (await getLibrary(owner.id, (await manager.getJobs())));
         const copyFile = fs.copyFile;
         if (failureStage === 'copy') rollback.mock.method(fs, 'copyFile', async (...args) => {
           if (args[0] === movie.path) throw new Error('Copy failed');
@@ -391,9 +387,9 @@ test('music imports validate media, preserve playlists and enforce ownership', a
         await assert.rejects(imports.importItunesLibrary(sharedXml, sourceFiles, owner, {
           complete: async () => { throw new Error('Archive failed'); }
         }), failureStage === 'copy' ? /Copy failed/ : /Archive failed/);
-        assert.deepEqual(manager.getJobs().map((job) => job.id).sort(), beforeJobs);
+        assert.deepEqual((await manager.getJobs()).map((job) => job.id).sort(), beforeJobs);
         assert.deepEqual((await fs.readdir(process.env.YTDLP_OUTPUT_ROOT)).sort(), beforeFolders);
-        const afterLibrary = getLibrary(owner.id, manager.getJobs());
+        const afterLibrary = (await getLibrary(owner.id, (await manager.getJobs())));
         for (const key of ['entries', 'songAdds', 'songOrder', 'playlistSongOrder']) assert.deepEqual(afterLibrary[key], beforeLibrary[key]);
       });
     }
@@ -411,15 +407,15 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     });
     const beforeConversions = encoder.mock.callCount();
     for (const local of [false, true]) {
-      const before = getLibrary(owner.id, manager.getJobs());
+      const before = (await getLibrary(owner.id, (await manager.getJobs())));
       const imported = await imports.importItunesLibrary(repeatedXml, sharedMedia, owner, { local });
       assert.equal(imported.importedFiles, 101);
       assert.equal(imported.jobs.length, 51);
       assert.equal(imported.jobs[0].files.length, 101);
       assert.ok(imported.jobs.slice(1).every((job) => job.files.length === 0));
-      const saved = getLibrary(owner.id, manager.getJobs());
+      const saved = (await getLibrary(owner.id, (await manager.getJobs())));
       assert.equal(saved.songAdds.length, before.songAdds.length + 5050);
-      const tracks = getPlaylistTracks(saved, manager.getJobs());
+      const tracks = getPlaylistTracks(saved, (await manager.getJobs()));
       const expected = imported.jobs[0].files.map((name) => songKey({ jobId: imported.jobs[0].id, name }));
       for (const job of imported.jobs) {
         assert.deepEqual(saved.playlistSongOrder[job.id], expected);
@@ -431,7 +427,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
 
   await context.test('WAV conversion failures remove temporary outputs without creating playlists', async (conversionContext) => {
     const beforeFiles = (await fs.readdir(directory)).sort();
-    const beforeJobs = manager.getJobs().map((job) => job.id).sort();
+    const beforeJobs = (await manager.getJobs()).map((job) => job.id).sort();
     for (const error of [Object.assign(new Error('Missing'), { code: 'ENOENT' }),
       Object.assign(new Error('Timed out'), { killed: true }), new Error('Encoding failed')]) {
       let calls = 0;
@@ -443,7 +439,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
       await assert.rejects(imports.importItunesLibrary(xml, media, owner), /Unable to convert WAV to MP3/);
       failedEncoder.mock.restore();
       assert.deepEqual((await fs.readdir(directory)).sort(), beforeFiles);
-      assert.deepEqual(manager.getJobs().map((job) => job.id).sort(), beforeJobs);
+      assert.deepEqual((await manager.getJobs()).map((job) => job.id).sort(), beforeJobs);
     }
   });
 
@@ -562,7 +558,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     await fs.copyFile(path.join(completedStorage, 'Media.zip'), path.join(storage, 'Media.zip'));
     for (const operation of ['copyFile', 'unlink']) {
       await diagnostics.test(`archive ${operation} failures restore sources and roll back imported playlists`, async (archive) => {
-        const beforeJobs = manager.getJobs().map((job) => job.id).sort();
+        const beforeJobs = (await manager.getJobs()).map((job) => job.id).sort();
         const beforeArchived = (await fs.readdir(completedStorage)).sort();
         const original = fs[operation];
         archive.mock.method(fs, operation, async (...args) => {
@@ -572,7 +568,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
         });
         await imports.handleLibraryImport(request, reply);
         assert.equal(reply.statusCode, 500);
-        assert.deepEqual(manager.getJobs().map((job) => job.id).sort(), beforeJobs);
+        assert.deepEqual((await manager.getJobs()).map((job) => job.id).sort(), beforeJobs);
         assert.deepEqual((await fs.readdir(completedStorage)).sort(), beforeArchived);
         assert.equal(await fs.readFile(path.join(storage, 'Library.XML'), 'utf8'), xml);
         assert.equal((await fs.stat(path.join(storage, 'Media.zip'))).size, localFiles.zipFiles[0].size);

@@ -1,9 +1,6 @@
 .env
 node_modules/
 data/
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
 runtime/deno/
 runtime/ffmpeg/
 runtime/yt-dlp/

@@ -13,6 +13,8 @@ import AdmZip from 'adm-zip';
 import { build as buildPlist } from 'plist';
 import { fileTypeFromBuffer } from 'file-type';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
+import { readPostgresJob } from '../src/postgresCatalog.js';
+import { createTestDatabase } from '../test-support/postgres.js';
 import { readSongMetadata, readSongSummary, updateSongMetadata } from '../src/music.js';
 
 test('MP3 ratings round-trip all stars and refresh cached file metadata', async (context) => {
@@ -45,26 +47,20 @@ test('MP3 ratings round-trip all stars and refresh cached file metadata', async 
   }
 });
 
-test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 60_000 }, async (context) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-job-http-'));
-  process.env.DATABASE_PATH = path.join(directory, 'test.sqlite');
-  process.env.AUTH_STORE_PATH = path.join(directory, 'auth.json');
-  process.env.JOB_STORE_PATH = path.join(directory, 'jobs.json');
-  process.env.IMPORT_STORAGE_ROOT = path.join(directory, 'import-storage');
-  process.env.LIBRARY_BACKUP_ROOT = path.join(directory, 'library-backups');
-  await fs.mkdir(path.join(directory, 'public'));
-  await fs.writeFile(path.join(directory, 'public', 'index.html'), '<!doctype html><title>Test app shell</title>');
-  const store = await import('../src/authStore.js');
+test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 120_000 }, async (context) => {
   let server;
-  context.after(async () => {
+  const { directory } = await createTestDatabase(context, { beforeCleanup: async () => {
     if (server && server.exitCode === null && server.signalCode === null) {
       const exited = once(server, 'exit');
       server.kill();
       await exited;
     }
-    closeDatabases();
-    await fs.rm(directory, { recursive: true, force: true });
-  });
+  } });
+  process.env.IMPORT_STORAGE_ROOT = path.join(directory, 'import-storage');
+  process.env.LIBRARY_BACKUP_ROOT = path.join(directory, 'library-backups');
+  await fs.mkdir(path.join(directory, 'public'));
+  await fs.writeFile(path.join(directory, 'public', 'index.html'), '<!doctype html><title>Test app shell</title>');
+  const store = await import('../src/authStore.js');
 
   const users = {};
   const credentials = {};
@@ -92,12 +88,12 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     await fs.writeFile(path.join(outputDir, songName), 'song');
     await fs.writeFile(path.join(outputDir, 'keep.mp3'), 'keep');
     await fs.writeFile(path.join(outputDir, '.download-archive.txt'), 'youtube song\nyoutube keep\n');
-    writeJob(openDatabase(), {
+    (await writeJob(openDatabase(), {
       id, url: `https://music.youtube.com/watch?v=${id}`, status: 'completed',
       initiatedBy: id !== 'unowned' ? { id: users.Owner.id, name: 'Owner' } : null,
       outputDir, folderName: id, files: [songName, 'keep.mp3'],
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
-    });
+    }));
   }
   const musicDir = path.join(outputRoot, 'music');
   await fs.mkdir(path.join(musicDir, '[NoVocals]'));
@@ -108,9 +104,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       synchronisedText: [{ text: 'First line', timeStamp: 1000 }, { text: 'Second line', timeStamp: 2500 }] }]
   }, Buffer.from('audio fixture'));
   await fs.writeFile(path.join(musicDir, '[NoVocals]', songName), taggedAudio);
-  const musicJob = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get('music').data);
-  writeJob(openDatabase(), { ...musicJob, files: [...musicJob.files, `[NoVocals]/${songName}`] });
-  closeDatabases();
+  const musicJob = await readPostgresJob(openDatabase(), 'music');
+  (await writeJob(openDatabase(), { ...musicJob, files: [...musicJob.files, `[NoVocals]/${songName}`] }));
+  (await closeDatabases());
 
   const listeners = [net.createServer(), net.createServer()];
   await Promise.all(listeners.map((listener) => new Promise((resolve, reject) => {
@@ -426,10 +422,11 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const actionLibrary = (await call('/api/library', 'GET', credentials.Other[0])).body;
   assert.deepEqual(actionLibrary.jobs.find((job) => job.id === 'shared').contributors, shared.body.contributors);
   assert.deepEqual(actionLibrary.jobs.map((job) => job.id), ['shared']);
-  assert.equal((await call('/api/library', 'GET', credentials.Owner[0])).body.jobs.find((job) => job.id === 'music').transcriptions[`[NoVocals]/${songName}`].status, 'failed');
-  const persistedShared = JSON.parse(openDatabase().prepare('SELECT data FROM jobs WHERE id = ?').get('shared').data);
+  assert.equal((await call('/api/library/tracks?entryId=music', 'GET', credentials.Owner[0])).body.files
+    .find((file) => file.name === `[NoVocals]/${songName}`).transcription.status, 'failed');
+  const persistedShared = JSON.parse((await openDatabase().prepare('SELECT data FROM jobs WHERE id = $1').get('shared')).data);
   assert.deepEqual(persistedShared.contributors, shared.body.contributors);
-  closeDatabases();
+  (await closeDatabases());
   assert.equal(shared.body.initiatedBy.id, users.Owner.id);
   const titleRoute = '/api/jobs/shared/title';
   assert.equal((await call(titleRoute, 'PATCH', {}, { playlistTitle: 'Private edit' })).status, 401);
@@ -532,8 +529,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(firstSingleLibrary.entries.some((entry) => entry.id === singleId), false);
   const current = await waitForJob(singleId, credentials.Owner[0]);
   await fs.writeFile(path.join(current.body.outputDir, 'single.mp3'), 'single song');
-  writeJob(openDatabase(), { ...current.body, files: ['single.mp3'] });
-  closeDatabases();
+  (await writeJob(openDatabase(), { ...current.body, files: ['single.mp3'] }));
+  (await closeDatabases());
   const singlesLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
   assert.equal(singlesLibrary.playlists.find((playlist) => playlist.id === 'individual-songs').playlistTitle, 'Individual Songs');
   assert.equal(singlesLibrary.playlists.find((playlist) => playlist.id === 'individual-songs').protected, true);
@@ -604,12 +601,12 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   await fs.mkdir(largeDirectory);
   const largeFiles = Array.from({ length: 1205 }, (_, index) => `Track ${String(index).padStart(4, '0')} ${'long filename '.repeat(7)}.mp3`);
   await Promise.all(largeFiles.map((name) => fs.writeFile(path.join(largeDirectory, name), 'audio')));
-  writeJob(openDatabase(), { id: 'pagination', status: 'completed', isPlaylist: true, playlistTitle: 'Pagination Fixture',
+  (await writeJob(openDatabase(), { id: 'pagination', status: 'completed', isPlaylist: true, playlistTitle: 'Pagination Fixture',
     url: 'https://music.youtube.com/playlist?list=pagination-fixture',
     initiatedBy: { id: users.Owner.id, name: 'Owner' }, outputDir: largeDirectory, files: largeFiles,
     songMetadata: { [largeFiles[1204]]: { title: 'Distant title', artist: 'Beyond page one' } },
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-  closeDatabases();
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+  (await closeDatabases());
   const boundedDefault = (await call('/api/library/tracks', 'GET', credentials.Owner[0])).body;
   assert.equal(boundedDefault.files.length, 50);
   assert.equal(boundedDefault.total, 1208);
@@ -697,7 +694,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const reloadedTree = (await call('/api/library', 'GET', credentials.Owner[0])).body;
   assert.equal(reloadedTree.version, tree.version);
   assert.deepEqual(reloadedTree.entries, tree.entries);
-  assert.deepEqual(reloadedTree.songOrder, restored.body.songOrder);
+  assert.equal(reloadedTree.serverPagination, true);
+  assert.deepEqual((await call('/api/jobs/pagination', 'GET', credentials.Owner[0])).body.files, restored.body.songOrder.pagination);
   assert.equal((await call('/api/library', 'GET', credentials.Other[0])).body.version, otherVersion);
   const bulkRestart = once(server, 'exit');
   server.kill();

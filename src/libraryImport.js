@@ -26,7 +26,7 @@ const activeLocalFiles = new Set();
 const importProgress = new Map();
 const importLogLifetime = 60 * 60 * 1000;
 const failure = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
-const libraryJobs = (user) => getJobs().filter((job) => job.initiatedBy?.id === user.id
+const libraryJobs = async (user) => (await getJobs(user.id)).filter((job) => job.initiatedBy?.id === user.id
   || job.contributors?.some((contributor) => contributor.id === user.id));
 
 const importStorageRoot = () => path.resolve(process.env.IMPORT_STORAGE_ROOT || path.join(process.cwd(), 'import-storage'));
@@ -346,8 +346,8 @@ export function parseItunesImport(xml, media, { local = false, report = () => {}
 }
 
 export async function importUploadedFiles(files, options, user) {
-  const jobs = libraryJobs(user);
-  const library = getLibrary(user.id, jobs);
+  const jobs = (await libraryJobs(user));
+  const library = (await getLibrary(user.id, jobs));
   if (options.createNew !== 'true' && options.createNew !== 'false') throw failure('Choose an existing or new playlist');
   const createNew = options.createNew === 'true';
   if (!createNew && !library.entries.some((entry) => entry.id === options.playlistId && entry.type === 'playlist')) {
@@ -361,7 +361,7 @@ export async function importUploadedFiles(files, options, user) {
   const job = await importJobFiles({ files: validated, playlistId: createNew || individual ? undefined : options.playlistId,
     playlistTitle: individual ? 'Imported songs' : options.playlistTitle, individual }, user);
   if (individual) {
-    try { linkLibraryJob(user.id, job, libraryJobs(user)); }
+    try { (await linkLibraryJob(user.id, job, (await libraryJobs(user)))); }
     catch (error) { await deleteJob(job.id, user); throw error; }
   }
   return { jobs: [job], importedFiles: files.length };
@@ -369,7 +369,7 @@ export async function importUploadedFiles(files, options, user) {
 
 export async function importItunesLibrary(xml, media, user, { local = false, report = () => {}, complete = async () => {} } = {}) {
   const plans = parseItunesImport(xml, media, { local, report });
-  const current = getLibrary(user.id, libraryJobs(user));
+  const current = (await getLibrary(user.id, (await libraryJobs(user))));
   if (current.entries.length + plans.length > 5000) throw failure('The library contains too many entries', 413);
   for (const plan of plans) {
     plan.files = [...new Map(plan.files.map((file) => [file.path, file])).values()];
@@ -402,15 +402,15 @@ export async function importItunesLibrary(xml, media, user, { local = false, rep
       report('copy', 'Playlist imported', { playlist: plan.playlistTitle, jobId: job.id, files: files.length, linked: plan.files.length - files.length });
     }
     report('save', 'Saving library order', { playlists: created.length });
-    const jobs = libraryJobs(user);
-    const library = getLibrary(user.id, jobs);
+    const jobs = (await libraryJobs(user));
+    const library = (await getLibrary(user.id, jobs));
     for (const job of created) {
       const tracks = playlistTracks.get(job.id);
       library.songOrder[job.id] = job.files;
       library.playlistSongOrder[job.id] = tracks.map(songKey);
       library.songAdds.push(...tracks.filter((track) => track.jobId !== job.id).map((track) => ({ ...track, playlistId: job.id })));
     }
-    setLibrary(user.id, library, jobs);
+    (await setLibrary(user.id, library, jobs));
     await complete();
     return { jobs: created, importedFiles: sources.size };
   } catch (error) {

@@ -17,37 +17,37 @@ export function nextBackupTime(schedule, now = new Date()) {
   return next.toISOString();
 }
 
-export function createLibraryBackupService({ loadLibrary, database = openDatabase(),
-  root = process.env.LIBRARY_BACKUP_ROOT || path.join(path.dirname(database.name), 'library-backups'),
+export async function createLibraryBackupService({ loadLibrary, database = openDatabase(),
+  root = process.env.LIBRARY_BACKUP_ROOT || path.resolve('data', 'library-backups'),
   now = () => new Date(), writeArchive = writeLibraryExport }) {
   const active = new Map();
   const readers = new Map();
   const writing = new Set();
-  database.prepare("UPDATE library_backups SET running = 0, last_error = 'Backup interrupted by a server restart. Try again.' WHERE running = 1").run();
+  (await database.prepare("UPDATE library_backups SET running = 0, last_error = 'Backup interrupted by a server restart. Try again.' WHERE running = 1").run());
 
   function directory(userId) {
     return path.resolve(root, createHash('sha256').update(userId).digest('hex'));
   }
 
-  function getStatus(userId) {
-    const row = database.prepare('SELECT * FROM library_backups WHERE user_id = ?').get(userId);
+  async function getStatus(userId) {
+    const row = (await database.prepare('SELECT * FROM library_backups WHERE user_id = $1').get(userId));
     return { schedule: row ? JSON.parse(row.schedule) : { enabled: false }, nextRunAt: row?.next_run_at || null,
       latest: row?.latest ? JSON.parse(row.latest) : null, running: active.has(userId),
       progress: active.get(userId) ? { ...active.get(userId) } : null,
       lastAttemptAt: row?.last_attempt_at || null, error: row?.last_error || null };
   }
 
-  function requireUser(userId) {
-    if (database.prepare('SELECT status FROM users WHERE id = ?').get(userId)?.status !== 'approved') {
+  async function requireUser(userId) {
+    if ((await database.prepare('SELECT status FROM users WHERE id = $1').get(userId))?.status !== 'approved') {
       throw failure('An approved account is required.', 403);
     }
-    database.prepare('INSERT OR IGNORE INTO library_backups (user_id) VALUES (?)').run(userId);
+    (await database.prepare('INSERT INTO library_backups (user_id) VALUES ($1) ON CONFLICT DO NOTHING').run(userId));
   }
 
-  function saveSchedule(userId, value) {
-    requireUser(userId);
+  async function saveSchedule(userId, value) {
+    (await requireUser(userId));
     if (typeof value?.enabled !== 'boolean') throw failure('Choose whether scheduled backups are enabled.');
-    let schedule = { ...getStatus(userId).schedule, enabled: false };
+    let schedule = { ...(await getStatus(userId)).schedule, enabled: false };
     if (value.enabled) {
       if (!['daily', 'weekly'].includes(value.frequency) || typeof value.time !== 'string'
         || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value.time)
@@ -59,27 +59,24 @@ export function createLibraryBackupService({ loadLibrary, database = openDatabas
         weekday: value.frequency === 'weekly' ? value.weekday : 0, format: options.format,
         ...(options.destination ? { destination: options.destination } : {}) };
     }
-    database.prepare('UPDATE library_backups SET schedule = ?, next_run_at = ? WHERE user_id = ?')
-      .run(JSON.stringify(schedule), schedule.enabled ? nextBackupTime(schedule, now()) : null, userId);
-    return getStatus(userId);
+    (await database.prepare('UPDATE library_backups SET schedule = $1, next_run_at = $2 WHERE user_id = $3')
+      .run(JSON.stringify(schedule), schedule.enabled ? nextBackupTime(schedule, now()) : null, userId));
+    return (await getStatus(userId));
   }
 
   async function cleanup(userId) {
     const folder = directory(userId);
     const files = await fs.readdir(folder).catch(() => []);
-    const latest = getStatus(userId).latest?.id;
+    const latest = (await getStatus(userId)).latest?.id;
     await Promise.all(files.filter((name) => /^[a-f0-9-]{36}\.(zip|partial)$/.test(name)
       && name !== `${latest}.zip` && !readers.has(path.join(folder, name)) && !writing.has(path.join(folder, name)))
       .map((name) => fs.rm(path.join(folder, name), { force: true }).catch(() => {})));
   }
 
   function start(userId, value) {
-    requireUser(userId);
     const options = exportOptions(value?.format, value?.destination);
     if (active.has(userId)) throw failure('A library backup is already running.', 409);
     if (active.size >= 2) throw failure('The backup service is busy. Try again shortly.', 503);
-    database.prepare('UPDATE library_backups SET running = 1, last_attempt_at = ?, last_error = NULL WHERE user_id = ?')
-      .run(now().toISOString(), userId);
     const progress = { stage: 'preparing', processedSongs: 0, totalSongs: null, format: options.format };
     active.set(userId, progress);
     const completion = (async () => {
@@ -89,7 +86,12 @@ export function createLibraryBackupService({ loadLibrary, database = openDatabas
       const target = path.join(folder, `${id}.zip`);
       writing.add(temporary);
       writing.add(target);
+      let authorized = false;
       try {
+        await requireUser(userId);
+        authorized = true;
+        await database.prepare('UPDATE library_backups SET running = 1, last_attempt_at = $1, last_error = NULL WHERE user_id = $2')
+          .run(now().toISOString(), userId);
         await fs.mkdir(folder, { recursive: true, mode: 0o700 });
         await cleanup(userId);
         const { library, jobs } = await loadLibrary(userId);
@@ -100,16 +102,16 @@ export function createLibraryBackupService({ loadLibrary, database = openDatabas
         progress.stage = 'finalizing';
         await fs.rename(temporary, target);
         const stat = await fs.stat(target);
-        requireUser(userId);
+        (await requireUser(userId));
         const latest = { id, format: options.format, ...(options.destination ? { destination: options.destination } : {}),
           createdAt: now().toISOString(), sizeBytes: stat.size, songCount: prepared.files.length };
-        database.prepare('UPDATE library_backups SET latest = ?, running = 0, last_error = NULL WHERE user_id = ?')
-          .run(JSON.stringify(latest), userId);
+        (await database.prepare('UPDATE library_backups SET latest = $1, running = 0, last_error = NULL WHERE user_id = $2')
+          .run(JSON.stringify(latest), userId));
         await cleanup(userId);
         return latest;
       } catch (error) {
         await Promise.all([temporary, target].map((file) => fs.rm(file, { force: true }).catch(() => {})));
-        database.prepare('UPDATE library_backups SET running = 0, last_error = ? WHERE user_id = ?')
+        if (authorized) await database.prepare('UPDATE library_backups SET running = 0, last_error = $1 WHERE user_id = $2')
           .run(error.statusCode ? error.message : 'Unable to create library backup. Check server storage and try again.', userId);
         throw error;
       } finally { writing.delete(temporary); writing.delete(target); active.delete(userId); }
@@ -118,8 +120,8 @@ export function createLibraryBackupService({ loadLibrary, database = openDatabas
   }
 
   async function openLatest(userId) {
-    requireUser(userId);
-    const latest = getStatus(userId).latest;
+    (await requireUser(userId));
+    const latest = (await getStatus(userId)).latest;
     if (!latest) throw failure('No library backup is available. Create a new export first.', 404);
     const filePath = path.join(directory(userId), `${latest.id}.zip`);
     readers.set(filePath, (readers.get(filePath) || 0) + 1);
@@ -141,16 +143,16 @@ export function createLibraryBackupService({ loadLibrary, database = openDatabas
   }
 
   async function runDue() {
-    const due = database.prepare(`SELECT backup.user_id FROM library_backups backup JOIN users ON users.id = backup.user_id
-      WHERE users.status = 'approved' AND backup.next_run_at <= ? ORDER BY backup.next_run_at`).all(now().toISOString());
+    const due = (await database.prepare(`SELECT backup.user_id FROM library_backups backup JOIN users ON users.id = backup.user_id
+      WHERE users.status = 'approved' AND backup.next_run_at <= $1 ORDER BY backup.next_run_at`).all(now().toISOString()));
     for (const { user_id: userId } of due) {
-      const status = getStatus(userId);
+      const status = (await getStatus(userId));
       if (!status.schedule.enabled || !status.nextRunAt || status.nextRunAt > now().toISOString() || active.has(userId)) continue;
       if (active.size >= 2) break;
-      const completion = start(userId, status.schedule);
-      database.prepare('UPDATE library_backups SET next_run_at = ? WHERE user_id = ?')
-        .run(nextBackupTime(status.schedule, now()), userId);
-      await completion.catch(() => {});
+      const completion = start(userId, status.schedule).catch(() => {});
+      (await database.prepare('UPDATE library_backups SET next_run_at = $1 WHERE user_id = $2')
+        .run(nextBackupTime(status.schedule, now()), userId));
+      await completion;
     }
   }
 

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { openDatabase, readUser, writeUser } from './database.js';
+import { openDatabase, readUser, writeUser, withTransaction } from './database.js';
 
 const database = openDatabase();
 
@@ -25,43 +25,43 @@ function normalizeName(name) {
   return normalized;
 }
 
-function countApprovedAdmins(excludingUserId = null) {
-  return database.prepare("SELECT count(*) AS count FROM users WHERE id IS NOT ? AND role = 'admin' AND status = 'approved'")
-    .get(excludingUserId).count;
+async function countApprovedAdmins(excludingUserId = null) {
+  return (await database.prepare("SELECT count(*) AS count FROM users WHERE id IS DISTINCT FROM $1 AND role = 'admin' AND status = 'approved'")
+    .get(excludingUserId)).count;
 }
 
-export function listUsers() {
-  return database.prepare(`SELECT users.id, name, role, status, created_at AS createdAt,
-    updated_at AS updatedAt, (SELECT count(*) FROM credentials WHERE user_id = users.id) AS credentialCount
-    FROM users ORDER BY created_at`).all();
+export async function listUsers() {
+  return (await database.prepare(`SELECT users.id, name, role, status, created_at AS "createdAt",
+    updated_at AS "updatedAt", (SELECT count(*) FROM credentials WHERE user_id = users.id) AS "credentialCount"
+    FROM users ORDER BY created_at`).all());
 }
 
-export function findCredential(credentialId) {
-  const record = database.prepare('SELECT user_id FROM credentials WHERE id = ?').get(credentialId);
+export async function findCredential(credentialId) {
+  const record = (await database.prepare('SELECT user_id FROM credentials WHERE id = $1').get(credentialId));
   if (!record) return null;
-  const user = readUser(database, record.user_id);
+  const user = (await readUser(database, record.user_id));
   const credential = user.credentials.find((item) => item.id === credentialId);
   return { user, credential: { ...credential, publicKey: Buffer.from(credential.publicKey, 'base64url') } };
 }
 
 export async function registerUser(name, userHandle, credential) {
-  return database.transaction(() => registerUserRecord(name, userHandle, credential)).immediate();
+  return (await withTransaction(database, async () => (await registerUserRecord(name, userHandle, credential))));
 }
 
-function registerUserRecord(name, userHandle, credential) {
+async function registerUserRecord(name, userHandle, credential) {
   const normalizedName = normalizeName(name);
-  if (database.prepare('SELECT 1 FROM users WHERE name_key = ?').get(normalizedName.toLowerCase())) {
+  if ((await database.prepare('SELECT 1 FROM users WHERE name_key = $1').get(normalizedName.toLowerCase()))) {
     const error = new Error('That name is already registered');
     error.statusCode = 409;
     throw error;
   }
-  if (findCredential(credential.id)) {
+  if ((await findCredential(credential.id))) {
     const error = new Error('That passkey is already registered');
     error.statusCode = 409;
     throw error;
   }
 
-  const isFirstUser = database.prepare('SELECT count(*) AS count FROM users').get().count === 0;
+  const isFirstUser = (await database.prepare('SELECT count(*) AS count FROM users').get()).count === 0;
   const now = new Date().toISOString();
   const user = {
     id: crypto.randomUUID(),
@@ -80,12 +80,12 @@ function registerUserRecord(name, userHandle, credential) {
     createdAt: now,
     updatedAt: now
   };
-  writeUser(database, user);
+  (await writeUser(database, user));
   return publicUser(user);
 }
 
-export function getUserPasskeys(userId) {
-  const user = readUser(database, userId);
+export async function getUserPasskeys(userId) {
+  const user = (await readUser(database, userId));
   return user ? {
     userHandle: user.userHandle,
     credentials: user.credentials.map(({ id, transports, createdAt, lastUsedAt }) => ({ id, transports, createdAt, lastUsedAt }))
@@ -93,14 +93,14 @@ export function getUserPasskeys(userId) {
 }
 
 export async function addCredential(userId, credential) {
-  return database.transaction(() => {
-    const user = readUser(database, userId);
+  return (await withTransaction(database, async () => {
+    const user = (await readUser(database, userId));
     if (!user || user.status !== 'approved') {
       const error = new Error('Approved user required');
       error.statusCode = 403;
       throw error;
     }
-    if (findCredential(credential.id)) {
+    if ((await findCredential(credential.id))) {
       const error = new Error('That passkey is already registered');
       error.statusCode = 409;
       throw error;
@@ -115,26 +115,26 @@ export async function addCredential(userId, credential) {
       lastUsedAt: null
     });
     user.updatedAt = now;
-    writeUser(database, user);
+    (await writeUser(database, user));
     return publicUser(user);
-  }).immediate();
+  }));
 }
 
 export async function updateCredentialCounter(userId, credentialId, counter) {
-  return database.transaction(() => {
+  return (await withTransaction(database, async () => {
     const now = new Date().toISOString();
-    const result = database.prepare(`UPDATE credentials SET counter = ?, last_used_at =
-      CASE WHEN (SELECT status FROM users WHERE id = ?) = 'approved' THEN ? ELSE last_used_at END
-      WHERE id = ? AND user_id = ?`).run(counter, userId, now, credentialId, userId);
+    const result = (await database.prepare(`UPDATE credentials SET counter = $1, last_used_at =
+      CASE WHEN (SELECT status FROM users WHERE id = $2) = 'approved' THEN $3 ELSE last_used_at END
+      WHERE id = $4 AND user_id = $5`).run(counter, userId, now, credentialId, userId));
     if (!result.changes) return false;
-    database.prepare('UPDATE users SET updated_at = ? WHERE id = ?').run(now, userId);
+    (await database.prepare('UPDATE users SET updated_at = $1 WHERE id = $2').run(now, userId));
     return true;
-  }).immediate();
+  }));
 }
 
 export async function deleteCredential(userId, credentialId) {
-  return database.transaction(() => {
-    const user = readUser(database, userId);
+  return (await withTransaction(database, async () => {
+    const user = (await readUser(database, userId));
     if (!user || !user.credentials.some(({ id }) => id === credentialId)) return null;
     if (user.status !== 'approved') {
       const error = new Error('Approved user required');
@@ -146,39 +146,39 @@ export async function deleteCredential(userId, credentialId) {
       error.statusCode = 409;
       throw error;
     }
-    database.prepare('DELETE FROM credentials WHERE id = ? AND user_id = ?').run(credentialId, userId);
+    (await database.prepare('DELETE FROM credentials WHERE id = $1 AND user_id = $2').run(credentialId, userId));
     user.credentials = user.credentials.filter(({ id }) => id !== credentialId);
     user.updatedAt = new Date().toISOString();
-    database.prepare('UPDATE users SET updated_at = ? WHERE id = ?').run(user.updatedAt, userId);
+    (await database.prepare('UPDATE users SET updated_at = $1 WHERE id = $2').run(user.updatedAt, userId));
     return publicUser(user);
-  }).immediate();
+  }));
 }
 
 export async function updateUser(userId, changes, actorId) {
-  return database.transaction(() => updateUserRecord(userId, changes, actorId)).immediate();
+  return (await withTransaction(database, async () => (await updateUserRecord(userId, changes, actorId))));
 }
 
 export async function deleteUser(userId, actorId) {
-  return database.transaction(() => {
-    const user = readUser(database, userId);
+  return (await withTransaction(database, async () => {
+    const user = (await readUser(database, userId));
     if (!user) return false;
     if (user.id === actorId) {
       const error = new Error('You cannot delete your own account');
       error.statusCode = 409;
       throw error;
     }
-    if (user.role === 'admin' && user.status === 'approved' && countApprovedAdmins(user.id) === 0) {
+    if (user.role === 'admin' && user.status === 'approved' && (await countApprovedAdmins(user.id)) === 0) {
       const error = new Error('At least one approved admin is required');
       error.statusCode = 409;
       throw error;
     }
-    database.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+    (await database.prepare('DELETE FROM users WHERE id = $1').run(user.id));
     return true;
-  }).immediate();
+  }));
 }
 
-function updateUserRecord(userId, changes, actorId) {
-  const user = readUser(database, userId);
+async function updateUserRecord(userId, changes, actorId) {
+  const user = (await readUser(database, userId));
   if (!user) return null;
   const status = changes.status ?? user.status;
   const role = changes.role ?? user.role;
@@ -193,7 +193,7 @@ function updateUserRecord(userId, changes, actorId) {
     throw error;
   }
   if (user.role === 'admin' && user.status === 'approved'
-    && (role !== 'admin' || status !== 'approved') && countApprovedAdmins(user.id) === 0) {
+    && (role !== 'admin' || status !== 'approved') && (await countApprovedAdmins(user.id)) === 0) {
     const error = new Error('At least one approved admin is required');
     error.statusCode = 409;
     throw error;
@@ -203,10 +203,10 @@ function updateUserRecord(userId, changes, actorId) {
   user.role = role;
   user.updatedAt = new Date().toISOString();
   if (status !== 'approved') {
-    database.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
-    database.prepare('DELETE FROM private_access_tokens WHERE user_id = ?').run(user.id);
+    (await database.prepare('DELETE FROM sessions WHERE user_id = $1').run(user.id));
+    (await database.prepare('DELETE FROM private_access_tokens WHERE user_id = $1').run(user.id));
   }
-  writeUser(database, user);
+  (await writeUser(database, user));
   return publicUser(user);
 }
 
@@ -221,37 +221,37 @@ export async function createSession(userId) {
     userId,
     expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
   };
-  database.transaction(() => {
-    database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(new Date().toISOString());
-    database.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
-      .run(session.tokenHash, session.userId, session.expiresAt);
-  }).immediate();
+  (await withTransaction(database, async () => {
+    (await database.prepare('DELETE FROM sessions WHERE expires_at <= $1').run(new Date().toISOString()));
+    (await database.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)')
+      .run(session.tokenHash, session.userId, session.expiresAt));
+  }));
   return { token, expiresAt: session.expiresAt };
 }
 
-export function getSessionUser(token) {
+export async function getSessionUser(token) {
   if (!token) return null;
-  const session = database.prepare('SELECT user_id FROM sessions WHERE token_hash = ? AND expires_at > ?')
-    .get(hashToken(token), new Date().toISOString());
+  const session = (await database.prepare('SELECT user_id FROM sessions WHERE token_hash = $1 AND expires_at > $2')
+    .get(hashToken(token), new Date().toISOString()));
   if (!session) return null;
-  const user = readUser(database, session.user_id);
+  const user = (await readUser(database, session.user_id));
   if (!user || user.status !== 'approved') return null;
   return publicUser(user);
 }
 
 export async function deleteSession(token) {
   if (!token) return;
-  database.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(token));
+  (await database.prepare('DELETE FROM sessions WHERE token_hash = $1').run(hashToken(token)));
 }
 
-export function getUser(userId) {
-  const user = readUser(database, userId);
+export async function getUser(userId) {
+  const user = (await readUser(database, userId));
   return user ? publicUser(user) : null;
 }
 
-export function listPrivateAccessTokens(userId) {
-  return database.prepare(`SELECT id, name, created_at AS createdAt
-    FROM private_access_tokens WHERE user_id = ? ORDER BY created_at DESC`).all(userId);
+export async function listPrivateAccessTokens(userId) {
+  return (await database.prepare(`SELECT id, name, created_at AS "createdAt"
+    FROM private_access_tokens WHERE user_id = $1 ORDER BY created_at DESC`).all(userId));
 }
 
 export async function createPrivateAccessToken(userId, name) {
@@ -261,7 +261,7 @@ export async function createPrivateAccessToken(userId, name) {
     error.statusCode = 400;
     throw error;
   }
-  if (getUser(userId)?.status !== 'approved') {
+  if ((await getUser(userId))?.status !== 'approved') {
     const error = new Error('Approved user required');
     error.statusCode = 403;
     throw error;
@@ -269,21 +269,21 @@ export async function createPrivateAccessToken(userId, name) {
   const id = crypto.randomUUID();
   const token = `ssyt_pat_${crypto.randomBytes(32).toString('base64url')}`;
   const createdAt = new Date().toISOString();
-  database.prepare(`INSERT INTO private_access_tokens (id, user_id, name, token_hash, created_at)
-    VALUES (?, ?, ?, ?, ?)`).run(id, userId, normalizedName, hashToken(token), createdAt);
+  (await database.prepare(`INSERT INTO private_access_tokens (id, user_id, name, token_hash, created_at)
+    VALUES ($1, $2, $3, $4, $5)`).run(id, userId, normalizedName, hashToken(token), createdAt));
   return { id, name: normalizedName, token, createdAt };
 }
 
-export function getPrivateAccessTokenUser(token) {
+export async function getPrivateAccessTokenUser(token) {
   if (typeof token !== 'string' || !/^ssyt_pat_[A-Za-z0-9_-]{43}$/.test(token)) return null;
-  const record = database.prepare('SELECT user_id FROM private_access_tokens WHERE token_hash = ?').get(hashToken(token));
+  const record = (await database.prepare('SELECT user_id FROM private_access_tokens WHERE token_hash = $1').get(hashToken(token)));
   if (!record) return null;
-  const user = readUser(database, record.user_id);
+  const user = (await readUser(database, record.user_id));
   if (!user || user.status !== 'approved') return null;
   return publicUser(user);
 }
 
 export async function deletePrivateAccessToken(userId, tokenId) {
-  return database.prepare('DELETE FROM private_access_tokens WHERE user_id = ? AND id = ?')
-    .run(userId, tokenId).changes > 0;
+  return (await database.prepare('DELETE FROM private_access_tokens WHERE user_id = $1 AND id = $2')
+    .run(userId, tokenId)).changes > 0;
 }

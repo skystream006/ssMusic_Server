@@ -1,3 +1,4 @@
+import 'express-async-errors';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import {
@@ -135,10 +136,10 @@ function sendError(res, error) {
   return res.status(error.statusCode || 400).json({ error: error.message });
 }
 
-export function attachUser(req, _res, next) {
-  req.sessionUser = getSessionUser(getSessionToken(req));
+export async function attachUser(req, _res, next) {
+  req.sessionUser = (await getSessionUser(getSessionToken(req)));
   req.user = req.headers['x-pat'] !== undefined
-    ? getPrivateAccessTokenUser(req.headers['x-pat'])
+    ? (await getPrivateAccessTokenUser(req.headers['x-pat']))
     : req.sessionUser;
   next();
 }
@@ -184,7 +185,7 @@ export function registerAuthRoutes(app, limiters = {}) {
         || crypto.createHash('sha256').update(verifier).digest('base64url') !== authorization.codeChallenge) {
         return res.status(400).json({ error: 'Invalid authorization code or PKCE verifier' });
       }
-      const user = getUser(authorization.userId);
+      const user = (await getUser(authorization.userId));
       if (!user || user.status !== 'approved' || user.updatedAt !== authorization.userUpdatedAt) {
         return res.status(403).json({ error: 'Account access changed. Please log in again.' });
       }
@@ -200,8 +201,8 @@ export function registerAuthRoutes(app, limiters = {}) {
     return res.json({ user: req.user });
   });
 
-  app.get('/api/auth/pats', requireSession, (req, res) => {
-    return res.json({ tokens: listPrivateAccessTokens(req.user.id) });
+  app.get('/api/auth/pats', requireSession, async (req, res) => {
+    return res.json({ tokens: (await listPrivateAccessTokens(req.user.id)) });
   });
 
   app.post('/api/auth/pats', requireSession, async (req, res) => {
@@ -260,15 +261,15 @@ export function registerAuthRoutes(app, limiters = {}) {
     }
   });
 
-  app.get('/api/auth/passkeys', requireSession, (req, res) => {
-    return res.json({ user: req.user, passkeys: getUserPasskeys(req.user.id).credentials });
+  app.get('/api/auth/passkeys', requireSession, async (req, res) => {
+    return res.json({ user: req.user, passkeys: (await getUserPasskeys(req.user.id)).credentials });
   });
 
   app.delete('/api/auth/passkeys/:credentialId', requireSession, async (req, res) => {
     try {
       const user = await deleteCredential(req.user.id, req.params.credentialId);
       if (!user) return res.status(404).json({ error: 'Passkey not found' });
-      return res.json({ user, passkeys: getUserPasskeys(user.id).credentials });
+      return res.json({ user, passkeys: (await getUserPasskeys(user.id)).credentials });
     } catch (error) {
       return sendError(res, error);
     }
@@ -279,7 +280,7 @@ export function registerAuthRoutes(app, limiters = {}) {
       if (req.body?.client && req.body.client !== 'web') {
         return res.status(400).json({ error: 'Add passkeys in the web UI' });
       }
-      const { userHandle, credentials } = getUserPasskeys(req.user.id);
+      const { userHandle, credentials } = (await getUserPasskeys(req.user.id));
       const { rpID, origin } = getWebAuthnConfig(req);
       const options = await generateRegistrationOptions({
         rpName: 'ssYTDLP',
@@ -325,7 +326,7 @@ export function registerAuthRoutes(app, limiters = {}) {
         return res.status(400).json({ error: 'Passkey registration could not be verified' });
       }
       const user = await addCredential(req.user.id, verification.registrationInfo.credential);
-      return res.status(201).json({ user, passkeys: getUserPasskeys(user.id).credentials });
+      return res.status(201).json({ user, passkeys: (await getUserPasskeys(user.id)).credentials });
     } catch (error) {
       return sendError(res, error);
     }
@@ -380,7 +381,7 @@ export function registerAuthRoutes(app, limiters = {}) {
   app.post('/api/auth/login/verify', loginVerifyLimiter, async (req, res) => {
     try {
       const challenge = takeChallenge(req.body?.requestId, 'authentication');
-      const match = findCredential(req.body?.response?.id);
+      const match = (await findCredential(req.body?.response?.id));
       if (!match) return res.status(401).json({ error: 'Passkey is not registered on this server' });
       const verification = await verifyAuthenticationResponse({
         response: req.body.response,
@@ -405,7 +406,7 @@ export function registerAuthRoutes(app, limiters = {}) {
       if (match.user.status !== 'approved') {
         return res.status(403).json({ error: 'Your access has been revoked', code: 'ACCESS_REVOKED' });
       }
-      const user = getUser(match.user.id);
+      const user = (await getUser(match.user.id));
       if (challenge.appAuthorization) {
         const code = rememberChallenge({
           type: 'app-authorization',
@@ -432,14 +433,14 @@ export function registerAuthRoutes(app, limiters = {}) {
     return res.status(204).end();
   });
 
-  app.get('/api/admin/users', requireAdmin, (_req, res) => {
-    res.json({ users: listUsers() });
+  app.get('/api/admin/users', requireAdmin, async (_req, res) => {
+    res.json({ users: (await listUsers()) });
   });
 
-  app.get('/api/admin/users/:id', requireSession, requireAdmin, (req, res) => {
-    const user = getUser(req.params.id);
+  app.get('/api/admin/users/:id', requireSession, requireAdmin, async (req, res) => {
+    const user = (await getUser(req.params.id));
     if (!user) return res.status(404).json({ error: 'User not found' });
-    return res.json({ user, tokens: listPrivateAccessTokens(user.id) });
+    return res.json({ user, tokens: (await listPrivateAccessTokens(user.id)) });
   });
 
   app.delete('/api/admin/users/:id', requireSession, requireAdmin, async (req, res) => {
