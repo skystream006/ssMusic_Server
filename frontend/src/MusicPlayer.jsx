@@ -389,6 +389,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               onChange={(event) => selection.change(visibleTracks.map(songKey), event.target.checked)} /><span>{selection.count} selected</span></label>
             <button className="music-icon-button" type="button" title="Move selected songs" aria-label="Move selected songs" disabled={libraryView.saving || !selection.count} onClick={() => selection.transfer('move')}><ArrowRightLeft size={18} /></button>
             <button className="music-icon-button" type="button" title="Link selected songs" aria-label="Link selected songs" disabled={libraryView.saving || !selection.count} onClick={() => selection.transfer('link')}><Link size={18} /></button>
+            <button className="music-icon-button" type="button" title="Delete selected songs" aria-label="Delete selected songs" disabled={libraryView.saving || !selection.canRemove} onClick={selection.remove}><Trash2 size={18} /></button>
             <button className="music-icon-button" type="button" title="Clear song selection" aria-label="Clear song selection" disabled={libraryView.saving} onClick={selection.clear}><X size={18} /></button>
           </div>}
           {libraryView.pagination && <TrackPagination pagination={libraryView.pagination} position="top" />}

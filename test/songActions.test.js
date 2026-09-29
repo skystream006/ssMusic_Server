@@ -17,16 +17,40 @@ let formatLyricsForCopy;
 let ExportLibraryDialog;
 let ImportMusic;
 let canRunJobAction;
+let MusicPlayer;
+let PlaybackProvider;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('playlist bulk deletion is available only for an eligible selection while not saving', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const render = ({ active = true, count = 2, canRemove = true, saving = false } = {}) => renderToStaticMarkup(
+      createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+        libraryView: { tracks: [], title: 'Playlist', selectedId: 'playlist', saving,
+          songSelection: { active, keys: new Set(), count, canRemove, remove() {} } }
+      })));
+    const button = (html) => html.match(/<button[^>]*aria-label="Delete selected songs"[^>]*>/)?.[0];
+    assert.ok(button(render()));
+    assert.doesNotMatch(button(render()), /disabled/);
+    assert.match(button(render({ count: 0, canRemove: false })), /disabled=""/);
+    assert.match(button(render({ canRemove: false })), /disabled=""/);
+    assert.match(button(render({ saving: true })), /disabled=""/);
+    assert.equal(button(render({ active: false })), undefined);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
 
 test('job action eligibility respects owners, contributors, administrators, active jobs and imports', () => {
   const owner = { id: 'owner', role: 'user' };

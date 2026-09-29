@@ -556,6 +556,50 @@ export default function MusicLibrary({ user, request, confirm }) {
     }
   }
 
+  async function removeSelectedSongs() {
+    if (savingRef.current || !songSelection.length || songSelection.some((track) => songState(track).disabled)) return;
+    const selection = [...songSelection];
+    const keys = selection.map(songKey);
+    let version = library.version;
+    let removed = 0;
+    savingRef.current = true;
+    setSaving(true);
+    keys.forEach((key) => songMutations.current.add(key));
+    try {
+      if (!await confirm({ title: 'Delete selected songs?', message: `Remove ${selection.length} selected songs from ${title}? Files are kept while other playlist links exist, including other users' libraries. Removing the last link permanently deletes the file.`, action: 'delete', label: 'Delete selected songs' })) return;
+      mutationRef.current += 1;
+      setSaved(false);
+      setError('');
+      setActionError('');
+      setDeletingFiles((current) => ({ ...current, ...Object.fromEntries(keys.map((key) => [key, true])) }));
+      for (const track of selection) {
+        const result = await request('/api/library/songs/remove', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version, jobId: track.jobId, name: track.name, playlistId: track.playlistId })
+        });
+        version = result.version;
+        removed += 1;
+        setLibrary((current) => ({ ...current, ...result }));
+        toggleSongs([songKey(track)], false);
+        if (result.fileDeleted) playback.removeSong(track.jobId, track.name);
+      }
+      setSaved(true);
+    } catch (requestError) {
+      setActionError(`${removed} of ${selection.length} songs removed. ${requestError.message} Unremoved songs remain selected.`);
+      await request('/api/library').then(setLibrary).catch(() => {});
+    } finally {
+      keys.forEach((key) => songMutations.current.delete(key));
+      setDeletingFiles((current) => {
+        const remaining = { ...current };
+        keys.forEach((key) => { delete remaining[key]; });
+        return remaining;
+      });
+      savingRef.current = false;
+      setSaving(false);
+      setRefresh((value) => value + 1);
+    }
+  }
+
   async function persistLibrary(endpoint, method, body, onSaved) {
     if (savingRef.current || !library) return 'A library change is already being saved.';
     savingRef.current = true;
@@ -852,6 +896,7 @@ export default function MusicLibrary({ user, request, confirm }) {
       search: paginated ? trackSearch : undefined, onSearch: paginated ? setTrackSearch : undefined,
       songSelection: selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),
+        remove: removeSelectedSongs, canRemove: songSelection.length > 0 && songSelection.every((track) => !songState(track).disabled),
         transfer: (action) => setBulkDialog({ type: 'songs', action, version: library.version, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,
       songState, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
       onMetadataSaved: metadataSaved, onRatingError: setActionError,

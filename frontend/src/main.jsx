@@ -204,7 +204,7 @@ function ThemeDialog({ onClose }) {
 function AppShell({ children, section = 'jobs' }) {
   const { user, logout } = useContext(AuthContext);
   const [choosingTheme, setChoosingTheme] = useState(false);
-  useEffect(() => { document.title = section === 'music' ? `${user.name}'s Music` : `${section.charAt(0).toUpperCase()}${section.slice(1)} | ssYTDLP`; }, [section, user.name]);
+  useEffect(() => { document.title = section === 'music' ? `${user.name}'s Music` : `${section.charAt(0).toUpperCase()}${section.slice(1)} | ssMusicServer`; }, [section, user.name]);
   return (
     <div className="app-shell">
       <header className="topbar">
