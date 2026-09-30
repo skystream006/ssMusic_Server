@@ -26,8 +26,11 @@ existing job's normal rerun or details action.
 ## All Music Pagination
 
 **All music** loads 50 tracks per page. Use the page controls above or below the
-list to browse. Search matches filenames, saved titles, artists, and playlist
-names across the whole library and returns to page one when changed.
+list to browse. Search matches filenames, titles, artists, albums, album artists,
+genre, year, track/disc numbers, and playlist names across the whole library and
+returns to page one when changed. Embedded MP3 tags are indexed during imports
+and downloads. Existing songs receive a one-time, batched metadata index update
+at server startup; searching does not scan audio files.
 **Play page** queues the displayed page; browsing other pages does not replace
 the active queue. Open an individual playlist to reorder its tracks.
 
@@ -1029,13 +1032,15 @@ stars or **No rating** in the same editor to update the file's ID3 `POPM` tag.
 The existing rating owner and play count are retained. Ratings are read from the
 song file, not the separate iTunes XML database. Job details, process output, and
 files are stacked full-width; song files also show artist and album metadata.
-Other audio formats remain playable but do not offer the MP3 tag editor.
+Other audio formats offer the transcription lock control, but not MP3 tag editing.
 
 Edits update the source MP3, including for personally moved songs, and therefore
 are visible to everyone using that source. Filenames, audio data, embedded lyrics,
 and download archives are preserved. The playing dock's text and artwork update
 without restarting the audio. Owners, contributors, and administrators can edit
 idle jobs; active downloads and conflicting file mutations return `409`.
+Transcribing a song blocks editing that song, not other songs in the same job.
+The lock icon in the editor toggles transcription locking when changes are saved.
 
 `PATCH /api/jobs/:id/files/:name/metadata` accepts a JSON object with any of
 `title`, `artist`, `album`, `performerInfo` (album artist), `genre`, `year`,
@@ -1047,6 +1052,17 @@ updated song metadata, including `rating`. Include integer `rating` from `0`
 library-track responses include MP3 ratings. URL-encode the full filename,
 including `[NoVocals]/`.
 
+Include boolean `transcriptionLocked` to lock or unlock transcription. Lock-only
+updates work for all supported audio formats and do not require the transcription
+service. Locked songs hide the microphone action and reject transcription with
+`409`; manual metadata and lyrics editing remain available.
+
+MP3 lyrics can be updated through the same endpoint: `uslt` is plain text, and
+`sylt` is an array of `{ "time": 1.25, "text": "Lyric line" }` with times in seconds.
+Each format is limited to 100,000 characters; SYLT accepts at most 10,000 lines
+with nonnegative timestamps up to 4294967.295 seconds (ID3's millisecond range).
+Omitted formats are preserved; `uslt: ""` or `sylt: []` clears that format.
+
 ## Transcription and job player
 
 Set `TRANSCRIPTION_ENDPOINT` in `.env` to the transcription service's complete URL,
@@ -1055,6 +1071,10 @@ The server sends the selected audio from disk; the browser never uploads another
 or contacts the transcription service directly.
 
 In job details, select the microphone icon beside a song to open **Transcribe song**.
+Microphone buttons are disabled unless the page's transcription health check reports
+**Active**. The hover message asks you to refresh once the service is available.
+The dialog's top-right lock toggle hides its transcription options; **Submit** then
+locks the song without starting transcription. Unlock it from **Edit song metadata**.
 Optionally choose a **Language** from the dropdown. **Auto-detect** leaves the
 language unspecified. A selection sends its short code as `language`, for example
 `"language": "vi"` for Vietnamese. Language selection works with or without lyrics;
@@ -1067,7 +1087,7 @@ start unchecked and explicitly send their enabled or disabled state.
 Optionally enable **Add lyrics**, enter the lyrics, and select exactly one mode:
 
 - **Prompt**: biases recognition toward known words.
-- **Align**: maps authoritative lyric lines onto ASR timing.
+- **Align** (default): maps authoritative lyric lines onto ASR timing.
 - **Correct**: replaces recognized text while preserving ASR segment timing.
 
 The info icons show these descriptions on hover or keyboard focus. **Cancel** closes
@@ -1089,6 +1109,8 @@ Each submitted song shows its latest transcription status beside its name:
 **Transcription request sent**, **Transcribed**, **Transcription failed**, or
 **Interrupted**. Statuses refresh automatically and persist across page refreshes
 and server restarts. Hover over a status for request and finish times and any error.
+Shared accounts can read these statuses and saved settings for songs in their
+granted libraries, while all mutation actions remain unavailable.
 **Transcribed** means the response was validated and the returned audio saved, not
 merely that the service responded. Unfinished requests become **Interrupted** after
 a server restart and are not retried automatically. Submitting again replaces the
@@ -1133,6 +1155,10 @@ The active line uses larger text and the current palette's accent color, brighte
 in the fullscreen lyrics overlay. **Copy lyrics** in SYLT mode includes each
 timestamp as `[mm:ss.mmm]` before its text; copying USLT keeps plain text only.
 **USLT** displays the embedded plain-text lyrics. Untagged songs remain playable.
+Owners, contributors, and administrators can use **Edit lyrics** to edit SYLT
+timestamps and lines or USLT text, then **Save lyrics**. Switching lyric types keeps
+both drafts; **Cancel** discards them. Edits remain attached to the original song
+even if playback advances, and saving does not restart playback.
 Title, artist, album and supported embedded cover artwork are read from MP3 tags.
 Streaming uses authenticated, byte-range-enabled `/api/jobs/:id/stream/:name`;
 metadata is available at `/api/jobs/:id/lyrics/:name`. All approved users can listen.

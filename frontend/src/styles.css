@@ -830,6 +830,18 @@ code { font: 400 11px 'DM Mono', monospace; }
 .lyrics-actions { display: flex; align-items: center !important; gap: 8px !important; }
 .lyrics-copy { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); color: var(--green); background: transparent; cursor: pointer; }
 .lyrics-copy:disabled { opacity: .4; cursor: not-allowed; }
+.lyrics-editor { display: flex; flex-direction: column; flex: 1; height: 500px; min-height: 0; gap: 12px; }
+.lyrics-editor .metadata-filename { margin: 0; flex: none; }
+.lyrics-editor fieldset { border: 0; padding: 0; margin: 0; min-width: 0; min-height: 0; flex: 1; overflow-y: auto; scrollbar-width: thin; }
+.lyrics-line, .lyrics-line-heading { display: grid; grid-template-columns: 88px minmax(0, 1fr) 44px; gap: 8px; align-items: start; margin-bottom: 8px; }
+.lyrics-line-heading { font-size: 12px; color: var(--muted); }
+.lyrics-editor input, .lyrics-editor textarea { width: 100%; min-width: 0; border: 1px solid var(--line); padding: 8px; color: var(--ink); background: var(--paper); font: inherit; font-size: 16px; }
+.lyrics-editor textarea { resize: vertical; line-height: 1.5; }
+.lyrics-editor .lyrics-plain-editor { height: 100%; min-height: 120px; resize: none; }
+.lyrics-editor .dialog-actions { margin: 0; flex: none; flex-wrap: wrap; }
+.lyrics-editor .notice { margin: 0; flex: none; }
+.lyrics-editor :is(input, textarea, button):focus-visible { outline: 2px solid var(--lyric-accent); outline-offset: 2px; }
+.lyrics-overlay .lyrics-editor { --on-accent: var(--paper); --surface-raised: var(--paper); color-scheme: dark; }
 .lyric-timeline { --lyric-active-size: 32px; position: relative; height: 500px; overflow-y: auto; scrollbar-width: thin; border-block: 1px solid var(--line); padding: 20px 0; overscroll-behavior: contain; }
 .lyric-timeline button { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 16px; width: 100%; text-align: left; align-items: baseline; padding: 14px 12px; border: 0; border-left: 2px solid transparent; color: var(--muted); background: transparent; cursor: pointer; }
 .lyric-timeline time { font: 10px 'DM Mono', monospace; }

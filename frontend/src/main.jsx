@@ -56,7 +56,7 @@ import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
 import { isPlayableFile } from '../../src/media.js';
-import { canManageJob, canModifyJob, canRunJobAction, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, SongActions, TranscriptionDialog, TranscriptionStatus } from './SongActions.jsx';
+import { canManageJob, canModifyJob, canRunJobAction, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, SongActions, TranscriptionDialog, transcriptionInactiveMessage, TranscriptionStatus, useTranscriptionService } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -692,6 +692,7 @@ function JobPage({ id }) {
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
   const [fileRevision, setFileRevision] = useState(0);
+  const transcriptionActive = useTranscriptionService(request, user.role !== 'shared');
   const loadJob = () => Promise.all([
     request(`/api/jobs/${id}`),
     request(`/api/jobs/${id}/files`).catch(() => null)
@@ -740,19 +741,20 @@ function JobPage({ id }) {
   }
 
   async function transcribe(file, options) {
-    if (songMutationDisabled(file.name)) return;
+    const locking = options.transcriptionLocked === true;
+    if (songMutationDisabled(file.name) || (!locking && (!transcriptionActive || file.transcriptionLocked))) return;
     setPendingTranscriptions((current) => ({
-      ...current, [file.name]: { status: 'sent', requestedAt: new Date().toISOString() }
+      ...current, [file.name]: { status: locking ? 'locking' : 'sent', requestedAt: new Date().toISOString() }
     }));
     setTranscribingFile(null);
     setTranscriptionNotice('');
     setActionError('');
     try {
-      await request(`/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(file.name)}/transcribe`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      await request(`/api/jobs/${encodeURIComponent(id)}/files/${encodeURIComponent(file.name)}/${locking ? 'metadata' : 'transcribe'}`, {
+        method: locking ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options)
       });
-      setTranscriptionNotice(`Transcription complete: ${file.name}`);
+      setTranscriptionNotice(`Transcription ${locking ? 'locked' : 'complete'}: ${file.name}`);
     } catch (requestError) {
       setActionError(`Transcription request for ${file.name}: ${requestError.message}`);
     } finally {
@@ -822,7 +824,7 @@ function JobPage({ id }) {
     <AppShell>
       {dialog}
       <a className="back-link" href="/job"><ArrowLeft size={17} /> Back to jobs</a>
-      {transcribingFile && <TranscriptionDialog file={transcribingFile} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
+      {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
       {editingMetadata && <MetadataDialog file={editingMetadata} jobId={id} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
         playback.updateMetadata(id, editingMetadata.name, result);
         setFileRevision((revision) => revision + 1);
@@ -913,14 +915,14 @@ function JobPage({ id }) {
                     <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
                   </>}
                   <ListSongRating file={file} jobId={id} request={request} canModify={canModify}
-                    disabled={mutationDisabled || editingMetadata !== null} onError={setActionError}
+                    disabled={songMutationDisabled(file.name) || editingMetadata?.name === file.name} onError={setActionError}
                     onSaved={(result) => {
                       playback.updateMetadata(id, file.name, result);
                       setFileRevision((revision) => revision + 1);
                     }} />
                   <SongActions name={file.name} className="file-row-actions">
-                    {canModify && /\.mp3$/i.test(file.name) && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={mutationDisabled} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
-                    {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" title="Transcribe song" aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
+                    {canModify && file.isSong && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
+                    {file.isSong && !file.transcriptionLocked && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" data-action-label="Transcribe song" title={transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name) || !transcriptionActive} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
                     <a href={file.downloadUrl} aria-label={`Download ${file.name}`} title="Download song"><ArrowDownToLine size={18} /></a>
                     {canModify && <button className="icon-link" type="button" title="Delete song" aria-label={`Delete song ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => removeFile(file)}>
                       {deletingFiles[file.name] ? <RefreshCw className="spin" size={18} /> : <Trash2 size={18} />}

@@ -14,6 +14,7 @@ let SongGroups;
 let findNoVocals;
 let queueSongNext;
 let formatLyricsForCopy;
+let LyricsEditor;
 let ExportLibraryDialog;
 let ImportMusic;
 let canRunJobAction;
@@ -26,7 +27,7 @@ let LibraryAccessList;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -125,6 +126,26 @@ test('Shared playlist rows retain playback but omit server mutation controls', (
     assert.match(html, /aria-label="Download Song.mp3"/);
     assert.doesNotMatch(html, /aria-label="(?:Drag|Move|Transcribe|Delete|Edit metadata|Select songs)/);
     assert.doesNotMatch(html, /draggable="true"/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test('track search matches artist, album and other song metadata in unpaged views', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const track = { jobId: 'job', name: 'Song.mp3', artist: 'Distinct artist', album: 'Distinct album',
+      performerInfo: 'Album ensemble', genre: 'Acoustic', year: '2026', trackNumber: '3/9', partOfSet: '1/2' };
+    for (const search of ['DISTINCT ARTIST', 'distinct album', 'Album ensemble', 'Acoustic', '2026', '3/9', '1/2']) {
+      const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+        libraryView: { readOnly: true, search, tracks: [track], title: 'Playlist', selectedId: 'playlist',
+          songState: () => ({ canModify: false, disabled: true }) }
+      })));
+      assert.match(html, /aria-label="Play Song.mp3"/, search);
+      assert.doesNotMatch(html, /No matching songs/, search);
+    }
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -304,6 +325,25 @@ test('copying SYLT preserves timestamps while USLT stays plain text', () => {
   }
 });
 
+test('lyrics editor exposes timed SYLT lines and multiline USLT with save and cancel controls', () => {
+  const metadata = { sylt: [{ time: 1.234, text: 'Timed line' }], uslt: 'Plain line\nSecond line' };
+  const render = (mode) => renderToStaticMarkup(createElement(LyricsEditor, { metadata, name: 'Song.mp3', mode, onSave() {}, onCancel() {} }));
+  const timed = render('sylt');
+  assert.match(timed, /aria-label="Time in seconds for line 1"[^>]*step="0.001"[^>]*value="1.234"/);
+  assert.match(timed, /aria-label="Lyrics line 1"[^>]*>Timed line<\/textarea>/);
+  assert.match(timed, /aria-label="Add lyric line"/);
+  assert.match(timed, /aria-label="Delete lyric line 1"/);
+  const plain = render('uslt');
+  assert.match(plain, /aria-label="USLT lyrics"[^>]*>Plain line\nSecond line<\/textarea>/);
+  assert.doesNotMatch(plain, /type="number"|Add lyric line/);
+  for (const html of [timed, plain]) {
+    assert.match(html, /Save lyrics/);
+    assert.match(html, /Cancel/);
+    assert.match(html.match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
+    assert.match(html, /Song.mp3/);
+  }
+});
+
 test('transcription dialog initially focuses the language selector instead of its help button', () => {
   const html = renderToStaticMarkup(createElement(TranscriptionDialog, {
     file: { name: 'Song.mp3', sizeBytes: 1024 }, onClose() {}, onSubmit() {}
@@ -311,6 +351,43 @@ test('transcription dialog initially focuses the language selector instead of it
   assert.equal((html.match(/autofocus=""/g) || []).length, 1);
   assert.match(html, /<select[^>]*autofocus=""[^>]*id="[^"]*-language"/);
   assert.match(html, /<button type="button" aria-label="About Language" aria-describedby="[^"]+">/);
+});
+
+test('transcription lock hides options and can be submitted while the service is inactive', () => {
+  const render = (transcriptionLocked, serviceActive = false) => renderToStaticMarkup(createElement(TranscriptionDialog, {
+    file: { name: 'Song.mp3', sizeBytes: 1024, transcriptionLocked }, serviceActive, onClose() {}, onSubmit() {}
+  }));
+  const locked = render(true);
+  assert.match(locked, /aria-label="Unlock transcription" aria-pressed="true"/);
+  assert.doesNotMatch(locked, /Language \(optional\)|type="checkbox"|lyrics-mode-options|transcription-fields/);
+  assert.doesNotMatch(locked.match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
+  const inactive = render(false);
+  assert.match(inactive, /aria-label="Lock transcription" aria-pressed="false"/);
+  assert.match(inactive, /Transciption service is currently inactive\. Refresh the page when transcription service is available/);
+  assert.match(inactive.match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
+  assert.doesNotMatch(render(false, true).match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
+});
+
+test('song rows hide locked transcription and gate availability without blocking other edits', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const render = (transcriptionActive, transcriptionLocked = false) => renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+      libraryView: { transcriptionActive, title: 'Playlist', selectedId: 'playlist',
+        tracks: [{ jobId: 'job', name: 'Busy.mp3' }, { jobId: 'job', name: 'Other.mp3', transcriptionLocked }],
+        songState: (track) => ({ canModify: true, disabled: track.name === 'Busy.mp3' }) }
+    })));
+    const inactive = render(false);
+    assert.match(inactive.match(/<button[^>]*aria-label="Transcribe Other.mp3"[^>]*>/)[0], /disabled/);
+    assert.match(inactive, /Transciption service is currently inactive/);
+    assert.doesNotMatch(inactive.match(/<button[^>]*aria-label="Edit metadata Other.mp3"[^>]*>/)[0], /disabled/);
+    assert.match(inactive.match(/<button[^>]*aria-label="Edit metadata Busy.mp3"[^>]*>/)[0], /disabled/);
+    assert.doesNotMatch(render(true).match(/<button[^>]*aria-label="Transcribe Other.mp3"[^>]*>/)[0], /disabled/);
+    assert.doesNotMatch(render(true, true), /aria-label="Transcribe Other.mp3"/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
 });
 
 test('transcription status distinguishes supplied lyrics from AI transcription', () => {

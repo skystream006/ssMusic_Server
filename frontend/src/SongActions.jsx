@@ -1,6 +1,29 @@
 import { Children, cloneElement, useEffect, useId, useRef, useState } from 'react';
-import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Mic, MoreVertical, Music2, RefreshCw, Save, Star, Trash2, X } from 'lucide-react';
+import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Star, Trash2, X } from 'lucide-react';
 import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
+
+export const transcriptionInactiveMessage = 'Transciption service is currently inactive. Refresh the page when transcription service is available';
+
+export function useTranscriptionService(request, enabled = true) {
+  const [active, setActive] = useState(false);
+  useEffect(() => {
+    let current = true;
+    setActive(false);
+    if (enabled) request('/api/health').then((health) => {
+      if (current) setActive(health.transcription?.status === 'active');
+    }).catch(() => {});
+    return () => { current = false; };
+  }, [request, enabled]);
+  return active;
+}
+
+function TranscriptionLockButton({ locked, disabled, onChange }) {
+  const label = locked ? 'Unlock transcription' : 'Lock transcription';
+  return <button className="music-icon-button" type="button" title={label} aria-label={label}
+    aria-pressed={locked} disabled={disabled} onClick={() => onChange(!locked)}>
+    {locked ? <Lock size={18} /> : <LockOpen size={18} />}
+  </button>;
+}
 
 export function SongActions({ name, className, children }) {
   const menuId = useId();
@@ -49,7 +72,7 @@ export function SongActions({ name, className, children }) {
         triggerRef.current.focus();
       }}>
       {Children.toArray(children).map((child) => cloneElement(child, {}, <>
-        {child.props.children}<span>{child.props.title}</span>
+        {child.props.children}<span>{child.props['data-action-label'] || child.props.title}</span>
       </>))}
     </div>
   </div>;
@@ -149,6 +172,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
   const headingId = useId();
   const [values, setValues] = useState(null);
   const [initialRating, setInitialRating] = useState(0);
+  const [transcriptionLocked, setTranscriptionLocked] = useState(Boolean(file.transcriptionLocked));
   const [artwork, setArtwork] = useState(null);
   const [artworkChanged, setArtworkChanged] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -157,6 +181,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
   const [error, setError] = useState('');
   const fields = [['title', 'Title'], ['artist', 'Artist'], ['album', 'Album'], ['performerInfo', 'Album artist'],
     ['genre', 'Genre'], ['year', 'Year'], ['trackNumber', 'Track number'], ['partOfSet', 'Disc number']];
+  const editableMetadata = /\.mp3$/i.test(file.name);
 
   useEffect(() => {
     let active = true;
@@ -168,6 +193,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
         if (!active) return;
         setValues({ ...Object.fromEntries(fields.map(([field]) => [field, result[field] || ''])), rating: result.rating || 0 });
         setInitialRating(result.rating || 0);
+        setTranscriptionLocked(Boolean(result.transcriptionLocked));
         setArtwork(result.artwork);
       }).catch((loadError) => { if (active) setError(loadError.message); })
       .finally(() => { if (active) setLoading(false); });
@@ -211,7 +237,8 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
       const { rating, ...metadata } = values;
       const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/metadata`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...metadata, ...(rating !== initialRating ? { rating } : {}), ...(artworkChanged ? { artwork } : {}) })
+        body: JSON.stringify({ transcriptionLocked, ...(editableMetadata
+          ? { ...metadata, ...(rating !== initialRating ? { rating } : {}), ...(artworkChanged ? { artwork } : {}) } : {}) })
       });
       onSaved(result);
       onClose();
@@ -222,10 +249,12 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
   return <dialog ref={dialogRef} className="confirmation-dialog metadata-dialog" aria-labelledby={headingId}
     onCancel={(event) => { event.preventDefault(); if (!saving && !readingImage) onClose(); }}>
     <form onSubmit={save}>
-      <div className="folder-dialog-heading"><h2 id={headingId}>Edit song metadata</h2><button className="music-icon-button" type="button" title="Close" aria-label="Close metadata editor" disabled={saving || readingImage} onClick={onClose}><X size={18} /></button></div>
+      <div className="folder-dialog-heading"><h2 id={headingId}>Edit song metadata</h2>
+        <TranscriptionLockButton locked={transcriptionLocked} disabled={loading || saving || readingImage} onChange={setTranscriptionLocked} />
+        <button className="music-icon-button" type="button" title="Close" aria-label="Close metadata editor" disabled={saving || readingImage} onClick={onClose}><X size={18} /></button></div>
       <p className="metadata-filename">{file.name}</p>
       {loading && <p role="status">Loading metadata...</p>}
-      {values && <fieldset disabled={saving || readingImage} className="metadata-fields">
+      {values && editableMetadata && <fieldset disabled={saving || readingImage} className="metadata-fields">
         <SongRating value={values.rating} onChange={(rating) => setValues((current) => ({ ...current, rating }))} />
         <div className="metadata-artwork"><div className="metadata-artwork-preview">{artwork ? <img src={artwork} alt="Song artwork preview" /> : <Music2 size={40} />}</div>
           <div><input ref={uploadRef} type="file" accept="image/jpeg,image/png,image/webp" aria-label="Artwork file" hidden onChange={chooseArtwork} />
@@ -249,17 +278,18 @@ function TranscriptionHelp({ id, label, children }) {
   </span>;
 }
 
-export function TranscriptionDialog({ file, onClose, onSubmit }) {
+export function TranscriptionDialog({ file, onClose, onSubmit, serviceActive = false }) {
   const dialogRef = useRef(null);
   const languageRef = useRef(null);
   const titleId = useId();
+  const [locked, setLocked] = useState(Boolean(file.transcriptionLocked));
   const [addLyrics, setAddLyrics] = useState(false);
   const [language, setLanguage] = useState('');
   const [multilingual, setMultilingual] = useState(false);
   const [noVocals, setNoVocals] = useState(false);
   const [vietLyricsFallback, setVietLyricsFallback] = useState(false);
   const [lyrics, setLyrics] = useState('');
-  const [mode, setMode] = useState('prompt');
+  const [mode, setMode] = useState('align');
   const [submitting, setSubmitting] = useState(false);
   const modes = [
     ['prompt', 'Prompt', 'Biases recognition toward known words.'],
@@ -271,7 +301,7 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
     const dialog = dialogRef.current;
     const previousFocus = document.activeElement;
     dialog.showModal();
-    languageRef.current.focus();
+    languageRef.current?.focus();
     return () => {
       dialog.close();
       if (previousFocus?.isConnected) previousFocus.focus();
@@ -280,9 +310,9 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
 
   function submit(event) {
     event.preventDefault();
-    if (submitting) return;
+    if (submitting || (!locked && !serviceActive)) return;
     setSubmitting(true);
-    onSubmit(file, {
+    onSubmit(file, locked ? { transcriptionLocked: true } : {
       Multilingual: multilingual,
       NoVocals: noVocals,
       VietLyricsFallback: vietLyricsFallback,
@@ -291,12 +321,13 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
     });
   }
 
-  return <dialog ref={dialogRef} className={`confirmation-dialog transcription-dialog${addLyrics ? ' transcription-dialog-expanded' : ''}`} aria-labelledby={titleId}
+  return <dialog ref={dialogRef} className={`confirmation-dialog transcription-dialog${addLyrics && !locked ? ' transcription-dialog-expanded' : ''}`} aria-labelledby={titleId}
     onCancel={(event) => { event.preventDefault(); if (!submitting) onClose(); }}>
     <form onSubmit={submit}>
-      <h2 id={titleId}>Transcribe song</h2>
+      <div className="folder-dialog-heading"><h2 id={titleId}>Transcribe song</h2>
+        <TranscriptionLockButton locked={locked} disabled={submitting} onChange={setLocked} /></div>
       <p className="transcription-file"><FileAudio size={22} /><span>{file.name}<small>{formatBytes(file.sizeBytes)}</small></span></p>
-      <fieldset disabled={submitting} className="transcription-fields">
+      {!locked && <fieldset disabled={submitting} className="transcription-fields">
         <div className="transcription-language">
           <div className="transcription-option"><label htmlFor={`${titleId}-language`}>Language (optional)</label>
             <TranscriptionHelp id={`${titleId}-language-help`} label="Language">Choose the song's language or use Auto-detect. Viet Lyrics Fallback selects Vietnamese and locks this setting while enabled.</TranscriptionHelp>
@@ -335,10 +366,12 @@ export function TranscriptionDialog({ file, onClose, onSubmit }) {
           <label className="lyrics-input-label" htmlFor={`${titleId}-lyrics`}>Lyrics</label>
           <textarea id={`${titleId}-lyrics`} value={lyrics} onChange={(event) => setLyrics(event.target.value)} required maxLength={100000} rows={8} />
         </>}
-      </fieldset>
+      </fieldset>}
       <div className="dialog-actions">
         <button className="secondary-button" type="button" disabled={submitting} onClick={onClose}>Cancel</button>
-        <button className="primary-button" type="submit" disabled={submitting || (addLyrics && !lyrics.trim())}><Mic size={17} />{submitting ? 'Submitting' : 'Submit'}</button>
+        <button className="primary-button" type="submit" title={!locked && !serviceActive ? transcriptionInactiveMessage : undefined}
+          disabled={submitting || (!locked && (!serviceActive || (addLyrics && !lyrics.trim())))}>
+          {locked ? <Lock size={17} /> : <Mic size={17} />}{submitting ? 'Submitting' : 'Submit'}</button>
       </div>
     </form>
   </dialog>;

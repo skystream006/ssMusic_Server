@@ -5,7 +5,7 @@ import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
 import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
-import { canManageJob, canModifyJob, formatBytes, MetadataDialog, TranscriptionDialog } from './SongActions.jsx';
+import { canManageJob, canModifyJob, formatBytes, MetadataDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { replaceURL } from './navigation.js';
 
@@ -360,6 +360,7 @@ function FolderDialog({ folder, parentId, folders, saving, onSave, onClose }) {
 
 export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const readOnly = user.role === 'shared';
+  const transcriptionActive = useTranscriptionService(request, !readOnly);
   const playback = usePlayback();
   const sidebarRef = useRef(null);
   const [editingMetadata, setEditingMetadata] = useState(null);
@@ -395,6 +396,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const [deletingFiles, setDeletingFiles] = useState({});
   const [actionError, setActionError] = useState('');
   const [transcriptionNotice, setTranscriptionNotice] = useState('');
+  const [deletedSongNames, setDeletedSongNames] = useState([]);
   const [removedSong, setRemovedSong] = useState(null);
   const songMutations = useRef(new Set());
   const savingRef = useRef(false);
@@ -503,8 +505,6 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     const transcription = pendingTranscriptions[key] || track.transcription || job?.transcriptions?.[track.name];
     const canModify = !readOnly && canModifyJob(user, job);
     return { canModify, transcription, deleting: Boolean(deletingFiles[key]),
-      metadataBusy: job?.transcriptionPending || Object.values(job?.transcriptions || {}).some((item) => item.status === 'sent')
-        || [...songMutations.current].some((item) => JSON.parse(item)[0] === track.jobId),
       disabled: !canModify || ['queued', 'running'].includes(job?.status)
         || songMutations.current.has(key) || transcription?.status === 'sent' };
   }
@@ -512,22 +512,27 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   function metadataSaved(file, result) {
     playback.updateMetadata(file.jobId, file.name, result);
     setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(file)
-      ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating } : track) } : current);
+      ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating,
+        transcriptionLocked: result.transcriptionLocked } : track) } : current);
   }
 
   async function transcribe(track, options) {
     setTranscribingFile(null);
-    if (songState(track).disabled) { setActionError('This song cannot be changed right now. Refresh and try again.'); return; }
+    const locking = options.transcriptionLocked === true;
+    if (songState(track).disabled || (!locking && (!transcriptionActive || track.transcriptionLocked))) {
+      setActionError('This song cannot be changed right now. Refresh and try again.'); return;
+    }
     const key = songKey(track);
     songMutations.current.add(key);
-    setPendingTranscriptions((current) => ({ ...current, [key]: { status: 'sent', requestedAt: new Date().toISOString() } }));
+    setPendingTranscriptions((current) => ({ ...current, [key]: { status: locking ? 'locking' : 'sent', requestedAt: new Date().toISOString() } }));
     setTranscriptionNotice('');
     setActionError('');
     try {
-      await request(`/api/jobs/${encodeURIComponent(track.jobId)}/files/${encodeURIComponent(track.name)}/transcribe`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options)
+      const result = await request(`/api/jobs/${encodeURIComponent(track.jobId)}/files/${encodeURIComponent(track.name)}/${locking ? 'metadata' : 'transcribe'}`, {
+        method: locking ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options)
       });
-      setTranscriptionNotice(`Transcription complete: ${track.name}`);
+      if (locking) metadataSaved(track, result);
+      setTranscriptionNotice(`Transcription ${locking ? 'locked' : 'complete'}: ${track.name}`);
     } catch (requestError) {
       setActionError(`Transcription request for ${track.name}: ${requestError.message}`);
     } finally {
@@ -547,9 +552,15 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       if (!await confirm({ title: 'Remove song?', message: `Remove ${track.name} from ${track.playlistTitle || 'this playlist'}? The file is kept while other playlist links exist, including other users' libraries. Removing the last link permanently deletes the file.`, action: 'delete', label: 'Remove song' })) return;
       setDeletingFiles((current) => ({ ...current, [key]: true }));
       setActionError('');
+      setDeletedSongNames([]);
       await persistLibrary('/api/library/songs/remove', 'POST', {
         version: library.version, jobId: track.jobId, name: track.name, playlistId: track.playlistId
-      }, (result) => { if (result.fileDeleted) setRemovedSong({ key }); });
+      }, (result) => {
+        if (result.fileDeleted) {
+          setRemovedSong({ key });
+          setDeletedSongNames([track.name]);
+        }
+      });
     } catch (requestError) { setActionError(requestError.message); }
     finally {
       songMutations.current.delete(key);
@@ -573,6 +584,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       setSaved(false);
       setError('');
       setActionError('');
+      setDeletedSongNames([]);
       setDeletingFiles((current) => ({ ...current, ...Object.fromEntries(keys.map((key) => [key, true])) }));
       for (const track of selection) {
         const result = await request('/api/library/songs/remove', {
@@ -583,7 +595,10 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         removed += 1;
         setLibrary((current) => ({ ...current, ...result }));
         toggleSongs([songKey(track)], false);
-        if (result.fileDeleted) playback.removeSong(track.jobId, track.name);
+        if (result.fileDeleted) {
+          playback.removeSong(track.jobId, track.name);
+          setDeletedSongNames((current) => [...current, track.name]);
+        }
       }
       setSaved(true);
     } catch (requestError) {
@@ -892,6 +907,10 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     {(error || trackError) && <div className="notice error library-notice" role="alert">{error || trackError}<button className="music-icon-button" type="button" title="Retry" aria-label="Retry loading library" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={16} /></button></div>}
     {actionError && <div className="notice error library-notice" role="alert">{actionError}<button className="music-icon-button" type="button" title="Dismiss error" aria-label="Dismiss song error" onClick={() => setActionError('')}><X size={16} /></button></div>}
     {transcriptionNotice && <div className="notice success library-notice" role="status">{transcriptionNotice}<button className="music-icon-button" type="button" title="Dismiss" aria-label="Dismiss transcription notice" onClick={() => setTranscriptionNotice('')}><X size={16} /></button></div>}
+    {deletedSongNames.length > 0 && <div className="notice success library-notice" role="status">
+      <span>{deletedSongNames.length === 1 ? 'Song deleted' : 'Songs deleted'} after removing the last playlist link: {deletedSongNames.join(', ')}</span>
+      <button className="music-icon-button" type="button" title="Dismiss" aria-label="Dismiss song deletion notice" onClick={() => setDeletedSongNames([])}><X size={16} /></button>
+    </div>}
     <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>
     <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: (tracksLoading || searchPending) && !trackError,
       pagination, error: trackError, queueScope: paginated ? JSON.stringify([owner?.id, selectedId || 'all', trackPage, debouncedTrackSearch]) : selectedId,
@@ -900,10 +919,10 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),
         remove: removeSelectedSongs, canRemove: songSelection.length > 0 && songSelection.every((track) => !songState(track).disabled),
         transfer: (action) => setBulkDialog({ type: 'songs', action, version: library.version, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,
-      songState, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
+      songState, transcriptionActive, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
       onMetadataSaved: metadataSaved, onRatingError: setActionError,
       saving: saving || tracksLoading || searchPending, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
-    {transcribingFile && <TranscriptionDialog file={transcribingFile} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
+    {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
     {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
       metadataSaved(editingMetadata, result);
       setRefresh((value) => value + 1);

@@ -16,6 +16,13 @@ export function orderFiles(files, order = []) {
 
 export const individualSongsId = 'individual-songs';
 
+export const songMetadataFields = ['title', 'artist', 'album', 'performerInfo', 'genre', 'year', 'trackNumber', 'partOfSet'];
+
+export function songSearchText(track) {
+  return [...songMetadataFields, 'name', 'playlistTitle'].map((field) => track[field])
+    .filter((value) => typeof value === 'string' && value).join(' ').toLowerCase();
+}
+
 export function songKey(track) {
   return JSON.stringify([track.jobId, track.name]);
 }

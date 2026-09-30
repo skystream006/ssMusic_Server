@@ -1,4 +1,4 @@
-import { getPlaylistIds, getPlaylistTracks, individualSongsId, isNoVocals, reconcileLibrary, songKey, songStem } from './library.js';
+import { getPlaylistIds, getPlaylistTracks, individualSongsId, isNoVocals, reconcileLibrary, songKey, songMetadataFields, songSearchText, songStem } from './library.js';
 import { mediaType } from './media.js';
 
 function hydrate(job, rows) {
@@ -33,6 +33,37 @@ async function insertRows(database, sql, rows) {
   for (let offset = 0; offset < rows.length; offset += 1000) {
     await database.prepare(sql).run(JSON.stringify(rows.slice(offset, offset + 1000)));
   }
+}
+
+export async function indexPostgresSongMetadata(database, readMetadata) {
+  const migration = 'song-metadata-search-v1';
+  if (await database.prepare('SELECT name FROM migrations WHERE name = $1').get(migration)) return;
+  let cursor = null;
+  while (true) {
+    const rows = await database.prepare(`SELECT songs.job_id, songs.name, songs.metadata,
+      jobs.data->>'outputDir' AS output_dir, jobs.data->>'playlistTitle' AS playlist_title
+      FROM songs JOIN jobs ON jobs.id = songs.job_id
+      WHERE ($1::text IS NULL OR (songs.job_id, songs.name) > ($1, $2))
+      ORDER BY songs.job_id, songs.name LIMIT 500`).all(cursor?.job_id ?? null, cursor?.name ?? null);
+    if (!rows.length) break;
+    const updates = [];
+    for (const row of rows) {
+      const job = { id: row.job_id, outputDir: row.output_dir, songMetadata: { [row.name]: JSON.parse(row.metadata) } };
+      const metadata = await readMetadata(job, row.name);
+      updates.push({ job_id: row.job_id, name: row.name, metadata,
+        search_text: songSearchText({ ...metadata, name: row.name, playlistTitle: row.playlist_title }) });
+    }
+    await database.withTransaction(async () => {
+      await database.prepare(`UPDATE songs SET metadata = updated.metadata, search_text = updated.search_text
+        FROM jsonb_to_recordset($1::jsonb) AS updated(job_id text, name text, metadata jsonb, search_text text)
+        WHERE songs.job_id = updated.job_id AND songs.name = updated.name`).run(JSON.stringify(updates));
+      await database.prepare(`UPDATE user_catalog SET revision = revision + 1 WHERE user_id IN
+        (SELECT user_id FROM job_users WHERE job_id IN (SELECT jsonb_array_elements_text($1::jsonb)))`)
+        .run(JSON.stringify([...new Set(rows.map((row) => row.job_id))]));
+    });
+    cursor = rows.at(-1);
+  }
+  await database.prepare('INSERT INTO migrations (name) VALUES ($1) ON CONFLICT DO NOTHING').run(migration);
 }
 
 export async function rebuildPostgresLibrary(database, userId) {
@@ -99,7 +130,7 @@ export async function writePostgresJob(database, job) {
       const metadata = job.songMetadata?.[name] || {};
       return { job_id: job.id, name, file_order: position, media_type: mediaType(name), metadata,
         transcription: job.transcriptions?.[name] || null, karaoke_stem: isNoVocals({ name }) ? songStem(name) : null,
-        search_text: `${metadata.title || ''} ${metadata.artist || ''} ${name} ${job.playlistTitle || ''}`.toLowerCase() };
+        search_text: songSearchText({ ...metadata, name, playlistTitle: job.playlistTitle }) };
     }));
     await database.prepare('DELETE FROM songs WHERE job_id = $1 AND name NOT IN (SELECT jsonb_array_elements_text($2::jsonb))').run(job.id, JSON.stringify(files));
     if (inventoryChanged || ownershipChanged) {
@@ -174,7 +205,7 @@ export async function updatePostgresSong(database, job, name, field, value) {
   await database.withTransaction(async () => {
     const result = field === 'metadata'
       ? await database.prepare(`UPDATE songs SET metadata = $1, search_text = lower($2) WHERE job_id = $3 AND name = $4`)
-        .run(JSON.stringify(value), `${value.title || ''} ${value.artist || ''} ${name} ${job.playlistTitle || ''}`, job.id, name)
+        .run(JSON.stringify(value), songSearchText({ ...value, name, playlistTitle: job.playlistTitle }), job.id, name)
       : await database.prepare('UPDATE songs SET transcription = $1 WHERE job_id = $2 AND name = $3').run(JSON.stringify(value), job.id, name);
     if (!result.changes) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
     await database.prepare("UPDATE jobs SET data = jsonb_set(data, '{updatedAt}', $1::jsonb) WHERE id = $2").run(JSON.stringify(job.updatedAt), job.id);
@@ -196,7 +227,7 @@ export async function postgresPageJobs(database, tracks) {
     if (!jobs.has(track.jobId)) jobs.set(track.jobId, { ...track.sourceJob, files: [], songMetadata: {}, transcriptions: {} });
     const job = jobs.get(track.jobId);
     job.files.push(track.name);
-    job.songMetadata[track.name] = { title: track.title, artist: track.artist, album: track.album, rating: track.rating };
+    job.songMetadata[track.name] = Object.fromEntries([...songMetadataFields, 'rating', 'transcriptionLocked'].map((field) => [field, track[field]]));
     if (track.transcription) job.transcriptions[track.name] = track.transcription;
   }
   for (const job of jobs.values()) {

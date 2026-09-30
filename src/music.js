@@ -3,8 +3,8 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { fileTypeFromBuffer } from 'file-type';
+import { songMetadataFields as metadataFields } from './library.js';
 
-const metadataFields = ['title', 'artist', 'album', 'performerInfo', 'genre', 'year', 'trackNumber', 'partOfSet'];
 const ratingBytes = [0, 1, 64, 128, 196, 255];
 const summaryCache = new Map();
 
@@ -33,12 +33,12 @@ export async function readSongSummary(filePath, stat) {
       if (size <= stat.size && size <= 16 * 1024 ** 2) {
         const buffer = Buffer.alloc(size);
         const result = await file.read(buffer, 0, size, 0);
-        if (result.bytesRead === size) tags = NodeID3.read(buffer, { include: ['TIT2', 'TPE1', 'TALB', 'POPM'] });
+        if (result.bytesRead === size) tags = NodeID3.read(buffer, { include: ['TIT2', 'TPE1', 'TALB', 'TPE2', 'TCON', 'TYER', 'TRCK', 'TPOS', 'POPM'] });
       }
     }
   } finally { await file.close(); }
   const summary = { rating: songRating(tags) };
-  for (const field of ['title', 'artist', 'album']) if (typeof tags[field] === 'string') summary[field] = tags[field];
+  for (const field of metadataFields) if (typeof tags[field] === 'string') summary[field] = tags[field];
   if (summaryCache.size >= 1000) summaryCache.delete(summaryCache.keys().next().value);
   summaryCache.set(filePath, { signature, summary });
   return summary;
@@ -48,8 +48,18 @@ export async function updateSongMetadata(filePath, value) {
   const invalid = (message) => { throw Object.assign(new Error(message), { statusCode: 400 }); };
   if (path.extname(filePath).toLowerCase() !== '.mp3') invalid('Metadata editing is supported for MP3 files');
   if (!value || typeof value !== 'object' || Array.isArray(value)
-    || !Object.keys(value).length || Object.keys(value).some((key) => ![...metadataFields, 'artwork', 'rating'].includes(key))) invalid('Invalid song metadata');
+    || !Object.keys(value).length || Object.keys(value).some((key) => ![...metadataFields, 'artwork', 'rating', 'sylt', 'uslt'].includes(key))) invalid('Invalid song metadata');
   if (Object.hasOwn(value, 'rating') && (!Number.isInteger(value.rating) || value.rating < 0 || value.rating > 5)) invalid('Rating must be an integer from 0 to 5');
+  if (Object.hasOwn(value, 'uslt') && (typeof value.uslt !== 'string' || value.uslt.length > 100_000 || value.uslt.includes('\0'))) {
+    invalid('USLT lyrics must contain at most 100,000 characters without null characters');
+  }
+  if (Object.hasOwn(value, 'sylt') && (!Array.isArray(value.sylt) || value.sylt.length > 10_000
+    || value.sylt.some((line) => !line || typeof line !== 'object' || Array.isArray(line)
+      || !Number.isFinite(line.time) || line.time < 0 || line.time > 4294967.295
+      || typeof line.text !== 'string' || line.text.includes('\0'))
+    || value.sylt.reduce((length, line) => length + line.text.length, 0) > 100_000)) {
+    invalid('SYLT lyrics require valid timestamps, at most 10,000 lines and 100,000 characters without null characters');
+  }
   const updates = {};
   for (const field of metadataFields) {
     if (!Object.hasOwn(value, field)) continue;
@@ -70,12 +80,30 @@ export async function updateSongMetadata(filePath, value) {
     }
   }
   const original = await fs.readFile(filePath);
+  const tags = NodeID3.read(original);
   if (Object.hasOwn(value, 'rating')) {
-    const popularity = NodeID3.read(original).popularimeter;
+    const popularity = tags.popularimeter;
     updates.popularimeter = { email: popularity?.email || 'Windows Media Player 9 Series',
       counter: popularity?.counter || 0, rating: ratingBytes[value.rating] };
   }
-  const result = NodeID3.update(updates, original);
+  if (Object.hasOwn(value, 'uslt')) {
+    updates.unsynchronisedLyrics = value.uslt ? { ...tags.unsynchronisedLyrics,
+      language: tags.unsynchronisedLyrics?.language || 'eng', text: value.uslt } : null;
+  }
+  if (Object.hasOwn(value, 'sylt')) {
+    const frames = [...(tags.synchronisedLyrics || [])];
+    const selected = frames.findIndex((frame) => frame.timeStampFormat === 2 && frame.contentType === 1);
+    if (value.sylt.length) {
+      const frame = { ...frames[selected], language: frames[selected]?.language || tags.unsynchronisedLyrics?.language || 'eng',
+        timeStampFormat: 2, contentType: 1, synchronisedText: value.sylt.map((line) => ({
+          timeStamp: Math.round(line.time * 1000), text: line.text
+        })).sort((first, second) => first.timeStamp - second.timeStamp) };
+      if (selected === -1) frames.push(frame);
+      else frames[selected] = frame;
+    } else if (selected !== -1) frames.splice(selected, 1);
+    updates.synchronisedLyrics = frames;
+  }
+  const result = NodeID3.update(updates, original, Object.hasOwn(value, 'sylt') ? { exclude: ['SYLT'] } : {});
   if (!Buffer.isBuffer(result)) throw new Error('Unable to update song metadata');
   const temporary = `${filePath}.${randomUUID()}.tmp`;
   try {

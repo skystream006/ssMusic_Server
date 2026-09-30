@@ -61,7 +61,7 @@ test('PostgreSQL normalizes songs and pages searchable account-scoped catalog re
   const files = Array.from({ length: 123 }, (_, index) => `Song ${String(index).padStart(3, '0')}.mp3`);
   const job = { id: jobId, url: 'https://example.test/playlist', status: 'completed', createdAt: now,
     initiatedBy: { id: userId }, playlistTitle: 'Catalog', files,
-    songMetadata: { [files[0]]: { title: 'A 100% original', artist: 'Artist', rating: 4 } },
+    songMetadata: { [files[0]]: { title: 'A 100% original', artist: 'Artist', album: 'Rare collection', performerInfo: 'Album ensemble', genre: 'Jazz', rating: 4 } },
     transcriptions: { [files[0]]: { status: 'transcribed', requestedAt: now, lyricsIncluded: true, options: { lyrics_mode: 'align', NoVocals: false } } } };
   await writePostgresJob(database, job);
   assert.deepEqual(await readPostgresJob(database, jobId), job);
@@ -79,14 +79,19 @@ test('PostgreSQL normalizes songs and pages searchable account-scoped catalog re
   assert.equal(last.files.length, 23);
   assert.equal((await pagePostgresTracks(database, userId, { entryId: jobId, pageSize: null })).files.length, 123);
   assert.deepEqual((await pagePostgresTracks(database, userId, { search: '100%' })).files.map((song) => song.name), [files[0]]);
+  for (const search of ['ARTIST', 'Rare collection', 'Album ensemble', 'Jazz']) {
+    assert.deepEqual((await pagePostgresTracks(database, userId, { search })).files.map((song) => song.name), [files[0]]);
+  }
   assert.equal((await pagePostgresTracks(database, crypto.randomUUID())).total, 0);
   assert.equal((await readPostgresLibrary(database, userId)).songCount, 123);
   const index = await database.prepare("SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'user_songs_page'").get();
   assert.match(index.indexdef, /\(user_id, playlist_position, "?position"?, job_id, name\)/);
   assert.ok(await database.prepare("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'user_songs_song'").get());
   job.updatedAt = new Date().toISOString();
-  await updatePostgresSong(database, job, files[0], 'metadata', { title: 'Changed title', rating: 2 });
+  await updatePostgresSong(database, job, files[0], 'metadata', { title: 'Changed title', album: 'Changed album', rating: 2, transcriptionLocked: true });
   assert.equal((await pagePostgresTracks(database, userId, { search: 'Changed title' })).total, 1);
+  assert.equal((await pagePostgresTracks(database, userId, { search: 'Changed album' })).files[0].transcriptionLocked, true);
+  assert.equal((await pagePostgresTracks(database, userId, { search: 'Rare collection' })).total, 0);
   await updatePostgresSong(database, job, files[1], 'transcription', { status: 'transcribed', lyricsIncluded: false, requestedAt: now });
   const changed = await readPostgresJob(database, jobId);
   assert.deepEqual(changed.transcriptions[files[0]], job.transcriptions[files[0]]);
@@ -188,9 +193,22 @@ test('PostgreSQL serves authenticated library, metadata, organization and duplic
   assert.equal((await request(`/api/library/tracks?entryId=${jobId}`, { user: otherId })).status, 404);
   const metadataRoute = `/api/jobs/${jobId}/files/${encodeURIComponent(files[0])}/metadata`;
   assert.equal((await request(metadataRoute, { method: 'PATCH', body: { title: 'Denied' }, user: otherId })).status, 403);
-  const metadata = await request(metadataRoute, { method: 'PATCH', body: { title: 'Fresh title', artist: 'Postgres artist', rating: 4 } });
+  const metadata = await request(metadataRoute, { method: 'PATCH', body: { title: 'Fresh title', artist: 'Postgres artist', album: 'Fresh album', rating: 4,
+    transcriptionLocked: true, sylt: [{ time: 1.25, text: 'Timed lyrics' }], uslt: 'Plain lyrics' } });
   assert.equal(metadata.status, 200, metadata.text);
+  assert.equal(metadata.body.transcriptionLocked, true);
+  assert.deepEqual(metadata.body.sylt, [{ time: 1.25, text: 'Timed lyrics' }]);
+  assert.equal(metadata.body.uslt, 'Plain lyrics');
+  assert.equal((await request(`${metadataRoute.replace(/metadata$/, 'transcribe')}`, { method: 'POST', body: {} })).status, 409);
+  const lyricsRoute = `/api/jobs/${jobId}/lyrics/${encodeURIComponent(files[0])}`;
+  const lyrics = (await request(lyricsRoute)).body;
+  assert.equal(lyrics.canEdit, true);
+  assert.equal(lyrics.transcriptionLocked, true);
+  assert.deepEqual(lyrics.sylt, metadata.body.sylt);
+  assert.equal((await request(lyricsRoute, { user: otherId })).body.canEdit, false);
   assert.equal((await request('/api/library/tracks?search=Fresh')).body.total, 1);
+  assert.equal((await request('/api/library/tracks?search=Fresh%20album')).body.files[0].transcriptionLocked, true);
+  assert.equal((await request(metadataRoute, { method: 'PATCH', body: { transcriptionLocked: false } })).body.transcriptionLocked, false);
   const duplicate = await request('/api/jobs', { method: 'POST', body: { url: job.url } });
   assert.equal(duplicate.status, 409, duplicate.text);
   assert.equal(duplicate.body.existingJob.id, jobId);

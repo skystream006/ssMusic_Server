@@ -47,6 +47,55 @@ test('MP3 ratings round-trip all stars and refresh cached file metadata', async 
   }
 });
 
+test('MP3 lyrics edit and clear SYLT and USLT independently without changing audio or unrelated tags', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-lyrics-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'Song.mp3');
+  const audio = Buffer.from('audio bytes');
+  const otherFrame = { language: 'eng', timeStampFormat: 2, contentType: 2, shortText: 'Events',
+    synchronisedText: [{ timeStamp: 1500, text: 'Applause' }] };
+  await fs.writeFile(filePath, NodeID3.write({ title: 'Original title', artist: 'Original artist',
+    comment: { language: 'eng', text: 'Keep comment' }, popularimeter: { email: 'listener', rating: 196, counter: 4 },
+    unsynchronisedLyrics: { language: 'vie', shortText: 'Plain', text: 'Original text' },
+    synchronisedLyrics: [{ language: 'vie', timeStampFormat: 2, contentType: 1, shortText: 'Timed',
+      synchronisedText: [{ timeStamp: 1000, text: 'Original line' }] }, otherFrame]
+  }, audio));
+  const plain = await updateSongMetadata(filePath, { uslt: 'Edited text\n\nSecond verse' });
+  assert.equal(plain.uslt, 'Edited text\n\nSecond verse');
+  assert.deepEqual(plain.sylt, [{ time: 1, text: 'Original line' }]);
+  const timed = await updateSongMetadata(filePath, { sylt: [{ time: 12.345, text: 'Later line' }, { time: 0, text: 'First\nline' }] });
+  assert.deepEqual(timed.sylt, [{ time: 0, text: 'First\nline' }, { time: 12.345, text: 'Later line' }]);
+  assert.equal(timed.uslt, plain.uslt);
+  assert.equal(timed.rating, 4);
+  assert.equal(timed.title, 'Original title');
+  const tags = NodeID3.read(await fs.readFile(filePath));
+  assert.equal(tags.synchronisedLyrics.length, 2);
+  assert.deepEqual(tags.synchronisedLyrics[1], otherFrame);
+  assert.equal(tags.synchronisedLyrics[0].language, 'vie');
+  assert.equal(tags.synchronisedLyrics[0].shortText, 'Timed');
+  assert.equal(tags.unsynchronisedLyrics.language, 'vie');
+  assert.equal(tags.unsynchronisedLyrics.shortText, 'Plain');
+  assert.equal(tags.comment.text, 'Keep comment');
+  assert.deepEqual(NodeID3.removeTagsFromBuffer(await fs.readFile(filePath)), audio);
+  const clearedTimed = await updateSongMetadata(filePath, { sylt: [] });
+  assert.deepEqual(clearedTimed.sylt, []);
+  assert.equal(clearedTimed.uslt, plain.uslt);
+  assert.deepEqual(NodeID3.read(await fs.readFile(filePath)).synchronisedLyrics, [otherFrame]);
+  assert.equal((await updateSongMetadata(filePath, { uslt: '' })).uslt, '');
+  const both = await updateSongMetadata(filePath, { sylt: [{ time: 1.234, text: 'Both' }], uslt: 'Both' });
+  assert.deepEqual(both.sylt, [{ time: 1.234, text: 'Both' }]);
+  assert.equal(both.uslt, 'Both');
+  const unchanged = await fs.readFile(filePath);
+  for (const value of [{ uslt: null }, { uslt: 'bad\0text' }, { uslt: 'x'.repeat(100_001) },
+    { sylt: 'text' }, { sylt: [null] }, { sylt: [{ time: '1', text: 'text' }] }, { sylt: [{ time: -1, text: 'text' }] },
+    { sylt: [{ time: 4294967.296, text: 'text' }] }, { sylt: [{ time: Infinity, text: 'text' }] },
+    { sylt: [{ time: 1, text: 'bad\0text' }] }, { sylt: [{ time: 1, text: 'x'.repeat(100_001) }] },
+    { sylt: Array.from({ length: 10_001 }, () => ({ time: 0, text: '' })) }]) {
+    await assert.rejects(updateSongMetadata(filePath, value), { statusCode: 400 });
+  }
+  assert.deepEqual(await fs.readFile(filePath), unchanged);
+});
+
 test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 120_000 }, async (context) => {
   let server;
   const { directory } = await createTestDatabase(context, { beforeCleanup: async () => {
@@ -107,7 +156,10 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   }, Buffer.from('audio fixture'));
   await fs.writeFile(path.join(musicDir, '[NoVocals]', songName), taggedAudio);
   const musicJob = await readPostgresJob(openDatabase(), 'music');
-  (await writeJob(openDatabase(), { ...musicJob, files: [...musicJob.files, `[NoVocals]/${songName}`] }));
+  const sharedTranscription = { status: 'transcribed', requestedAt: new Date().toISOString(), lyricsIncluded: true,
+    options: { language: 'vi', lyrics_mode: 'align', Multilingual: false } };
+  (await writeJob(openDatabase(), { ...musicJob, files: [...musicJob.files, `[NoVocals]/${songName}`],
+    transcriptions: { [songName]: sharedTranscription } }));
   (await closeDatabases());
 
   const listeners = [net.createServer(), net.createServer()];
@@ -202,6 +254,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       assert.equal(tracks.status, 200, tracks.text);
       assert.ok(tracks.body.files.length > 0);
       assert.ok(tracks.body.files.every((track) => !('outputDir' in track.sourceJob)));
+      assert.deepEqual(tracks.body.files.find((track) => track.jobId === 'music' && track.name === songName).transcription, sharedTranscription);
       assert.equal((await call(`/api/library?userId=${users.Admin.id}`, 'GET', headers)).status, 200);
       for (const route of [`/api/library?userId=${users.Other.id}`, `/api/library/tracks?userId=${users.Other.id}`,
         `/api/jobs/unowned/stream/${encodeURIComponent(songName)}`, '/api/jobs/music/download-all', '/api/jobs', '/api/jobs/music',
@@ -209,7 +262,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
         assert.equal((await call(route, 'GET', headers)).status, 403, route);
       }
       for (const route of ['stream', 'download', 'lyrics']) {
-        assert.equal((await call(`/api/jobs/music/${route}/${encodeURIComponent(songName)}`, 'GET', headers)).status, 200, route);
+        const result = await call(`/api/jobs/music/${route}/${encodeURIComponent(songName)}`, 'GET', headers);
+        assert.equal(result.status, 200, route);
+        if (route === 'lyrics') assert.equal(result.body.canEdit, false);
       }
       const partial = await call(`/api/jobs/music/stream/${encodeURIComponent(songName)}`, 'GET', { ...headers, Range: 'bytes=0-1' });
       assert.equal(partial.status, 206);

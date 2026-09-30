@@ -4,10 +4,11 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { isPlaylistUrl, normalizeJobUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob, withTransaction } from './database.js';
-import { deletePostgresJob, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
+import { deletePostgresJob, indexPostgresSongMetadata, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
 import { isPlayableFile } from './media.js';
-import { updateSongMetadata } from './music.js';
+import { readSongMetadata, readSongSummary, updateSongMetadata } from './music.js';
+import { songMetadataFields } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
 
 const jobs = new Map();
@@ -15,6 +16,7 @@ const jobMutations = new Set();
 const transcriptionQueues = new Map();
 const deletingFiles = new Map();
 const fileMutationTails = new Map();
+const downloadArchiveName = '.download-archive.txt';
 
 async function mutateJobFiles(id, mutate) {
   const operation = (fileMutationTails.get(id) || Promise.resolve()).then(mutate);
@@ -83,6 +85,27 @@ async function persistJob(job) {
 }
 
 await loadJobs();
+await indexPostgresSongMetadata(database, async (job, name) => {
+  await refreshSongMetadata(job, [name]);
+  return job.songMetadata[name];
+});
+
+async function refreshSongMetadata(job, names = job.files || []) {
+  const outputDir = job.outputDir && await fs.realpath(job.outputDir).catch(() => null);
+  if (!outputDir) return;
+  for (const name of names) {
+    if (!isValidJobFileName(name) || !/\.mp3$/i.test(name)) continue;
+    const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
+    if (!filePath || !isFileInsideJobFolder({ outputDir }, filePath)) continue;
+    const stat = await fs.stat(filePath).catch(() => null);
+    if (!stat?.isFile()) continue;
+    const summary = await readSongSummary(filePath, stat).catch(() => null);
+    if (summary) {
+      job.songMetadata ||= {};
+      job.songMetadata[name] = { ...job.songMetadata[name], ...summary };
+    }
+  }
+}
 
 function waitForUpdateGate() {
   return updateGate || Promise.resolve();
@@ -207,8 +230,6 @@ function formatCommandOutput(result) {
   return sections.join('\n\n');
 }
 
-const downloadArchiveName = '.download-archive.txt';
-
 async function listDownloadedFiles(folderPath) {
   try {
     const entries = await fs.readdir(folderPath, { withFileTypes: true });
@@ -296,7 +317,7 @@ function startJob(job) {
 }
 
 function hasJobAccess(job, user, allowContributors = false) {
-  return Boolean(user && (user.role === 'admin' || (user.id && (
+  return Boolean(user && user.role !== 'shared' && (user.role === 'admin' || (user.id && (
     user.id === job.initiatedBy?.id
     || (allowContributors && job.contributors?.some((contributor) => contributor.id === user.id))
   ))));
@@ -431,6 +452,7 @@ async function executeJob(job) {
   } finally {
     try {
       job.playlistTitle ||= inferPlaylistTitle(job);
+      await refreshSongMetadata(job);
       job.updatedAt = new Date().toISOString();
       await persistJob({ ...job, status: completedStatus || job.status });
       if (completedStatus) job.status = completedStatus;
@@ -578,6 +600,7 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
     }
     job.files = [...(job.files || []), ...added];
     job.songMetadata = metadata;
+    await refreshSongMetadata(job, added);
     job.playlistSongCount = linkedPlaylist ? playlistSongCount : job.files.filter(isPlayableFile).length;
     job.updatedAt = new Date().toISOString();
     await persistJob(job);
@@ -658,6 +681,9 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   if (!job.outputDir || !job.files.includes(fileName)) {
     throw Object.assign(new Error('Song not found'), { statusCode: 404 });
   }
+  if (job.songMetadata?.[fileName]?.transcriptionLocked) {
+    throw Object.assign(new Error('Transcription is locked for this song'), { statusCode: 409 });
+  }
   const fields = validateTranscriptionOptions(options);
   const { lyrics, ...savedOptions } = fields;
   const queue = existingQueue || { job, files: new Set(), tail: Promise.resolve() };
@@ -716,14 +742,25 @@ async function executeTranscription(job, fileName, options, transcription) {
 }
 
 export async function setSongMetadata(id, fileName, value, user = null) {
-  const job = (await getJob(id));
-  if (!job) return null;
-  (await assertCanModifyJob(job, user, true));
-  assertJobIsIdle(job, 'edit metadata for');
+  const storedJob = await getJob(id);
+  if (!storedJob) return null;
+  await assertCanModifyJob(storedJob, user, true);
+  const job = transcriptionQueues.get(id)?.job || storedJob;
+  assertJobIsIdle(job, 'edit metadata for', true);
+  if (transcriptionQueues.get(id)?.files.has(fileName) || deletingFiles.has(id)) {
+    throw Object.assign(new Error('Another change to this song is in progress'), { statusCode: 409 });
+  }
   if (!isValidJobFileName(fileName) || !isSongFile(fileName)) {
     throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
   }
   if (!job.outputDir || !job.files.includes(fileName)) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.keys(value).length) {
+    throw Object.assign(new Error('Invalid song metadata'), { statusCode: 400 });
+  }
+  if (Object.hasOwn(value, 'transcriptionLocked') && typeof value.transcriptionLocked !== 'boolean') {
+    throw Object.assign(new Error('Transcription lock must be a boolean'), { statusCode: 400 });
+  }
+  const { transcriptionLocked, ...changes } = value;
   jobMutations.add(id);
   try {
     return await mutateJobFiles(id, async () => {
@@ -733,8 +770,11 @@ export async function setSongMetadata(id, fileName, value, user = null) {
       if (!isFileInsideJobFolder({ outputDir: await fs.realpath(job.outputDir) }, realPath)) {
         throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
       }
-      const metadata = await updateSongMetadata(realPath, value);
-      job.songMetadata = { ...job.songMetadata, [fileName]: { title: metadata.title, artist: metadata.artist, album: metadata.album, rating: metadata.rating } };
+      const metadata = Object.keys(changes).length ? await updateSongMetadata(realPath, changes) : await readSongMetadata(realPath);
+      metadata.transcriptionLocked = transcriptionLocked ?? job.songMetadata?.[fileName]?.transcriptionLocked ?? false;
+      job.songMetadata = { ...job.songMetadata, [fileName]: { ...job.songMetadata?.[fileName],
+        ...Object.fromEntries(songMetadataFields.map((field) => [field, metadata[field]])), rating: metadata.rating,
+        transcriptionLocked: metadata.transcriptionLocked } };
       job.updatedAt = new Date().toISOString();
       await updatePostgresSong(database, job, fileName, 'metadata', job.songMetadata[fileName]);
       return metadata;

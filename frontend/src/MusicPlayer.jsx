@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
-import { ListSongRating, SongActions, TranscriptionStatus } from './SongActions.jsx';
+import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Save, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
+import { ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory } from './navigation.js';
-import { findNoVocals, isNoVocals } from '../../src/library.js';
+import { findNoVocals, isNoVocals, songSearchText } from '../../src/library.js';
 import { mediaType } from '../../src/media.js';
 import { Film, Minimize2 } from 'lucide-react';
 export { findNoVocals, isNoVocals } from '../../src/library.js';
@@ -22,6 +22,68 @@ export function formatLyricsForCopy(metadata, mode) {
     const fraction = String(milliseconds % 1000).padStart(3, '0');
     return `[${minutes}:${seconds}.${fraction}] ${line.text}`;
   }).join('\n');
+}
+
+export function LyricsEditor({ metadata, name, mode, onSave, onCancel }) {
+  const [sylt, setSylt] = useState(() => (metadata.sylt || []).map((line, index) => ({ ...line, time: String(line.time), id: index })));
+  const [uslt, setUslt] = useState(metadata.uslt || '');
+  const [changed, setChanged] = useState({ sylt: false, uslt: false });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const nextLine = useRef(sylt.length);
+
+  function changeLine(id, field, value) {
+    setSylt((current) => current.map((line) => line.id === id ? { ...line, [field]: value } : line));
+    setChanged((current) => ({ ...current, sylt: true }));
+  }
+
+  async function save(event) {
+    event.preventDefault();
+    if (saving) return;
+    setError('');
+    const updates = {};
+    if (changed.sylt) {
+      if (sylt.some((line) => line.time.trim() === '' || !Number.isFinite(Number(line.time)) || Number(line.time) < 0 || Number(line.time) > 4294967.295)) {
+        setError('Each SYLT line needs a time between 0 and 4294967.295 seconds.'); return;
+      }
+      updates.sylt = sylt.map((line) => ({ time: Number(line.time), text: line.text }));
+    }
+    if (changed.uslt) updates.uslt = uslt;
+    if (!Object.keys(updates).length) return;
+    setSaving(true);
+    try { await onSave(updates); onCancel(); }
+    catch (saveError) { setError(saveError.message); }
+    finally { setSaving(false); }
+  }
+
+  return <form className="lyrics-editor" aria-label="Edit lyrics" onSubmit={save}>
+    <p className="metadata-filename">{name}</p>
+    <fieldset disabled={saving}>
+      {mode === 'uslt' ? <textarea className="lyrics-plain-editor" aria-label="USLT lyrics" value={uslt} maxLength={100000}
+        onChange={(event) => { setUslt(event.target.value); setChanged((current) => ({ ...current, uslt: true })); }} /> : <>
+        <div className="lyrics-line-heading"><span>Time (s)</span><span>Lyrics</span></div>
+        {sylt.map((line, index) => <div className="lyrics-line" key={line.id}>
+          <input type="number" aria-label={`Time in seconds for line ${index + 1}`} min="0" max="4294967.295" step="0.001" required
+            value={line.time} onChange={(event) => changeLine(line.id, 'time', event.target.value)} />
+          <textarea aria-label={`Lyrics line ${index + 1}`} rows={2} maxLength={100000} value={line.text}
+            onChange={(event) => changeLine(line.id, 'text', event.target.value)} />
+          <button className="music-icon-button" type="button" title="Delete lyric line" aria-label={`Delete lyric line ${index + 1}`} onClick={() => {
+            setSylt((current) => current.filter((item) => item.id !== line.id)); setChanged((current) => ({ ...current, sylt: true }));
+          }}><Trash2 size={17} /></button>
+        </div>)}
+        <button className="music-icon-button" type="button" title="Add lyric line" aria-label="Add lyric line" disabled={sylt.length >= 10000} onClick={() => {
+          const line = { id: nextLine.current++, time: String(Number(sylt.at(-1)?.time) || 0), text: '' };
+          setSylt((current) => [...current, line]); setChanged((current) => ({ ...current, sylt: true }));
+        }}><Plus size={19} /></button>
+      </>}
+    </fieldset>
+    {error && <p className="notice error" role="alert">{error}</p>}
+    <div className="dialog-actions">
+      <button className="secondary-button" type="button" disabled={saving} onClick={onCancel}><X size={17} />Cancel</button>
+      <button className="primary-button" type="submit" disabled={saving || (!changed.sylt && !changed.uslt)}>
+        {saving ? <RefreshCw className="spin" size={17} /> : <Save size={17} />}{saving ? 'Saving...' : 'Save lyrics'}</button>
+    </div>
+  </form>;
 }
 
 const PlaybackContext = createContext(null);
@@ -200,9 +262,10 @@ export function PlaybackProvider({ children, request }) {
   }
 
   function updateMetadata(jobId, name, result) {
-    if (selectedRef.current === JSON.stringify([jobId, name])) setMetadata(result);
+    if (selectedRef.current === JSON.stringify([jobId, name])) setMetadata((current) => ({ ...current, ...result }));
     setSongs((current) => current?.map((track) => track.jobId === jobId && track.name === name
-      ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating } : track));
+      ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating,
+        transcriptionLocked: result.transcriptionLocked } : track));
   }
 
   function removeJob(jobId) {
@@ -231,12 +294,14 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeat, setRepeat, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen,
-    selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong } = usePlayback();
+    selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, updateMetadata } = usePlayback();
   const [job, setJob] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
+  const [editingLyrics, setEditingLyrics] = useState(null);
   const [panel, updatePanel] = useState(null);
   function setPanel(next) {
+    if (next !== 'lyrics') setEditingLyrics(null);
     updatePanel(next);
     if (dockOnly) navigationHistory().setLyricsOpen(next === 'lyrics');
   }
@@ -340,15 +405,25 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <button type="button" aria-pressed={mode === 'sylt'} onClick={() => setMode('sylt')}>SYLT</button>
           <button type="button" aria-pressed={mode === 'uslt'} onClick={() => setMode('uslt')}>USLT</button>
         </div>
+        {metadata?.canEdit && !editingLyrics && <button className="lyrics-copy" type="button" title="Edit lyrics" aria-label="Edit lyrics"
+          disabled={!song || song.transcription?.status === 'sent'} onClick={() => setEditingLyrics({ song, metadata })}><Pencil size={17} /></button>}
         <button className="lyrics-copy" type="button" title={currentCopy && !currentCopy.error ? 'Lyrics copied' : 'Copy lyrics'} aria-label="Copy lyrics"
-          disabled={copying || !lyricsText.trim()} onClick={copyLyrics}>
+          disabled={Boolean(editingLyrics) || copying || !lyricsText.trim()} onClick={copyLyrics}>
           {copying ? <RefreshCw className="spin" size={17} /> : currentCopy && !currentCopy.error ? <Check size={17} /> : <Copy size={17} />}
         </button>
         {dockOnly && <button className="music-icon-button" type="button" title="Close lyrics" aria-label="Close lyrics" onClick={() => setPanel(null)}><X size={20} /></button>}
       </div>
     </div>
     {currentCopy && <div className={currentCopy.error ? 'notice error' : 'sr-only'} role={currentCopy.error ? 'alert' : 'status'}>{currentCopy.message}</div>}
-    <div ref={lyricRef} className="lyric-timeline" tabIndex={0} aria-label={mode === 'sylt' ? 'Synchronized lyrics' : 'Unsynchronized lyrics'}>
+    {editingLyrics ? <LyricsEditor key={songKey(editingLyrics.song)} name={editingLyrics.song.name} metadata={editingLyrics.metadata} mode={mode}
+      onCancel={() => setEditingLyrics((current) => current === editingLyrics ? null : current)}
+      onSave={async (updates) => {
+        const target = editingLyrics.song;
+        const result = await request(`/api/jobs/${encodeURIComponent(target.jobId)}/files/${encodeURIComponent(target.name)}/metadata`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates)
+        });
+        updateMetadata(target.jobId, target.name, result);
+      }} /> : <div ref={lyricRef} className="lyric-timeline" tabIndex={0} aria-label={mode === 'sylt' ? 'Synchronized lyrics' : 'Unsynchronized lyrics'}>
       {lyricError ? <p className="notice error" role="alert">{lyricError}</p> : !metadata ? <p className="music-empty" role="status">{song ? 'Loading lyrics...' : 'No song selected.'}</p>
         : mode === 'uslt' ? (metadata.uslt ? <p className="plain-lyrics">{metadata.uslt}</p> : <p className="music-empty">No USLT lyrics embedded.</p>)
           : lines.length > 0 ? <ol>{lines.map((line, lineIndex) => <li key={lineIndex}><button type="button"
@@ -357,13 +432,13 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             onClick={() => { if (audioRef.current) audioRef.current.currentTime = line.time; }}>
             <time>{timeLabel(line.time)}</time><span>{line.text}</span>
           </button></li>)}</ol> : <p className="music-empty">No SYLT lyrics embedded.</p>}
-    </div>
+    </div>}
   </section>;
 
   if (libraryView || dockOnly) {
     const tracks = libraryView?.tracks || [];
     const trackSearch = libraryView?.search ?? search;
-    const visibleTracks = libraryView?.pagination ? tracks : tracks.filter((track) => `${track.title || ''} ${track.artist || ''} ${track.name} ${track.playlistTitle}`.toLowerCase().includes(trackSearch.toLowerCase()));
+    const visibleTracks = libraryView?.pagination ? tracks : tracks.filter((track) => songSearchText(track).includes(trackSearch.trim().toLowerCase()));
     const totalTracks = libraryView?.pagination?.total ?? tracks.length;
     const selection = libraryView?.songSelection;
     const selectedVisible = visibleTracks.filter((track) => selection?.keys.has(songKey(track))).length;
@@ -428,11 +503,11 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               </button><KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} /></div>
               <button className="song-playlist" type="button" title={track.playlistTitle} onClick={() => libraryView.onSelect(track.playlistId)}>{track.playlistTitle}</button>
               <ListSongRating file={track} jobId={track.jobId} request={request} canModify={action.canModify}
-                disabled={action.disabled || action.metadataBusy || libraryView.saving}
+                disabled={action.disabled || libraryView.saving}
                 onSaved={(result) => libraryView.onMetadataSaved(track, result)} onError={libraryView.onRatingError} />
               <SongActions name={track.name} className="song-order-actions">
-                {action.canModify && /\.mp3$/i.test(track.name) && <button className="music-icon-button" type="button" title="Edit song metadata" aria-label={`Edit metadata ${track.name}`} disabled={action.disabled || action.metadataBusy} onClick={() => libraryView.onEditMetadata(track)}><Pencil size={16} /></button>}
-                {!libraryView.readOnly && mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" title="Transcribe song" aria-label={`Transcribe ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
+                {action.canModify && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Edit song metadata" aria-label={`Edit metadata ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onEditMetadata(track)}><Pencil size={16} /></button>}
+                {!libraryView.readOnly && !track.transcriptionLocked && mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" data-action-label="Transcribe song" title={libraryView.transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${track.name}`} disabled={action.disabled || !libraryView.transcriptionActive} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
                 {action.canModify && <button className="music-icon-button" type="button" title="Remove song from playlist" aria-label={`Delete song ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
                 {!libraryView.readOnly && <button className="music-icon-button" type="button" title="Move to playlist" aria-label={`Move ${track.name} to playlist`} disabled={libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>}
                 <a className="music-icon-button" href={track.downloadUrl} title="Download song" aria-label={`Download ${track.name}`}><ArrowDownToLine size={15} /></a>
@@ -511,11 +586,11 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <div className="section-title"><div><ListMusic size={18} /><h2>Queue</h2></div></div>
           <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search songs" placeholder="Search songs" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
           <div className="queue-tracks">
-            <SongGroups key={id} tracks={songs.filter((track) => track.name.toLowerCase().includes(search.toLowerCase()))}>{(group) => <ol>{group.map((track) => <li key={songKey(track)}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>
+            <SongGroups key={id} tracks={songs.filter((track) => songSearchText(track).includes(search.trim().toLowerCase()))}>{(group) => <ol>{group.map((track) => <li key={songKey(track)}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>
                   <Music2 size={17} /><span>{track.name.split('/').at(-1)}</span>
                   {songKey(track) === selected && <span className="queue-indicator" aria-label={playing ? 'Playing' : 'Selected'} />}
                 </button><KaraokeButton track={track} tracks={songs} onPlay={playKaraoke} /></li>)}</ol>}</SongGroups>
-            {!songs.some((track) => track.name.toLowerCase().includes(search.toLowerCase())) && <p className="music-empty">No matching songs.</p>}
+            {!songs.some((track) => songSearchText(track).includes(search.trim().toLowerCase())) && <p className="music-empty">No matching songs.</p>}
           </div>
         </section>
         {lyricsPanel}

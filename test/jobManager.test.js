@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
+import { closeDatabases, openDatabase, writeJob, writeUser } from '../src/database.js';
+import { pagePostgresTracks } from '../src/postgresCatalog.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 import http from 'node:http';
 import AdmZip from 'adm-zip';
+import NodeID3 from 'node-id3';
 import { replaceTranscribedFiles } from '../src/transcription.js';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
@@ -762,11 +764,24 @@ test('individual song removal enforces ownership, validates paths and preserves 
   await assert.rejects(manager.deleteJobFile(job.id, 'unknown.mp3', owner), { statusCode: 404 });
   assert.equal(await manager.deleteJobFile('unknown', songName, owner), null);
 
+  const unlink = fs.unlink;
+  const deleting = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const unlinkMock = testContext.mock.method(fs, 'unlink', async (filePath) => {
+    if (filePath === path.join(job.outputDir, songName)) {
+      deleting.resolve();
+      await release.promise;
+    }
+    return unlink(filePath);
+  });
   const removal = manager.deleteJobFile(job.id, songName, owner);
-  await assert.rejects(manager.setSongMetadata(job.id, 'second.mp3', { title: 'Busy' }, owner), { statusCode: 409 });
-  await assert.rejects(manager.setJobContributors(job.id, [], owner), { statusCode: 409 });
-  await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 409 });
-  await assert.rejects(manager.deleteJob(job.id, admin), { statusCode: 409 });
+  try {
+    await deleting.promise;
+    await assert.rejects(manager.setSongMetadata(job.id, 'second.mp3', { title: 'Busy' }, owner), { statusCode: 409 });
+    await assert.rejects(manager.setJobContributors(job.id, [], owner), { statusCode: 409 });
+    await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 409 });
+    await assert.rejects(manager.deleteJob(job.id, admin), { statusCode: 409 });
+  } finally { release.resolve(); await removal; unlinkMock.mock.restore(); }
   const updated = await removal;
   assert.deepEqual(updated.files, ['second.mp3', 'missing.mp3']);
   assert.deepEqual(updated.initiatedBy, { id: owner.id, name: owner.name });
@@ -878,6 +893,123 @@ function makeTranscriptionAudio() {
   audio.writeUInt32LE(4, 40);
   return audio;
 }
+
+test('metadata search indexes existing embedded tags once and includes new imports', async () => {
+  const outputDir = path.join(fixtureDirectory, 'embedded-search');
+  await fs.mkdir(outputDir);
+  const name = 'Existing.mp3';
+  const audio = NodeID3.write({ title: 'Embedded title', artist: 'Embedded artist', album: 'Embedded album',
+    performerInfo: 'Embedded ensemble', genre: 'Soul', year: '2026' }, Buffer.from('audio bytes'));
+  await fs.writeFile(path.join(outputDir, name), audio);
+  const database = openDatabase();
+  const owner = { id: 'metadata-search-owner', name: 'Metadata owner', userHandle: 'metadata-search-owner',
+    role: 'user', status: 'approved', credentials: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await writeUser(database, owner);
+  const legacyFiles = Array.from({ length: 501 }, (_, index) => `Legacy ${String(index).padStart(3, '0')}.mp3`);
+  const job = { id: 'metadata-search', url: 'https://music.youtube.com/watch?v=search', status: 'completed',
+    playlistTitle: 'Old playlist', outputDir, files: [name, ...legacyFiles], initiatedBy: { id: owner.id }, createdAt: owner.createdAt,
+    songMetadata: { [name]: { transcriptionLocked: true }, [legacyFiles.at(-1)]: { album: 'Saved album after batch boundary' } } };
+  await writeJob(database, job);
+  await database.prepare('UPDATE songs SET search_text = lower(name) WHERE job_id = $1').run(job.id);
+  assert.equal((await pagePostgresTracks(database, owner.id, { search: 'Embedded album' })).total, 0);
+  const manager = await import('../src/jobManager.js?embedded-search');
+  for (const search of ['Embedded title', 'Embedded artist', 'Embedded album', 'Embedded ensemble', 'Soul', '2026']) {
+    const result = await pagePostgresTracks(database, owner.id, { search });
+    assert.equal(result.total, 1, search);
+    assert.equal(result.files[0].transcriptionLocked, true);
+  }
+  assert.equal((await pagePostgresTracks(database, owner.id, { search: 'Saved album after batch boundary' })).files[0].name, legacyFiles.at(-1));
+  assert.deepEqual(await fs.readFile(path.join(outputDir, name)), audio);
+  await database.prepare('UPDATE songs SET search_text = $1 WHERE job_id = $2 AND name = $3').run('one-time-index-marker', job.id, name);
+  await import('../src/jobManager.js?embedded-search-restart');
+  assert.equal((await pagePostgresTracks(database, owner.id, { search: 'one-time-index-marker' })).total, 1);
+  const source = path.join(fixtureDirectory, 'Imported.mp3');
+  await fs.writeFile(source, NodeID3.write({ title: 'Imported title', artist: 'Imported artist', album: 'Imported album' }, Buffer.from('audio bytes')));
+  const imported = await manager.importJobFiles({ files: [{ name: 'Imported.mp3', path: source }], playlistTitle: 'New imports' }, owner);
+  const result = await pagePostgresTracks(database, owner.id, { search: 'Imported album' });
+  assert.equal(result.total, 1);
+  assert.equal(result.files[0].jobId, imported.id);
+  assert.equal(result.files[0].artist, 'Imported artist');
+});
+
+test('transcription locks persist, preserve audio and reject transcription until unlocked', async (testContext) => {
+  const outputDir = path.join(fixtureDirectory, 'transcription-lock');
+  await fs.mkdir(outputDir);
+  const name = 'Song.wav';
+  const audio = makeTranscriptionAudio();
+  await fs.writeFile(path.join(outputDir, name), audio);
+  const manager = await import('../src/jobManager.js?transcription-lock');
+  const owner = { id: 'owner', role: 'user' };
+  const job = { id: 'transcription-lock', url: 'https://music.youtube.com/watch?v=lock', status: 'completed',
+    playlistTitle: 'Lock fixture', outputDir, files: [name], initiatedBy: owner, createdAt: new Date().toISOString(),
+    transcriptions: { [name]: { status: 'transcribed', requestedAt: new Date().toISOString(), lyricsIncluded: true } } };
+  await writeJob(openDatabase(), job);
+  for (const user of [{ id: 'stranger', role: 'user' }, { ...owner, role: 'shared' }]) {
+    await assert.rejects(manager.setSongMetadata(job.id, name, { transcriptionLocked: true }, user), { statusCode: 403 });
+  }
+  for (const transcriptionLocked of [null, 'true', 1, {}]) {
+    await assert.rejects(manager.setSongMetadata(job.id, name, { transcriptionLocked }, owner), { statusCode: 400 });
+  }
+  assert.equal((await manager.setSongMetadata(job.id, name, { transcriptionLocked: true }, owner)).transcriptionLocked, true);
+  assert.deepEqual(await fs.readFile(path.join(outputDir, name)), audio);
+  const restarted = await import('../src/jobManager.js?transcription-lock-restart');
+  assert.equal((await restarted.getJob(job.id)).songMetadata[name].transcriptionLocked, true);
+  assert.deepEqual((await restarted.getJob(job.id)).transcriptions, job.transcriptions);
+  await assert.rejects(restarted.transcribeJobFile(job.id, name, {}, owner), { statusCode: 409, message: 'Transcription is locked for this song' });
+  assert.equal((await restarted.setSongMetadata(job.id, name, { transcriptionLocked: false }, owner)).transcriptionLocked, false);
+  const previousEndpoint = process.env.TRANSCRIPTION_ENDPOINT;
+  process.env.TRANSCRIPTION_ENDPOINT = 'http://transcriber.test/api/transcribe';
+  testContext.after(() => {
+    if (previousEndpoint === undefined) delete process.env.TRANSCRIPTION_ENDPOINT;
+    else process.env.TRANSCRIPTION_ENDPOINT = previousEndpoint;
+  });
+  testContext.mock.method(globalThis, 'fetch', async () => new Response(audio));
+  await restarted.transcribeJobFile(job.id, name, {}, owner);
+  assert.equal((await restarted.getJob(job.id)).transcriptions[name].status, 'transcribed');
+});
+
+test('metadata edits only block the transcribing song and survive karaoke completion', async (testContext) => {
+  const outputDir = path.join(fixtureDirectory, 'transcription-edit');
+  await fs.mkdir(outputDir);
+  const audio = makeTranscriptionAudio();
+  await fs.writeFile(path.join(outputDir, 'Busy.wav'), audio);
+  await fs.writeFile(path.join(outputDir, 'Other.mp3'), 'other audio');
+  const manager = await import('../src/jobManager.js?transcription-edit');
+  const owner = { id: 'owner', role: 'user' };
+  const job = { id: 'transcription-edit', url: 'https://music.youtube.com/watch?v=edit', status: 'completed',
+    playlistTitle: 'Edit fixture', outputDir, files: ['Busy.wav', 'Other.mp3'], initiatedBy: owner, createdAt: new Date().toISOString() };
+  await writeJob(openDatabase(), job);
+  const previousEndpoint = process.env.TRANSCRIPTION_ENDPOINT;
+  process.env.TRANSCRIPTION_ENDPOINT = 'http://transcriber.test/api/transcribe';
+  testContext.after(() => {
+    if (previousEndpoint === undefined) delete process.env.TRANSCRIPTION_ENDPOINT;
+    else process.env.TRANSCRIPTION_ENDPOINT = previousEndpoint;
+  });
+  const received = Promise.withResolvers();
+  const gate = Promise.withResolvers();
+  testContext.mock.method(globalThis, 'fetch', async () => {
+    received.resolve();
+    await gate.promise;
+    const zip = new AdmZip();
+    zip.addFile('Busy.wav', audio);
+    zip.addFile('Instrumental.wav', audio);
+    return new Response(zip.toBuffer());
+  });
+  const pending = manager.transcribeJobFile(job.id, 'Busy.wav', { NoVocals: true }, owner);
+  try {
+    await received.promise;
+    await assert.rejects(manager.setSongMetadata(job.id, 'Busy.wav', { transcriptionLocked: true }, owner), { statusCode: 409 });
+    const updated = await manager.setSongMetadata(job.id, 'Other.mp3', { title: 'Edited while transcribing', transcriptionLocked: true }, owner);
+    assert.equal(updated.title, 'Edited while transcribing');
+    assert.equal(updated.transcriptionLocked, true);
+    assert.equal((await manager.setSongMetadata(job.id, 'Other.mp3', { rating: 3 }, owner)).transcriptionLocked, true);
+  } finally { gate.resolve(); await pending; }
+  const completed = await manager.getJob(job.id);
+  assert.equal(completed.transcriptions['Busy.wav'].status, 'transcribed');
+  assert.equal(completed.songMetadata['Other.mp3'].title, 'Edited while transcribing');
+  assert.equal(completed.songMetadata['Other.mp3'].transcriptionLocked, true);
+  assert.ok(completed.files.includes('[NoVocals]/Instrumental.wav'));
+});
 
 test('transcription persists settings without lyrics across retranscriptions and reloads', async (testContext) => {
   const outputDir = path.join(fixtureDirectory, 'lyrics-status');
