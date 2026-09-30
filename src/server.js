@@ -20,6 +20,7 @@ import { countMediaFiles, createMediaCountMonitor, getSystemHealth } from './hea
 import { isYouTubeUrl } from './utils.js';
 import { scheduleDailyMaintenance, scheduleLibraryBackups } from './scheduler.js';
 import { attachUser, registerAuthRoutes, requireAuth } from './auth.js';
+import { restrictSharedAccess, sharedLibraryUsers, libraryReaderId, canReadSharedSong, sharedJobSummary } from './sharedAccess.js';
 import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
@@ -96,6 +97,7 @@ app.use(helmet({
 }));
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 app.use(attachUser);
+app.use(restrictSharedAccess);
 registerAuthRoutes(app, authLimiters);
 app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
@@ -125,8 +127,20 @@ const libraryBackups = (await createLibraryBackupService({ async loadLibrary(use
   return { library: (await getLibrary(userId, jobs)), jobs };
 } }));
 
+app.get('/api/library/shared-users', async (req, res) => {
+  res.json({ users: req.user.role === 'shared' ? await sharedLibraryUsers(req.user.id) : [] });
+});
+
 app.get('/api/library', async (req, res) => {
-  res.json(await readPostgresLibrary(openDatabase(), req.user.id));
+  try {
+    const ownerId = await libraryReaderId(req.user, req.query.userId);
+    const library = await readPostgresLibrary(openDatabase(), ownerId);
+    if (req.user.role === 'shared') {
+      library.jobs = library.jobs.map(sharedJobSummary);
+      library.playlists = library.playlists.map(({ initiatedBy, contributors, ...playlist }) => playlist);
+    }
+    res.json({ ...library, ownerId });
+  } catch (error) { res.status(error.statusCode || 500).json({ error: error.message }); }
 });
 
 app.put('/api/library', async (req, res) => {
@@ -241,12 +255,19 @@ app.get('/api/library/tracks', async (req, res) => {
       return res.status(400).json({ error: 'Invalid track pagination or search' });
     }
     const search = (req.query.search || '').trim().toLowerCase();
-    const result = await pagePostgresTracks(openDatabase(), req.user.id, { entryId: selectedId,
+    const ownerId = await libraryReaderId(req.user, req.query.userId);
+    const result = await pagePostgresTracks(openDatabase(), ownerId, { entryId: selectedId,
       page: Number(req.query.page || 1), pageSize: paginated ? Number(req.query.pageSize || 50) : null, search });
     const pageJobs = await postgresPageJobs(openDatabase(), result.files);
     const available = new Map((await Promise.all([...pageJobs.values()].map(async (job) =>
       (await listJobFiles(job)).map((file) => [songKey({ jobId: job.id, name: file.name }), file])))).flat());
     result.files = result.files.filter((track) => available.has(songKey(track))).map((track) => ({ ...track, ...available.get(songKey(track)) }));
+    if (req.user.role === 'shared') {
+      result.files = await Promise.all(result.files.map(async ({ transcription, noVocalsName, noVocalsVersion, ...track }) => ({
+        ...track, sourceJob: sharedJobSummary(track.sourceJob),
+        ...(noVocalsVersion && await canReadSharedSong(req.user.id, noVocalsVersion.jobId, noVocalsVersion.name) ? { noVocalsVersion } : {})
+      })));
+    }
     return res.json(paginated ? result : { files: result.files, version: result.version });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
@@ -370,6 +391,9 @@ async function listJobFiles(job, order, names) {
 }
 
 async function resolveRequestedFile(req, acceptsFile = null) {
+  if (req.user.role === 'shared' && !await canReadSharedSong(req.user.id, req.params.id, req.params.name)) {
+    throw Object.assign(new Error('Library song access denied'), { statusCode: 403 });
+  }
   const job = (await getJob(req.params.id));
   if (!job) throw Object.assign(new Error('Job not found'), { statusCode: 404 });
   const name = req.params.name;

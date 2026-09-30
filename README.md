@@ -3,6 +3,11 @@
 ssMusic Player is a personal music and video library backed by ssYTDLP download
 jobs from YouTube and YouTube Music URLs.
 
+Submitted YouTube links containing a `list` query parameter are normalized to
+`https://music.youtube.com/playlist?list=PLAYLIST_ID` before duplicate detection and
+downloading. Video IDs, tracking parameters, and fragments are discarded for these
+playlist submissions; links without `list` are unchanged.
+
 ## Audio and video downloads
 
 On **Jobs > Start a download**, choose **Audio (MP3)** or **Video (MP4)** in
@@ -489,7 +494,27 @@ docker compose up -d
 The app and operational APIs require passkey authentication. On a new server, register
 the first passkey to create the initial approved administrator. Later registrations are
 saved as pending and cannot log in until an administrator approves them from **Admin**.
-Administrators can approve or revoke access and assign user or admin roles.
+Administrators can approve or revoke access and assign User, Admin, or Shared roles.
+For a Shared account, open **Admin > All users > User details**, select the library
+owners under **Shared libraries**, and choose **Save access**. Multiple approved
+User or Admin accounts can be selected. Shared users can switch between these
+libraries, browse playlists, play media, read lyrics, and download individual songs.
+Shared users can see their granted library owners under **User settings > Library access**.
+They cannot access health metrics or run health polling. They can change their own
+username, color theme, and light/dark appearance. They cannot change
+libraries, jobs, metadata, ratings, other users' preferences, credentials,
+or access grants, create exports/backups, or browse the Jobs dashboard. Login and
+logout remain available. Restrictions apply to cookies, bearer sessions, and PATs.
+No grants means no library access. Removing a grant immediately blocks subsequent
+requests for its songs; already downloaded media cannot be recalled. Changing away
+from Shared clears the account's grants. Revoking, deleting, or changing a library
+owner to Shared removes grants to that owner's library.
+
+Users can rename themselves in **User settings > Username**. Administrators can
+rename accounts in **Admin > User details > Username**. Names must be 2-64 characters
+and unique without regard to case; surrounding and repeated whitespace is normalized.
+Renaming preserves account IDs, passkeys, sessions, and library access. Self-service
+renaming requires a passkey session, not a PAT, and cannot change roles or grants.
 Use the trash button under **Admin > All users** to permanently delete an account
 after confirmation. Deletion removes registered passkeys, sessions, PATs, preferences,
 and personal library layout, but preserves backup records, saved backup ZIPs, jobs,

@@ -10,6 +10,46 @@ async function loadStore(testContext) {
 
 const credential = (id) => ({ id, publicKey: Buffer.from(`key-${id}`), counter: 0 });
 
+test('renaming preserves account identity and enforces normalized unique names', async (context) => {
+  const store = await loadStore(context);
+  const admin = await store.registerUser('Admin', 'admin', credential('admin'));
+  const user = await store.registerUser('Listener', 'listener', credential('listener'));
+  await store.updateUser(user.id, { status: 'approved' }, admin.id);
+  const session = await store.createSession(user.id);
+  const renamed = await store.updateUser(user.id, { name: '  New   Listener  ' }, user.id);
+  assert.equal(renamed.name, 'New Listener');
+  assert.equal(renamed.id, user.id);
+  assert.equal((await store.getSessionUser(session.token)).name, 'New Listener');
+  assert.equal((await store.findCredential('listener')).user.userHandle, 'listener');
+  await assert.rejects(store.updateUser(user.id, { name: 'ADMIN' }, admin.id), { statusCode: 409 });
+  for (const name of ['', 'x', 'x'.repeat(65), null, 123]) {
+    await assert.rejects(store.updateUser(user.id, { name }, user.id), { statusCode: 400 });
+  }
+  await store.updateUser(user.id, { name: 'NEW LISTENER' }, admin.id);
+  assert.equal((await store.getUser(user.id)).name, 'NEW LISTENER');
+});
+
+test('Shared roles persist multiple grants and reject invalid library owners', async (testContext) => {
+  const store = await loadStore(testContext);
+  const admin = await store.registerUser('Admin', 'admin', credential('admin'));
+  const owner = await store.registerUser('Owner', 'owner', credential('owner'));
+  const viewer = await store.registerUser('Viewer', 'viewer', credential('viewer'));
+  await store.updateUser(owner.id, { status: 'approved' }, admin.id);
+  const updated = await store.updateUser(viewer.id, { status: 'approved', role: 'shared', sharedUserIds: [admin.id, owner.id] }, admin.id);
+  assert.equal(updated.role, 'shared');
+  assert.deepEqual(new Set(updated.sharedUserIds), new Set([admin.id, owner.id]));
+  const session = await store.createSession(viewer.id);
+  assert.deepEqual(new Set((await store.getSessionUser(session.token)).sharedUserIds), new Set([admin.id, owner.id]));
+  for (const ids of [[viewer.id], ['missing'], 'invalid', [null]]) {
+    await assert.rejects(store.updateUser(viewer.id, { sharedUserIds: ids }, admin.id), { statusCode: 400 });
+  }
+  await store.updateUser(owner.id, { role: 'shared' }, admin.id);
+  assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, [admin.id]);
+  await assert.rejects(store.updateUser(viewer.id, { sharedUserIds: [owner.id] }, admin.id), { statusCode: 400 });
+  await store.updateUser(viewer.id, { role: 'user' }, admin.id);
+  assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, []);
+});
+
 test('duplicate credentials and names are rejected and credential updates persist', async (testContext) => {
   const store = await loadStore(testContext);
   const admin = await store.registerUser('Alice', 'alice-handle', credential('alice-key'));

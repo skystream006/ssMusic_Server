@@ -46,6 +46,8 @@ import {
 import './styles.css';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
+import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
+import { LibraryAccessList, UsernameForm } from './AccountSettings.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import JobPlaylistDialog from './JobPlaylistDialog.jsx';
 import { submitJobUrl } from './jobSubmission.js';
@@ -216,12 +218,12 @@ function AppShell({ children, section = 'jobs' }) {
           <a className={section === 'music' ? 'active' : ''} href="/" title="Music library" aria-label="Music library">
             <Music2 size={17} /> Music
           </a>
-          <a className={section === 'jobs' ? 'active' : ''} href="/job" title="Jobs" aria-label="Jobs">
+          {user.role !== 'shared' && <><a className={section === 'jobs' ? 'active' : ''} href="/job" title="Jobs" aria-label="Jobs">
             <ListMusic size={17} /> Jobs
           </a>
           <a className={section === 'health' ? 'active' : ''} href="/health">
             <Activity size={17} /> Health
-          </a>
+          </a></>}
           {user.role === 'admin' && <a className={section === 'admin' ? 'active' : ''} href="/admin">
             <Users size={17} /> Admin
           </a>}
@@ -251,7 +253,8 @@ function StatusBadge({ status }) {
 function MusicHomePage() {
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
-  return <AppShell section="music"><MusicLibrary user={user} request={request} confirm={confirm} />{dialog}</AppShell>;
+  const LibraryView = user.role === 'shared' ? SharedLibraries : MusicLibrary;
+  return <AppShell section="music"><LibraryView user={user} request={request} confirm={confirm} />{dialog}</AppShell>;
 }
 
 function BackupJobStatus() {
@@ -943,6 +946,11 @@ function Metric({ icon, label, value, detail, percent }) {
 }
 
 function HealthPage() {
+  const { user } = useContext(AuthContext);
+  return user.role === 'shared' ? <MusicHomePage /> : <HealthMetrics />;
+}
+
+function HealthMetrics() {
   const { data: health, error } = usePolling(loadHealth, 3000);
   const memoryPercent = health ? health.memory.usedBytes / health.memory.totalBytes * 100 : 0;
   const diskUsed = health ? health.storage.totalBytes - health.storage.freeBytes : 0;
@@ -1130,6 +1138,9 @@ function UserSettingsPage({ userId }) {
   const [details, setDetails] = useState(null);
   const [tokens, setTokens] = useState(null);
   const [passkeys, setPasskeys] = useState([]);
+  const [libraryUsers, setLibraryUsers] = useState([]);
+  const [sharedUserIds, setSharedUserIds] = useState([]);
+  const [accessSaved, setAccessSaved] = useState(false);
   const [name, setName] = useState('');
   const [secret, setSecret] = useState(null);
   const [passkeyMessage, setPasskeyMessage] = useState(null);
@@ -1140,11 +1151,15 @@ function UserSettingsPage({ userId }) {
 
   async function load() {
     try {
-      const [result, passkeyResult] = await Promise.all([
-        request(endpoint), userId ? null : request('/api/auth/passkeys')
+      const [result, passkeyResult, accounts] = await Promise.all([
+        request(endpoint), userId ? null : request('/api/auth/passkeys'), userId ? request('/api/admin/users') : null
       ]);
       if (passkeyResult) updatePasskeys(passkeyResult);
       else setDetails(result.user || currentUser);
+      if (accounts) {
+        setLibraryUsers(accounts.users.filter((account) => account.id !== userId && account.status === 'approved' && account.role !== 'shared'));
+        setSharedUserIds(result.user.sharedUserIds || []);
+      }
       setTokens(result.tokens);
       setError('');
     } catch (loadError) {
@@ -1153,6 +1168,20 @@ function UserSettingsPage({ userId }) {
   }
 
   useEffect(() => { load(); }, [endpoint]);
+
+  async function saveAccess(changes) {
+    if (busy) return;
+    setBusy('access');
+    setError('');
+    setAccessSaved(false);
+    try {
+      const result = await request(endpoint, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(changes) });
+      setDetails(result.user);
+      setSharedUserIds(result.user.sharedUserIds || []);
+      setAccessSaved(true);
+    } catch (saveError) { setError(saveError.message); }
+    finally { setBusy(''); }
+  }
 
   function updatePasskeys(result) {
     setDetails(result.user);
@@ -1245,7 +1274,16 @@ function UserSettingsPage({ userId }) {
       <section className="settings-profile" aria-label="User details">
         <UserIdentity user={details} />
         <dl><div><dt>Role</dt><dd>{details.role}</dd></div><div><dt>Joined</dt><dd>{formatDate(details.createdAt)}</dd></div><div><dt>User ID</dt><dd>{details.id}</dd></div></dl>
+        <UsernameForm user={details} request={request} endpoint={userId ? endpoint : '/api/auth/me'} disabled={Boolean(busy)} onSaved={(updated) => {
+          setDetails(updated);
+          if (updated.id === currentUser.id) setUser(updated);
+        }} />
+        {userId && <label className="role-control"><span>Role</span><select aria-label="User role" value={details.role} disabled={Boolean(busy) || userId === currentUser.id}
+          onChange={(event) => saveAccess({ role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option><option value="shared">Shared</option></select></label>}
       </section>
+      {accessSaved && <p className="notice success" role="status">Access saved.</p>}
+      {userId && details.role === 'shared' && <SharedLibraryAccess users={libraryUsers} selectedIds={sharedUserIds}
+        onChange={(ids) => { setSharedUserIds(ids); setAccessSaved(false); }} onSave={() => saveAccess({ sharedUserIds })} saving={Boolean(busy)} />}
       {!userId && <section className="passkey-section" aria-labelledby="passkey-heading" aria-busy={busy === 'passkey' || busy.startsWith('passkey-delete:')}>
         <div className="section-title"><div><Fingerprint size={19} /><h2 id="passkey-heading">Passkeys</h2></div>
           <button className="secondary-button" type="button" onClick={addPasskey} disabled={Boolean(busy)}>
@@ -1371,7 +1409,7 @@ function AdminPage() {
       <div className="section-title"><div><span>02</span><h2>All users</h2></div><strong>{users.length}</strong></div>
       <div className="user-list">{users.map((user) => <article className="user-row" key={user.id}>
         <a className="user-details-link" href={`/admin/users/${encodeURIComponent(user.id)}`} aria-label={`View ${user.name} details`}><UserIdentity user={user} /><ExternalLink size={16} /></a>
-        <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option></select></label>
+        <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option><option value="shared">Shared</option></select></label>
         <div className="user-actions">
           {user.status === 'approved'
             ? <button className="danger-button compact-button" disabled={Boolean(updating) || user.id === currentUser.id} onClick={() => changeUser(user.id, { status: 'revoked' })} type="button"><UserX size={16} />Revoke</button>
@@ -1395,7 +1433,22 @@ function Router({ user }) {
   return <PageRoutes key={revision} user={user} />;
 }
 
+function SharedSettingsPage() {
+  const { user, setUser } = useContext(AuthContext);
+  return <AppShell section="settings"><section className="page-heading settings-heading"><h1>User settings</h1></section>
+    <section className="settings-profile" aria-label="User details"><UserIdentity user={user} /><dl><div><dt>Role</dt><dd>Shared</dd></div></dl>
+      <UsernameForm user={user} request={request} endpoint="/api/auth/me" onSaved={setUser} />
+    </section>
+    <LibraryAccessList request={request} />
+    <section className="theme-section" aria-labelledby="appearance-heading">
+      <div className="section-title"><div><Palette size={19} /><h2 id="appearance-heading">Appearance</h2></div></div>
+      <ThemeChoices />
+    </section>
+  </AppShell>;
+}
+
 function PageRoutes({ user }) {
+  if (user.role === 'shared') return window.location.pathname === '/settings' ? <SharedSettingsPage /> : <MusicHomePage />;
   const userMatch = window.location.pathname.match(/^\/admin\/users\/([^/]+)\/?$/);
   if (userMatch && user.role === 'admin') return <UserSettingsPage userId={decodeURIComponent(userMatch[1])} />;
   if (window.location.pathname === '/settings') return <UserSettingsPage />;

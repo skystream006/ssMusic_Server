@@ -19,6 +19,9 @@ let ImportMusic;
 let canRunJobAction;
 let MusicPlayer;
 let PlaybackProvider;
+let SharedLibraryAccess;
+let UsernameForm;
+let LibraryAccessList;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
@@ -26,9 +29,24 @@ before(async () => {
   ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
+  ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
+  ({ UsernameForm, LibraryAccessList } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('account settings label username editing and keep library access read-only', () => {
+  const html = renderToStaticMarkup(createElement(UsernameForm, { user: { id: 'listener', name: 'Listener' }, request() {}, onSaved() {} }));
+  assert.match(html, /<label[^>]*>Username<\/label>/);
+  assert.match(html, /minLength="2" maxLength="64"/);
+  assert.match(html, /value="Listener"/);
+  assert.match(html, /<button[^>]*disabled=""/);
+  assert.match(html, /Save username/);
+  const access = renderToStaticMarkup(createElement(LibraryAccessList, { request() {} }));
+  assert.match(access, /Library access/);
+  assert.match(access, /Loading library access/);
+  assert.doesNotMatch(access, /type="checkbox"|Save access/);
+});
 
 test('playlist bulk deletion is available only for an eligible selection while not saving', () => {
   const previousWindow = globalThis.window;
@@ -58,6 +76,9 @@ test('job action eligibility respects owners, contributors, administrators, acti
   const admin = { id: 'admin', role: 'admin' };
   const viewer = { id: 'viewer', role: 'user' };
   const job = { id: 'job', initiatedBy: owner, contributors: [contributor], status: 'completed' };
+  for (const user of [owner, contributor]) {
+    for (const action of ['rerun', 'delete']) assert.equal(canRunJobAction({ ...user, role: 'shared' }, job, action), false);
+  }
   for (const user of [owner, contributor, admin]) assert.equal(canRunJobAction(user, job, 'rerun'), true);
   for (const user of [owner, admin]) assert.equal(canRunJobAction(user, job, 'delete'), true);
   assert.equal(canRunJobAction(contributor, job, 'delete'), false);
@@ -79,6 +100,36 @@ test('job action eligibility respects owners, contributors, administrators, acti
 function renderExportDialog() {
   return renderToStaticMarkup(createElement(ExportLibraryDialog, { onClose() {} }));
 }
+
+test('Shared library grants support multiple checked users and saving states', () => {
+  const props = { users: [{ id: 'one', name: 'First Owner' }, { id: 'two', name: 'Second Owner' }, { id: 'three', name: 'Third Owner' }],
+    selectedIds: ['one', 'two'], onChange() {}, onSave() {} };
+  const html = renderToStaticMarkup(createElement(SharedLibraryAccess, props));
+  assert.equal((html.match(/type="checkbox"/g) || []).length, 3);
+  assert.equal((html.match(/checked=""/g) || []).length, 2);
+  assert.match(html, /Save access/);
+  const saving = renderToStaticMarkup(createElement(SharedLibraryAccess, { ...props, saving: true }));
+  assert.equal((saving.match(/disabled=""/g) || []).length, 4);
+});
+
+test('Shared playlist rows retain playback but omit server mutation controls', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const track = { jobId: 'job', playlistId: 'playlist', name: 'Song.mp3', playlistTitle: 'Playlist', downloadUrl: '/song' };
+    const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+      libraryView: { readOnly: true, tracks: [track], title: 'Playlist', selectedId: 'playlist',
+        songState: () => ({ canModify: false, disabled: true }) }
+    })));
+    assert.match(html, /aria-label="Play Song.mp3"/);
+    assert.match(html, /aria-label="Download Song.mp3"/);
+    assert.doesNotMatch(html, /aria-label="(?:Drag|Move|Transcribe|Delete|Edit metadata|Select songs)/);
+    assert.doesNotMatch(html, /draggable="true"/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
 
 test('song ratings show embedded stars and provide an accessible editable and clearable choice', () => {
   const display = renderToStaticMarkup(createElement(SongRating, { value: 3 }));

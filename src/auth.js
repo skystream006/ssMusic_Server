@@ -201,6 +201,17 @@ export function registerAuthRoutes(app, limiters = {}) {
     return res.json({ user: req.user });
   });
 
+  app.patch('/api/auth/me', requireSession, async (req, res) => {
+    try {
+      if (typeof req.body?.name !== 'string' || Object.keys(req.body).some((key) => key !== 'name')) {
+        return res.status(400).json({ error: 'Only a username may be changed here' });
+      }
+      const user = await updateUser(req.user.id, { name: req.body.name }, req.user.id);
+      if (!user) return res.status(404).json({ error: 'User not found' });
+      return res.json({ user });
+    } catch (error) { return sendError(res, error); }
+  });
+
   app.get('/api/auth/pats', requireSession, async (req, res) => {
     return res.json({ tokens: (await listPrivateAccessTokens(req.user.id)) });
   });
@@ -469,7 +480,9 @@ export function registerAuthRoutes(app, limiters = {}) {
     try {
       const user = await updateUser(req.params.id, {
         status: req.body?.status,
-        role: req.body?.role
+        role: req.body?.role,
+        name: req.body?.name,
+        sharedUserIds: req.body?.sharedUserIds
       }, req.user.id);
       if (!user) return res.status(404).json({ error: 'User not found' });
       return res.json({ user });

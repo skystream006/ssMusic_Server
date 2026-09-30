@@ -553,6 +553,12 @@ code { font: 400 11px 'DM Mono', monospace; }
 .library-organize-heading > div { display: flex; gap: 4px; }
 .library-location { display: grid; gap: 6px; margin-top: 10px; font-size: 10px; color: var(--muted); }
 .library-location select { width: 100%; min-width: 0; height: 34px; padding: 0 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--surface); font-size: 11px; }
+.shared-library-picker { max-width: 24rem; margin: 16px 0; font-size: 13px; }
+.shared-library-picker select { min-height: 44px; font-size: 16px; }
+.shared-library-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 8px 24px; }
+.shared-library-options label { display: flex; align-items: center; gap: 10px; min-height: 44px; overflow-wrap: anywhere; }
+.shared-library-options input { flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--royal); }
+.settings-profile .role-control { margin-top: 20px; }
 .library-songs { min-width: 0; padding: 26px 0 24px 28px; }
 .library-selection-heading { display: flex; align-items: center; gap: 18px; min-height: 82px; margin-bottom: 24px; }
 .selection-art { display: grid; place-items: center; width: 76px; height: 76px; flex: none; color: var(--royal); background: color-mix(in srgb, var(--royal) 9%, var(--surface)); border: 1px solid color-mix(in srgb, var(--royal) 18%, var(--line)); }

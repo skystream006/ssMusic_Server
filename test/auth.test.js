@@ -94,6 +94,25 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     method, headers: { ...headers, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
+  await context.test('admins rename users and sessions rename only their own username', async () => {
+    assert.equal((await call('/api/auth/me', 'PATCH', {}, { name: 'Anonymous' })).status, 401);
+    assert.equal((await call(`/api/admin/users/${admin.id}`, 'PATCH', userHeaders, { name: 'Intruder' })).status, 403);
+    for (const body of [{ name: 'Changed', role: 'admin' }, { name: 'Changed', sharedUserIds: [admin.id] }, { name: 'Changed', id: admin.id }, {}]) {
+      assert.equal((await call('/api/auth/me', 'PATCH', userHeaders, body)).status, 400);
+    }
+    assert.equal((await call('/api/auth/me', 'PATCH', userHeaders, { name: 'ADMIN' })).status, 409);
+    assert.equal((await call('/api/auth/me', 'PATCH', userHeaders, { name: 'x' })).status, 400);
+    const renamed = await call('/api/auth/me', 'PATCH', userHeaders, { name: '  New   Listener ' });
+    assert.equal(renamed.status, 200);
+    assert.equal((await renamed.json()).user.name, 'New Listener');
+    assert.equal((await (await call('/api/auth/me', 'GET', userHeaders)).json()).user.name, 'New Listener');
+    const restored = await call(`/api/admin/users/${user.id}`, 'PATCH', adminHeaders, { name: 'Listener' });
+    assert.equal(restored.status, 200);
+    assert.equal((await restored.json()).user.name, 'Listener');
+    const selfAdmin = await call('/api/auth/me', 'PATCH', adminHeaders, { name: 'Admin' });
+    assert.equal(selfAdmin.status, 200);
+    assert.equal((await selfAdmin.json()).user.role, 'admin');
+  });
   const mobileSession = await store.createSession(user.id);
   const mobileHeaders = { Authorization: `Bearer ${mobileSession.token}` };
   assert.deepEqual(await (await call('/protected', 'POST', mobileHeaders)).json(), { userId: user.id });

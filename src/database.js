@@ -35,6 +35,8 @@ export async function readUser(database, id) {
   const user = await database.prepare(`SELECT id, name, user_handle AS "userHandle", role, status,
     created_at AS "createdAt", updated_at AS "updatedAt" FROM users WHERE id = $1`).get(id);
   if (!user) return null;
+  user.sharedUserIds = (await database.prepare('SELECT owner_id FROM library_shares WHERE viewer_id = $1 ORDER BY owner_id')
+    .all(id)).map((row) => row.owner_id);
   user.credentials = (await database.prepare(`SELECT id, public_key AS "publicKey", counter, transports,
     created_at AS "createdAt", last_used_at AS "lastUsedAt"
     FROM credentials WHERE user_id = $1`).all(id)).map((credential) => ({

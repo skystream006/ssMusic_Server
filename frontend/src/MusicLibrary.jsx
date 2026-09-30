@@ -358,7 +358,8 @@ function FolderDialog({ folder, parentId, folders, saving, onSave, onClose }) {
   </dialog>;
 }
 
-export default function MusicLibrary({ user, request, confirm }) {
+export default function MusicLibrary({ user, request, confirm, owner = null }) {
+  const readOnly = user.role === 'shared';
   const playback = usePlayback();
   const sidebarRef = useRef(null);
   const [editingMetadata, setEditingMetadata] = useState(null);
@@ -491,7 +492,8 @@ export default function MusicLibrary({ user, request, confirm }) {
     setSelectedId(id);
     setTrackPage(1);
     setSidebarOpen(false);
-    const params = id ? `?${new URLSearchParams({ playlist: id })}` : '';
+    const query = new URLSearchParams({ ...(id ? { playlist: id } : {}), ...(owner ? { userId: owner.id } : {}) });
+    const params = query.size ? `?${query}` : '';
     replaceURL(`/${params}`);
   }
 
@@ -499,7 +501,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     const job = track.sourceJob || sourceJobMap.get(track.jobId);
     const key = songKey(track);
     const transcription = pendingTranscriptions[key] || track.transcription || job?.transcriptions?.[track.name];
-    const canModify = canModifyJob(user, job);
+    const canModify = !readOnly && canModifyJob(user, job);
     return { canModify, transcription, deleting: Boolean(deletingFiles[key]),
       metadataBusy: job?.transcriptionPending || Object.values(job?.transcriptions || {}).some((item) => item.status === 'sent')
         || [...songMutations.current].some((item) => JSON.parse(item)[0] === track.jobId),
@@ -790,19 +792,19 @@ export default function MusicLibrary({ user, request, confirm }) {
         return offset < .5 ? 'before' : 'after';
       };
       const acceptEntry = (event) => {
-        const allowed = !saving && (event.dataTransfer.types.includes('application/x-ssmusic-entry')
+        const allowed = !readOnly && !saving && (event.dataTransfer.types.includes('application/x-ssmusic-entry')
           || (!folder && event.dataTransfer.types.includes('application/x-ssmusic-song')));
         allowDrop(event, allowed);
         if (allowed) event.currentTarget.dataset.dropPosition = dropPosition(event);
       };
       return <li key={entry.id}>
         <div className={`library-entry ${selectedId === entry.id ? 'is-selected' : ''}`} style={{ paddingLeft: 8 + Math.min(depth, 4) * 12 }}
-          draggable={!saving && !selectingPlaylists} onDragStart={(event) => { event.currentTarget.dataset.dragging = 'true'; event.dataTransfer.setData('application/x-ssmusic-entry', entry.id); event.dataTransfer.effectAllowed = 'move'; }}
+          draggable={!readOnly && !saving && !selectingPlaylists} onDragStart={(event) => { event.currentTarget.dataset.dragging = 'true'; event.dataTransfer.setData('application/x-ssmusic-entry', entry.id); event.dataTransfer.effectAllowed = 'move'; }}
           onDragEnter={acceptEntry} onDragOver={acceptEntry} onDragLeave={leaveDrop}
           onDrop={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            if (saving) return;
+            if (readOnly || saving) return;
             const songData = event.dataTransfer.getData('application/x-ssmusic-song');
             if (songData) {
               if (!folder) { try { void moveSong(JSON.parse(songData), entry.id); } catch {} }
@@ -844,12 +846,12 @@ export default function MusicLibrary({ user, request, confirm }) {
         disabled={!library || saving || !folders.length || Boolean(search)}
         onClick={() => setCollapsed(allFoldersCollapsed ? new Set() : new Set(folders.map((folder) => folder.id)))}>
         {allFoldersCollapsed ? <ChevronsUpDown size={19} /> : <ChevronsDownUp size={19} />}</button>
-      <button className="music-icon-button" type="button" title="Select playlists" aria-label="Select playlists" aria-pressed={selectingPlaylists}
+      {!readOnly && <><button className="music-icon-button" type="button" title="Select playlists" aria-label="Select playlists" aria-pressed={selectingPlaylists}
         disabled={!library || saving} onClick={() => { setSelectingPlaylists(!selectingPlaylists); setSelectedPlaylists(new Set()); setReordering(false); }}><ListChecks size={19} /></button>
       <button className="music-icon-button" type="button" title="Reorder playlists" aria-label="Reorder playlists" aria-pressed={reordering}
         disabled={!library || saving} onClick={() => { setReordering(!reordering); setSelectingPlaylists(false); setSelectedPlaylists(new Set()); }}><GripVertical size={19} /></button>
       <button className="music-icon-button" type="button" title="New playlist folder" aria-label="New playlist folder" disabled={!library || saving}
-        onClick={() => setFolderDialog({ folder: null, parentId: selected?.type === 'folder' ? selected.id : selected?.parentId || null })}><FolderPlus size={19} /></button></div></div>
+        onClick={() => setFolderDialog({ folder: null, parentId: selected?.type === 'folder' ? selected.id : selected?.parentId || null })}><FolderPlus size={19} /></button></>}</div></div>
     <label className="queue-search"><Search size={15} /><input type="search" aria-label="Search playlists" placeholder="Find a playlist" value={search} disabled={reordering} onChange={(event) => setSearch(event.target.value)} /></label>
     {selectingPlaylists && <div className="library-bulk-toolbar">
       <label><input className="library-select-checkbox" type="checkbox" aria-label="Select all matching playlists" disabled={saving}
@@ -864,7 +866,7 @@ export default function MusicLibrary({ user, request, confirm }) {
     <div className="library-tree-scroll">{!library && !error ? <p className="music-empty" role="status">Loading playlists...</p> : renderEntries()}
       {library && !entries.length && <p className="music-empty">No playlists yet.</p>}
       {!reordering && search && !entries.some(matches) && <p className="music-empty">No matching playlists.</p>}</div>
-    {selected && <div className="library-organize">
+    {selected && !readOnly && <div className="library-organize">
       <div className="library-organize-heading"><strong title={title}>{title}</strong><div>
         {selected.type === 'folder' ? <>
           <button className="music-icon-button" type="button" title="Edit folder" aria-label="Edit folder" disabled={saving} onClick={() => setFolderDialog({ folder: selected, parentId: selected.parentId })}><Pencil size={16} /></button>
@@ -881,20 +883,20 @@ export default function MusicLibrary({ user, request, confirm }) {
   </aside>;
 
   return <div className={`music-home ${sidebarOpen ? 'sidebar-open' : ''}`}>
-    <header className="library-titlebar"><div><p className="eyebrow"><Music2 size={13} />Your music, collected</p><h1>{user.name}'s Music</h1></div>
+    <header className="library-titlebar"><div><p className="eyebrow"><Music2 size={13} />{readOnly ? 'Shared library' : 'Your music, collected'}</p><h1>{owner?.name || user.name}'s Music</h1></div>
       <div className="library-header-actions"><span className="library-save-status" role="status">{saving ? 'Saving...' : saved ? 'Saved' : `${jobs.length} playlists`}</span>
         <button className="music-icon-button" type="button" title="Refresh library" aria-label="Refresh library" disabled={saving} onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={18} /></button>
-        <button className="music-icon-button" type="button" title="Import media" aria-label="Import media" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setImporting(true)}><Upload size={18} /></button>
+        {!readOnly && <><button className="music-icon-button" type="button" title="Import media" aria-label="Import media" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setImporting(true)}><Upload size={18} /></button>
         <button className="secondary-button compact-button library-export-button" type="button" title="Export library" aria-label="Export library" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setExportingLibrary(true)}><Download size={17} />Export library</button>
-        <button className="primary-button compact-button" type="button" title="Add Playlist" aria-label="Add Playlist" disabled={!library || saving} onClick={() => setAddingPlaylist(true)}><Plus size={17} />Add Playlist</button></div></header>
+        <button className="primary-button compact-button" type="button" title="Add Playlist" aria-label="Add Playlist" disabled={!library || saving} onClick={() => setAddingPlaylist(true)}><Plus size={17} />Add Playlist</button></>}</div></header>
     {(error || trackError) && <div className="notice error library-notice" role="alert">{error || trackError}<button className="music-icon-button" type="button" title="Retry" aria-label="Retry loading library" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={16} /></button></div>}
     {actionError && <div className="notice error library-notice" role="alert">{actionError}<button className="music-icon-button" type="button" title="Dismiss error" aria-label="Dismiss song error" onClick={() => setActionError('')}><X size={16} /></button></div>}
     {transcriptionNotice && <div className="notice success library-notice" role="status">{transcriptionNotice}<button className="music-icon-button" type="button" title="Dismiss" aria-label="Dismiss transcription notice" onClick={() => setTranscriptionNotice('')}><X size={16} /></button></div>}
     <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>
-    <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, loading: (tracksLoading || searchPending) && !trackError,
-      pagination, error: trackError, queueScope: paginated ? JSON.stringify([selectedId || 'all', trackPage, debouncedTrackSearch]) : selectedId,
+    <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: (tracksLoading || searchPending) && !trackError,
+      pagination, error: trackError, queueScope: paginated ? JSON.stringify([owner?.id, selectedId || 'all', trackPage, debouncedTrackSearch]) : selectedId,
       search: paginated ? trackSearch : undefined, onSearch: paginated ? setTrackSearch : undefined,
-      songSelection: selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
+      songSelection: !readOnly && selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),
         remove: removeSelectedSongs, canRemove: songSelection.length > 0 && songSelection.every((track) => !songState(track).disabled),
         transfer: (action) => setBulkDialog({ type: 'songs', action, version: library.version, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,

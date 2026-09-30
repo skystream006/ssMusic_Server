@@ -6,6 +6,13 @@ CREATE TABLE IF NOT EXISTS users (
   status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'revoked')),
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'user', 'shared'));
+CREATE TABLE IF NOT EXISTS library_shares (
+  viewer_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (viewer_id, owner_id), CHECK (viewer_id <> owner_id)
+);
 CREATE TABLE IF NOT EXISTS credentials (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   public_key TEXT NOT NULL, counter BIGINT NOT NULL, transports JSONB NOT NULL,

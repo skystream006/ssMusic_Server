@@ -205,6 +205,12 @@ test('scheduled backups persist, catch up once after downtime and skip disabled 
   assert.equal((await service.getStatus('owner')).latest.id, completed.latest.id);
   assert.equal((await service.getStatus('owner')).nextRunAt, null);
   assert.equal((await service.getStatus('owner')).schedule.format, 'android');
+  await database.prepare("UPDATE users SET status = 'approved', role = 'shared' WHERE id = 'other'").run();
+  const sharedStatus = await service.getStatus('other');
+  await service.runDue();
+  assert.deepEqual(await service.getStatus('other'), sharedStatus);
+  await assert.rejects(service.start('other', { format: 'android' }), { statusCode: 403 });
+  await assert.rejects(service.saveSchedule('other', schedule), { statusCode: 403 });
 });
 
 test('schedule validation rejects invalid times, formats, weekdays and iTunes destinations', async (context) => {

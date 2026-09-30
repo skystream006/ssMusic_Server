@@ -56,7 +56,7 @@ export function SongActions({ name, className, children }) {
 }
 
 export function canManageJob(user, job) {
-  return Boolean(user && job && (user.role === 'admin' || user.id === job.initiatedBy?.id));
+  return Boolean(user && user.role !== 'shared' && job && (user.role === 'admin' || user.id === job.initiatedBy?.id));
 }
 
 export function isContributor(user, job) {
@@ -64,7 +64,7 @@ export function isContributor(user, job) {
 }
 
 export function canModifyJob(user, job) {
-  return canManageJob(user, job) || isContributor(user, job);
+  return user?.role !== 'shared' && (canManageJob(user, job) || isContributor(user, job));
 }
 
 export function canRunJobAction(user, job, action) {

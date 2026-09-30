@@ -399,12 +399,12 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             const trackIndex = playlistTracks.findIndex((item) => songKey(item) === songKey(track));
             const current = songKey(track) === selected;
             const action = libraryView.songState(track);
-            const acceptSong = (event) => allowDrop(event, !libraryView.saving && !libraryView.pagination && event.dataTransfer.types.includes('application/x-ssmusic-song'));
+            const acceptSong = (event) => allowDrop(event, !libraryView.readOnly && !libraryView.saving && !libraryView.pagination && event.dataTransfer.types.includes('application/x-ssmusic-song'));
             return <li className={`library-song-row ${current ? 'is-current' : ''} ${selection?.active && selection.keys.has(songKey(track)) ? 'is-checked' : ''}`} key={songKey(track)}
               onDragEnter={acceptSong} onDragOver={acceptSong} onDragLeave={leaveDrop}
               onDrop={(event) => {
                 event.preventDefault();
-                if (libraryView.saving || libraryView.pagination) return;
+                if (libraryView.readOnly || libraryView.saving || libraryView.pagination) return;
                 try {
                   const moved = JSON.parse(event.dataTransfer.getData('application/x-ssmusic-song'));
                   if (moved.playlistId === track.playlistId) libraryView.onReorder(moved, songKey(track));
@@ -412,7 +412,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 } catch {}
               }}>
               {selection?.active ? <label className="library-row-check"><input className="library-select-checkbox" type="checkbox" aria-label={`Select song ${track.name}`} checked={selection.keys.has(songKey(track))} disabled={libraryView.saving}
-                onChange={(event) => selection.change([songKey(track)], event.target.checked)} /></label> : <button className="music-icon-button song-drag" type="button" draggable={!libraryView.saving} disabled={libraryView.saving}
+                onChange={(event) => selection.change([songKey(track)], event.target.checked)} /></label> : libraryView.readOnly ? <span aria-hidden="true" /> : <button className="music-icon-button song-drag" type="button" draggable={!libraryView.saving} disabled={libraryView.saving}
                 title={`Drag ${track.name}`} aria-label={`Drag ${track.name}`} onDragStart={(event) => {
                   const row = event.currentTarget.closest('.library-song-row');
                   row.dataset.dragging = 'true';
@@ -432,15 +432,15 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 onSaved={(result) => libraryView.onMetadataSaved(track, result)} onError={libraryView.onRatingError} />
               <SongActions name={track.name} className="song-order-actions">
                 {action.canModify && /\.mp3$/i.test(track.name) && <button className="music-icon-button" type="button" title="Edit song metadata" aria-label={`Edit metadata ${track.name}`} disabled={action.disabled || action.metadataBusy} onClick={() => libraryView.onEditMetadata(track)}><Pencil size={16} /></button>}
-                {mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" title="Transcribe song" aria-label={`Transcribe ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
+                {!libraryView.readOnly && mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" title="Transcribe song" aria-label={`Transcribe ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
                 {action.canModify && <button className="music-icon-button" type="button" title="Remove song from playlist" aria-label={`Delete song ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
-                <button className="music-icon-button" type="button" title="Move to playlist" aria-label={`Move ${track.name} to playlist`} disabled={libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>
+                {!libraryView.readOnly && <button className="music-icon-button" type="button" title="Move to playlist" aria-label={`Move ${track.name} to playlist`} disabled={libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>}
                 <a className="music-icon-button" href={track.downloadUrl} title="Download song" aria-label={`Download ${track.name}`}><ArrowDownToLine size={15} /></a>
               </SongActions>
             </li>;
           })}</ol>}</SongGroups>}
           {!libraryView.loading && !libraryView.error && !visibleTracks.length && <div className="library-empty"><Music2 size={32} /><h3>{trackSearch ? 'No matching songs' : 'No songs yet'}</h3>
-            {!trackSearch && <button className="secondary-button compact-button" type="button" onClick={libraryView.onAdd}><Plus size={16} />Add Playlist</button>}</div>}
+            {!libraryView.readOnly && !trackSearch && <button className="secondary-button compact-button" type="button" onClick={libraryView.onAdd}><Plus size={16} />Add Playlist</button>}</div>}
           {libraryView.pagination && <TrackPagination pagination={libraryView.pagination} position="bottom" />}
         </section>
       </div>}

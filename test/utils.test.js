@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isPlaylistUrl, isYouTubeMusicUrl, isYouTubeUrl, sanitizeFolderName } from '../src/utils.js';
+import { isPlaylistUrl, isYouTubeMusicUrl, isYouTubeUrl, normalizeJobUrl, sanitizeFolderName } from '../src/utils.js';
 
 test('accepts YouTube video, short, mobile and music links only over HTTP or HTTPS', () => {
   for (const host of ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be']) {
@@ -41,4 +41,20 @@ test('does not detect playlists without a list query parameter or a valid YouTub
 test('sanitizes folder names for output directories', () => {
   assert.equal(sanitizeFolderName('My Playlist Name'), 'My_Playlist_Name');
   assert.equal(sanitizeFolderName('  bad:/\\name  '), 'bad_name');
+});
+
+test('job URLs with a list parameter become canonical YouTube Music playlist URLs', () => {
+  for (const url of [
+    'https://music.youtube.com/watch?v=cMoRYP8EDUk&list=PLbMbcPGUE7ak',
+    ' https://www.youtube.com/watch?list=PLbMbcPGUE7ak&v=other&index=3#fragment ',
+    'http://youtu.be/other?si=tracking&list=PLbMbcPGUE7ak',
+    'https://music.youtube.com/playlist?list=PLbMbcPGUE7ak'
+  ]) {
+    assert.equal(normalizeJobUrl(url), 'https://music.youtube.com/playlist?list=PLbMbcPGUE7ak');
+  }
+  assert.equal(normalizeJobUrl('https://youtube.com/watch?list=PL%2B123&v=abc'), 'https://music.youtube.com/playlist?list=PL%2B123');
+  for (const url of ['https://music.youtube.com/watch?v=abc', 'https://youtu.be/abc?si=tracking',
+    'https://music.youtube.com/watch?v=abc#list=PL123', 'https://example.com/watch?list=PL123', 'not a URL']) {
+    assert.equal(normalizeJobUrl(` ${url} `), url);
+  }
 });

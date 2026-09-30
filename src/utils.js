@@ -31,6 +31,15 @@ export function isPlaylistUrl(value) {
   return parsed.searchParams.has('list');
 }
 
+export function normalizeJobUrl(value) {
+  const trimmed = value.trim();
+  if (!isPlaylistUrl(trimmed)) return trimmed;
+  const source = new URL(trimmed);
+  const playlist = new URL('https://music.youtube.com/playlist');
+  playlist.searchParams.set('list', source.searchParams.get('list'));
+  return playlist.href;
+}
+
 export function sanitizeFolderName(name) {
   return String(name || 'playlist')
     .trim()

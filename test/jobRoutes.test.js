@@ -65,7 +65,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const users = {};
   const credentials = {};
   const mobileHeaders = {};
-  for (const name of ['Admin', 'Owner', 'Other']) {
+  for (const name of ['Admin', 'Owner', 'Other', 'Reader']) {
     const user = await store.registerUser(name, name, { id: name, publicKey: Buffer.from(name), counter: 0 });
     if (name !== 'Admin') await store.updateUser(user.id, { status: 'approved' }, users.Admin.id);
     users[name] = user;
@@ -74,6 +74,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     credentials[name] = [{ Cookie: `ssytdlp_session=${session.token}` }, { 'X-PAT': pat.token }];
     mobileHeaders[name] = { Authorization: `Bearer ${session.token}` };
   }
+
+  await store.updateUser(users.Reader.id, { role: 'shared', sharedUserIds: [users.Owner.id, users.Admin.id] }, users.Admin.id);
 
   for (const name of ['Pending', 'Revoked']) {
     users[name] = await store.registerUser(name, name, { id: name, publicKey: Buffer.from(name), counter: 0 });
@@ -150,7 +152,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
         const buffer = Buffer.concat(chunks);
         const text = buffer.toString('utf8');
         resolve({ status: response.statusCode, text, buffer, headers: response.headers,
-          body: response.headers['content-type']?.includes('application/json') ? JSON.parse(text) : null });
+          body: text && response.headers['content-type']?.includes('application/json') ? JSON.parse(text) : null });
       });
     });
     request.on('error', reject);
@@ -165,6 +167,74 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     } while (['queued', 'running'].includes(response.body.status));
     return response;
   }
+  await context.test('Shared accounts can change their own theme but keep granted libraries read-only through every authentication method', async () => {
+    const ownerLibrary = await call('/api/library', 'GET', credentials.Owner[0]);
+    const ownerPreferences = (await call('/api/preferences', 'GET', credentials.Owner[0])).body;
+    const userPath = `/api/admin/users/${users.Reader.id}`;
+    for (const headers of [credentials.Reader[0], mobileHeaders.Reader]) {
+      const renamed = await call('/api/auth/me', 'PATCH', headers, { name: 'Shared Reader' });
+      assert.equal(renamed.status, 200, renamed.text);
+      assert.equal(renamed.body.user.name, 'Shared Reader');
+      assert.equal(renamed.body.user.role, 'shared');
+      assert.deepEqual(new Set(renamed.body.user.sharedUserIds), new Set([users.Owner.id, users.Admin.id]));
+      assert.equal((await call('/api/auth/me', 'PATCH', headers, { name: 'Escalated', role: 'admin' })).status, 400);
+    }
+    assert.equal((await call('/api/auth/me', 'PATCH', credentials.Reader[1], { name: 'PAT rename' })).status, 401);
+    assert.deepEqual(new Set((await call(userPath, 'GET', credentials.Admin[0])).body.user.sharedUserIds), new Set([users.Owner.id, users.Admin.id]));
+    for (const headers of [...credentials.Reader, mobileHeaders.Reader]) {
+      assert.equal((await call('/api/health', 'GET', headers)).status, 403);
+      assert.equal((await call('/api/health', 'HEAD', headers)).status, 403);
+      const preferences = await call('/api/preferences', 'PUT', headers, { theme: 'royal-purple', mode: 'dark', userId: users.Owner.id });
+      assert.equal(preferences.status, 200, preferences.text);
+      assert.deepEqual(preferences.body, { theme: 'royal-purple', mode: 'dark' });
+      assert.deepEqual((await call('/api/preferences', 'GET', headers)).body, preferences.body);
+      assert.deepEqual((await call('/api/preferences', 'GET', credentials.Owner[0])).body, ownerPreferences);
+      assert.equal((await call('/api/preferences', 'PUT', headers, { theme: 'invalid' })).status, 400);
+      assert.equal((await call('/api/preferences', 'PUT', headers, { mode: 'invalid' })).status, 400);
+      const owners = await call('/api/library/shared-users', 'GET', headers);
+      assert.equal(owners.status, 200, owners.text);
+      assert.deepEqual(new Set(owners.body.users.map((user) => user.id)), new Set([users.Owner.id, users.Admin.id]));
+      const library = await call(`/api/library?userId=${users.Owner.id}`, 'GET', headers);
+      assert.equal(library.status, 200, library.text);
+      assert.deepEqual(library.body.entries, ownerLibrary.body.entries);
+      assert.ok(library.body.jobs.every((job) => !('outputDir' in job) && !('url' in job)));
+      const tracks = await call(`/api/library/tracks?userId=${users.Owner.id}`, 'GET', headers);
+      assert.equal(tracks.status, 200, tracks.text);
+      assert.ok(tracks.body.files.length > 0);
+      assert.ok(tracks.body.files.every((track) => !('outputDir' in track.sourceJob)));
+      assert.equal((await call(`/api/library?userId=${users.Admin.id}`, 'GET', headers)).status, 200);
+      for (const route of [`/api/library?userId=${users.Other.id}`, `/api/library/tracks?userId=${users.Other.id}`,
+        `/api/jobs/unowned/stream/${encodeURIComponent(songName)}`, '/api/jobs/music/download-all', '/api/jobs', '/api/jobs/music',
+        '/api/jobs/music/files', '/api/admin/users', '/api/library/export', '/api/library/export?source=latest']) {
+        assert.equal((await call(route, 'GET', headers)).status, 403, route);
+      }
+      for (const route of ['stream', 'download', 'lyrics']) {
+        assert.equal((await call(`/api/jobs/music/${route}/${encodeURIComponent(songName)}`, 'GET', headers)).status, 200, route);
+      }
+      const partial = await call(`/api/jobs/music/stream/${encodeURIComponent(songName)}`, 'GET', { ...headers, Range: 'bytes=0-1' });
+      assert.equal(partial.status, 206);
+      for (const [route, method] of [['/api/jobs', 'POST'], ['/api/jobs/music', 'DELETE'], ['/api/jobs/music/title', 'PATCH'],
+        ['/api/jobs/music/contributors', 'PUT'], ['/api/jobs/music/rerun', 'POST'],
+        [`/api/jobs/music/files/${encodeURIComponent(songName)}`, 'DELETE'],
+        [`/api/jobs/music/files/${encodeURIComponent(songName)}/metadata`, 'PATCH'],
+        [`/api/jobs/music/files/${encodeURIComponent(songName)}/transcribe`, 'POST'],
+        ['/api/library', 'PUT'], ['/api/library/entries', 'POST'], ['/api/library/songs/remove', 'POST'],
+        ['/api/library/songs/transfer', 'POST'], ['/api/library/backup', 'POST'],
+        ['/api/auth/pats', 'POST'], ['/api/auth/passkeys/options', 'POST'], [userPath, 'PATCH']]) {
+        assert.equal((await call(route, method, headers, method === 'DELETE' ? undefined : {})).status, 403, `${method} ${route}`);
+      }
+    }
+    assert.equal((await call(userPath, 'PATCH', credentials.Admin[0], { sharedUserIds: [] })).status, 200);
+    assert.equal((await call('/api/library', 'GET', credentials.Reader[0])).body.songCount, 0);
+    assert.equal((await call(`/api/jobs/music/stream/${encodeURIComponent(songName)}`, 'GET', credentials.Reader[0])).status, 403);
+    assert.deepEqual((await call('/api/library', 'GET', credentials.Owner[0])).body, ownerLibrary.body);
+    assert.equal((await call(userPath, 'DELETE', credentials.Admin[0])).status, 204);
+  });
+  const sharedServerExited = once(server, 'exit');
+  server.kill();
+  await sharedServerExited;
+  await startServer();
+
   for (const route of ['/', '/app-login', '/job', '/job/music', '/job/music/player']) {
     assert.equal((await call(route)).status, 200);
   }

@@ -104,12 +104,15 @@ for (const { label, url, isPlaylist } of [
     });
     const owner = { id: 'owner', role: 'user' };
     const job = await manager.createJob(url, owner);
+    const expectedUrl = isPlaylist ? `https://music.youtube.com/playlist?list=${new URL(url).searchParams.get('list')}` : url;
+    assert.equal(job.url, expectedUrl);
     await waitForFile(file('metadata-started'));
     assert.equal(job.playlistTitle, null, 'creation returns before the metadata lookup completes');
     await fs.writeFile(file('metadata-release'), '');
     await waitForFile(file('download-started'));
     const stored = JSON.parse((await openDatabase().prepare('SELECT data FROM jobs WHERE id = $1').get(job.id)).data);
     assert.equal(stored.status, 'running');
+    assert.equal(stored.url, expectedUrl);
     assert.equal(stored.playlistTitle, title);
     assert.equal(stored.isPlaylist, isPlaylist);
     assert.equal(stored.playlistSongCount, isPlaylist ? 12 : null);
@@ -149,7 +152,7 @@ for (const { label, url, isPlaylist } of [
       assert.equal(args.includes('--dump-single-json'), index % 2 === 0);
       assert.ok(args.includes(isPlaylist ? '--yes-playlist' : '--no-playlist'));
       assert.ok(!args.includes(isPlaylist ? '--no-playlist' : '--yes-playlist'));
-      assert.equal(args.at(-1), url);
+      assert.equal(args.at(-1), expectedUrl);
     }
   });
 }
@@ -557,6 +560,26 @@ test('duplicate source URLs return the previous job without creating another rec
     assert.equal((await manager.getJobs()).length, 1);
     assert.deepEqual((await manager.getJob('previous-job')).initiatedBy, { id: 'alice-id', name: 'Alice' });
   }
+});
+
+test('playlist watch links use the canonical URL for duplicate detection', async () => {
+  const url = 'https://music.youtube.com/playlist?list=PLbMbcPGUE7ak';
+  await writeJob(openDatabase(), {
+    id: 'playlist-job', url, status: 'completed', files: [], createdAt: new Date().toISOString()
+  });
+  const manager = await import(`../src/jobManager.js?playlist-normalization=${Date.now()}`);
+  for (const source of [
+    'https://music.youtube.com/watch?v=cMoRYP8EDUk&list=PLbMbcPGUE7ak',
+    'https://www.youtube.com/watch?v=another&list=PLbMbcPGUE7ak&index=5',
+    'https://youtu.be/another?list=PLbMbcPGUE7ak&si=tracking'
+  ]) {
+    await assert.rejects(manager.createJob(source), (error) => {
+      assert.equal(error.code, 'JOB_ALREADY_EXISTS');
+      assert.equal(error.existingJob.id, 'playlist-job');
+      return true;
+    });
+  }
+  assert.equal((await manager.getJobs()).length, 1);
 });
 
 test('jobManager queues jobs around a maintenance update', {

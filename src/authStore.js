@@ -8,6 +8,7 @@ function publicUser(user) {
     id: user.id,
     name: user.name,
     role: user.role,
+    sharedUserIds: user.sharedUserIds || [],
     status: user.status,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -182,7 +183,15 @@ async function updateUserRecord(userId, changes, actorId) {
   if (!user) return null;
   const status = changes.status ?? user.status;
   const role = changes.role ?? user.role;
-  if (!['pending', 'approved', 'revoked'].includes(status) || !['user', 'admin'].includes(role)) {
+  if (changes.name !== undefined) {
+    if (typeof changes.name !== 'string') throw Object.assign(new Error('Username must be text'), { statusCode: 400 });
+    const name = normalizeName(changes.name);
+    if (await database.prepare('SELECT 1 FROM users WHERE name_key = $1 AND id <> $2').get(name.toLowerCase(), user.id)) {
+      throw Object.assign(new Error('That name is already registered'), { statusCode: 409 });
+    }
+    user.name = name;
+  }
+  if (!['pending', 'approved', 'revoked'].includes(status) || !['user', 'admin', 'shared'].includes(role)) {
     const error = new Error('Invalid user role or access status');
     error.statusCode = 400;
     throw error;
@@ -199,6 +208,23 @@ async function updateUserRecord(userId, changes, actorId) {
     throw error;
   }
 
+  const sharedUserIds = changes.sharedUserIds ?? user.sharedUserIds;
+  if (!Array.isArray(sharedUserIds) || sharedUserIds.length > 500
+    || sharedUserIds.some((id) => typeof id !== 'string' || id === user.id)
+    || (changes.sharedUserIds !== undefined && role !== 'shared' && sharedUserIds.length)) {
+    throw Object.assign(new Error('Invalid shared library users'), { statusCode: 400 });
+  }
+  const grants = role === 'shared' ? [...new Set(sharedUserIds)] : [];
+  for (const id of grants) {
+    const owner = await database.prepare('SELECT role, status FROM users WHERE id = $1').get(id);
+    if (!owner || owner.role === 'shared' || owner.status !== 'approved') {
+      throw Object.assign(new Error('Select approved, non-Shared library users'), { statusCode: 400 });
+    }
+  }
+  await database.prepare('DELETE FROM library_shares WHERE viewer_id = $1').run(user.id);
+  for (const id of grants) await database.prepare('INSERT INTO library_shares (viewer_id, owner_id) VALUES ($1, $2)').run(user.id, id);
+  if (role === 'shared' || status !== 'approved') await database.prepare('DELETE FROM library_shares WHERE owner_id = $1').run(user.id);
+  user.sharedUserIds = grants;
   user.status = status;
   user.role = role;
   user.updatedAt = new Date().toISOString();

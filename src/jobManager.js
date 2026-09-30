@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { isPlaylistUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
+import { isPlaylistUrl, normalizeJobUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob, withTransaction } from './database.js';
 import { deletePostgresJob, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
@@ -489,7 +489,7 @@ export async function createJob(url, user = null, { metadataOnly = false, downlo
     throw Object.assign(new Error('downloadType must be audio or video'), { statusCode: 400 });
   }
   await ensureOutputRoot();
-  const sourceUrl = url.trim();
+  const sourceUrl = normalizeJobUrl(url);
   const job = (await withTransaction(database, async () => (await createJobRecord(sourceUrl, user, metadataOnly, downloadType))));
   jobs.set(job.id, job);
   startJob(job);

@@ -49,7 +49,7 @@ test('PostgreSQL credentials and sessions retain identity across reconnects', as
   await closeDatabases();
   const reopened = openDatabase();
   assert.deepEqual(await readUser(reopened, user.id), {
-    ...user, credentials: [{ ...user.credentials[0], lastUsedAt: '2026-09-28T15:00:00.000Z' }]
+    ...user, sharedUserIds: [], credentials: [{ ...user.credentials[0], lastUsedAt: '2026-09-28T15:00:00.000Z' }]
   });
   assert.equal((await reopened.prepare('SELECT user_id FROM sessions WHERE token_hash = $1').get('session-hash')).user_id, user.id);
 });

@@ -38,7 +38,8 @@ export async function createLibraryBackupService({ loadLibrary, database = openD
   }
 
   async function requireUser(userId) {
-    if ((await database.prepare('SELECT status FROM users WHERE id = $1').get(userId))?.status !== 'approved') {
+    const user = await database.prepare('SELECT status, role FROM users WHERE id = $1').get(userId);
+    if (user?.status !== 'approved' || user.role === 'shared') {
       throw failure('An approved account is required.', 403);
     }
     (await database.prepare('INSERT INTO library_backups (user_id) VALUES ($1) ON CONFLICT DO NOTHING').run(userId));
@@ -144,7 +145,7 @@ export async function createLibraryBackupService({ loadLibrary, database = openD
 
   async function runDue() {
     const due = (await database.prepare(`SELECT backup.user_id FROM library_backups backup JOIN users ON users.id = backup.user_id
-      WHERE users.status = 'approved' AND backup.next_run_at <= $1 ORDER BY backup.next_run_at`).all(now().toISOString()));
+      WHERE users.status = 'approved' AND users.role <> 'shared' AND backup.next_run_at <= $1 ORDER BY backup.next_run_at`).all(now().toISOString()));
     for (const { user_id: userId } of due) {
       const status = (await getStatus(userId));
       if (!status.schedule.enabled || !status.nextRunAt || status.nextRunAt > now().toISOString() || active.has(userId)) continue;
