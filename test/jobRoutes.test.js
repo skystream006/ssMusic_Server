@@ -522,6 +522,17 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await call(transcribeRoute, 'POST', credentials.Other[1])).status, 403);
   assert.equal((await call(transcribeRoute, 'POST', credentials.Owner[0], { lyrics: 'words', lyrics_mode: 'bad' })).status, 400);
   assert.equal((await call(transcribeRoute, 'POST', credentials.Owner[1], {})).status, 503);
+  const lockRoute = `/api/jobs/music/files/${encodedSong}/metadata`;
+  assert.equal((await call(lockRoute, 'PATCH', credentials.Owner[0], { transcriptionLocked: true })).status, 200);
+  assert.equal((await call(transcribeRoute, 'POST', credentials.Owner[0], {})).status, 409);
+  assert.equal((await call(transcribeRoute, 'POST', credentials.Owner[0], { NoVocalsOnly: false })).status, 409);
+  assert.equal((await call(transcribeRoute, 'POST', credentials.Owner[0], { NoVocalsOnly: 'true' })).status, 400);
+  const separationOnly = await call(transcribeRoute, 'POST', credentials.Owner[1], { NoVocalsOnly: true });
+  assert.equal(separationOnly.status, 503);
+  assert.match(separationOnly.body.error, /TRANSCRIPTION_ENDPOINT is not configured/);
+  assert.equal((await call('/api/jobs/music/files', 'GET', credentials.Owner[0])).body.files
+    .find((file) => file.name === decodeURIComponent(encodedSong)).transcriptionLocked, true);
+  assert.equal((await call(lockRoute, 'PATCH', credentials.Owner[0], { transcriptionLocked: false })).status, 200);
   const contributorRoute = '/api/jobs/shared/contributors';
   assert.equal((await call(`${contributorRoute}/users`)).status, 401);
   assert.equal((await call(contributorRoute, 'PUT', {}, { userIds: [] })).status, 401);

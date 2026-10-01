@@ -1058,8 +1058,9 @@ including `[NoVocals]/`.
 
 Include boolean `transcriptionLocked` to lock or unlock transcription. Lock-only
 updates work for all supported audio formats and do not require the transcription
-service. Locked songs hide the microphone action and reject transcription with
-`409`; manual metadata and lyrics editing remain available.
+service. Locked songs keep the microphone action but offer only **Generate NoVocals
+Only**. Normal transcription still returns `409`; manual metadata and lyrics editing
+remain available.
 
 MP3 lyrics can be updated through the same endpoint: `uslt` is plain text, and
 `sylt` is an array of `{ "time": 1.25, "text": "Lyric line" }` with times in seconds.
@@ -1079,6 +1080,10 @@ Microphone buttons are disabled unless the page's transcription health check rep
 **Active**. The hover message asks you to refresh once the service is available.
 The dialog's top-right lock toggle hides its transcription options; **Submit** then
 locks the song without starting transcription. Unlock it from **Edit song metadata**.
+**Generate NoVocals Only** hides the other options and runs vocal separation without
+transcribing or changing the original song or its embedded lyrics. For locked songs,
+it is the only option and is selected automatically. This mode requires an active
+transcription service and reports **No-vocals version created** on success.
 Optionally choose a **Language** from the dropdown. **Auto-detect** leaves the
 language unspecified. A selection sends its short code as `language`, for example
 `"language": "vi"` for Vietnamese. Language selection works with or without lyrics;
@@ -1124,19 +1129,25 @@ song's latest status; songs without a tracked request have no status indicator.
 `{ "lyrics": "Known lyric lines", "lyrics_mode": "align" }` with lyrics. URL-encode
 the complete filename, including `[NoVocals]/` for accompaniment tracks. The server
 forwards a multipart POST containing `file`, plus `lyrics`, `lyrics_mode`,
-`language`, `NoVocals`, `VietLyricsFallback`, and `Multilingual` when provided. These flags must
+`language`, `NoVocals`, `NoVocalsOnly`, `VietLyricsFallback`, and `Multilingual` when provided. These flags must
 be JSON booleans and are forwarded as `true` or `false`. Omitting `NoVocals` uses
 the service's default (`false`); omitting `VietLyricsFallback` retains its saved
 endpoint setting. Enabling `VietLyricsFallback` forces `language` to `vi`.
 The dialog's **Multilingual** checkbox defaults to unchecked and explicitly sends
 `false`; checking it sends `true`. Omitting `Multilingual` in an API request leaves
 the service's default unchanged.
+`{ "NoVocalsOnly": true }` skips transcription and takes precedence over the other
+options, which are not forwarded in this mode. The service returns the no-vocals
+MP3 directly; it is saved as `[NoVocals]/[NoVocals] <original stem>.mp3`, regardless
+of the original audio format. Accompaniment-only ZIPs and older ZIPs containing
+the original plus accompaniment are also accepted. Only the accompaniment is
+installed; the original file and its transcription lock remain unchanged.
 Language codes must match an option in the dropdown.
 Lyrics must be nonempty and at most 100,000 characters; the existing
 128 KB JSON request limit also applies.
 
-The service must return audio in the original format, or a ZIP containing the exact
-original filename plus any accompaniment audio. The original song is replaced;
+For normal transcription, the service must return audio in the original format, or a ZIP containing the exact
+original filename plus any accompaniment audio. Except in NoVocals-only mode, the original song is replaced;
 other audio files are placed in the job's `[NoVocals]` folder and persisted in its
 file list. Non-audio ZIP entries are ignored. Invalid audio, unsafe or duplicate ZIP
 names, and archives missing the original song are rejected before replacement.

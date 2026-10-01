@@ -519,12 +519,13 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   async function transcribe(track, options) {
     setTranscribingFile(null);
     const locking = options.transcriptionLocked === true;
-    if (songState(track).disabled || (!locking && (!transcriptionActive || track.transcriptionLocked))) {
+    if (songState(track).disabled || (!locking && (!transcriptionActive || (track.transcriptionLocked && options.NoVocalsOnly !== true)))) {
       setActionError('This song cannot be changed right now. Refresh and try again.'); return;
     }
     const key = songKey(track);
     songMutations.current.add(key);
-    setPendingTranscriptions((current) => ({ ...current, [key]: { status: locking ? 'locking' : 'sent', requestedAt: new Date().toISOString() } }));
+    setPendingTranscriptions((current) => ({ ...current, [key]: { status: locking ? 'locking' : 'sent', requestedAt: new Date().toISOString(),
+      options: { NoVocalsOnly: options.NoVocalsOnly === true } } }));
     setTranscriptionNotice('');
     setActionError('');
     try {
@@ -532,7 +533,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         method: locking ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options)
       });
       if (locking) metadataSaved(track, result);
-      setTranscriptionNotice(`Transcription ${locking ? 'locked' : 'complete'}: ${track.name}`);
+      setTranscriptionNotice(`${options.NoVocalsOnly ? 'No-vocals version created' : `Transcription ${locking ? 'locked' : 'complete'}`}: ${track.name}`);
     } catch (requestError) {
       setActionError(`Transcription request for ${track.name}: ${requestError.message}`);
     } finally {

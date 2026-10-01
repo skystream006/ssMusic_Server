@@ -353,14 +353,16 @@ test('transcription dialog initially focuses the language selector instead of it
   assert.match(html, /<button type="button" aria-label="About Language" aria-describedby="[^"]+">/);
 });
 
-test('transcription lock hides options and can be submitted while the service is inactive', () => {
+test('locked transcription offers only NoVocalsOnly and requires an active service', () => {
   const render = (transcriptionLocked, serviceActive = false) => renderToStaticMarkup(createElement(TranscriptionDialog, {
     file: { name: 'Song.mp3', sizeBytes: 1024, transcriptionLocked }, serviceActive, onClose() {}, onSubmit() {}
   }));
   const locked = render(true);
-  assert.match(locked, /aria-label="Unlock transcription" aria-pressed="true"/);
-  assert.doesNotMatch(locked, /Language \(optional\)|type="checkbox"|lyrics-mode-options|transcription-fields/);
-  assert.doesNotMatch(locked.match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
+  assert.doesNotMatch(locked, /Unlock transcription|Language \(optional\)|lyrics-mode-options|transcription-fields/);
+  assert.match(locked, /<input type="checkbox" disabled="" checked=""\/>Generate NoVocals Only/);
+  assert.equal((locked.match(/type="checkbox"/g) || []).length, 1);
+  assert.match(locked.match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
+  assert.doesNotMatch(render(true, true).match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
   const inactive = render(false);
   assert.match(inactive, /aria-label="Lock transcription" aria-pressed="false"/);
   assert.match(inactive, /Transciption service is currently inactive\. Refresh the page when transcription service is available/);
@@ -368,7 +370,7 @@ test('transcription lock hides options and can be submitted while the service is
   assert.doesNotMatch(render(false, true).match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
 });
 
-test('song rows hide locked transcription and gate availability without blocking other edits', () => {
+test('song rows retain locked transcription and gate availability without blocking other edits', () => {
   const previousWindow = globalThis.window;
   globalThis.window = { location: { search: '' } };
   try {
@@ -383,7 +385,8 @@ test('song rows hide locked transcription and gate availability without blocking
     assert.doesNotMatch(inactive.match(/<button[^>]*aria-label="Edit metadata Other.mp3"[^>]*>/)[0], /disabled/);
     assert.match(inactive.match(/<button[^>]*aria-label="Edit metadata Busy.mp3"[^>]*>/)[0], /disabled/);
     assert.doesNotMatch(render(true).match(/<button[^>]*aria-label="Transcribe Other.mp3"[^>]*>/)[0], /disabled/);
-    assert.doesNotMatch(render(true, true), /aria-label="Transcribe Other.mp3"/);
+    assert.doesNotMatch(render(true, true).match(/<button[^>]*aria-label="Transcribe Other.mp3"[^>]*>/)[0], /disabled/);
+    assert.match(render(false, true).match(/<button[^>]*aria-label="Transcribe Other.mp3"[^>]*>/)[0], /disabled/);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -401,6 +404,17 @@ test('transcription status distinguishes supplied lyrics from AI transcription',
     assert.match(html, /Finished:/);
     assert.doesNotMatch(html, />Transcribed</);
     assert.doesNotMatch(html, /Language:|Multilingual:|Lyrics mode:/);
+  }
+});
+
+test('NoVocalsOnly status reports separation instead of AI transcription', () => {
+  for (const [status, label] of [['sent', 'No-vocals request sent'], ['transcribed', 'No-vocals version created'], ['failed', 'No-vocals generation failed']]) {
+    const html = renderToStaticMarkup(createElement(TranscriptionStatus, {
+      transcription: { status, requestedAt: '2026-10-01T10:00:00Z', options: { NoVocalsOnly: true } }
+    }));
+    assert.ok(html.includes(`<span>${label}</span>`));
+    assert.match(html, /Generate NoVocals Only: On/);
+    assert.doesNotMatch(html, /AI transcription|Language:|Add lyrics:/);
   }
 });
 
@@ -448,10 +462,10 @@ test('transcription dialog exposes upstream options with unchecked defaults', ()
   const html = renderToStaticMarkup(createElement(TranscriptionDialog, {
     file: { name: 'Song.mp3', sizeBytes: 1024 }, onClose() {}, onSubmit() {}
   }));
-  for (const label of ['Multilingual', 'Create no-vocals version [Karaoke version]', 'Viet Lyrics Fallback', 'Add lyrics']) {
+  for (const label of ['Generate NoVocals Only', 'Multilingual', 'Create no-vocals version [Karaoke version]', 'Viet Lyrics Fallback', 'Add lyrics']) {
     assert.ok(html.includes(`/>${label}</label>`));
   }
-  assert.equal((html.match(/type="checkbox"/g) || []).length, 4);
+  assert.equal((html.match(/type="checkbox"/g) || []).length, 5);
   assert.ok(!html.includes('checked=""'));
   assert.ok(html.includes('<option value="" selected="">Auto-detect</option>'));
   assert.ok(html.includes('<option value="vi">Vietnamese</option>'));

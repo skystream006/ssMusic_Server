@@ -681,10 +681,10 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   if (!job.outputDir || !job.files.includes(fileName)) {
     throw Object.assign(new Error('Song not found'), { statusCode: 404 });
   }
-  if (job.songMetadata?.[fileName]?.transcriptionLocked) {
+  const fields = validateTranscriptionOptions(options);
+  if (job.songMetadata?.[fileName]?.transcriptionLocked && !fields.NoVocalsOnly) {
     throw Object.assign(new Error('Transcription is locked for this song'), { statusCode: 409 });
   }
-  const fields = validateTranscriptionOptions(options);
   const { lyrics, ...savedOptions } = fields;
   const queue = existingQueue || { job, files: new Set(), tail: Promise.resolve() };
   const requestedAt = new Date().toISOString();
@@ -720,7 +720,11 @@ async function executeTranscription(job, fileName, options, transcription) {
       throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
     }
     const results = await requestTranscription(filePath, options);
-    await mutateJobFiles(job.id, () => replaceTranscribedFiles(job, fileName, results, async (updatedJob) => {
+    const replacements = options.NoVocalsOnly ? results.filter((result) => !result.original) : results;
+    if (options.NoVocalsOnly && !replacements.some((result) => path.extname(result.name).toLowerCase() === '.mp3')) {
+      throw Object.assign(new Error('Transcription service did not return a no-vocals MP3'), { statusCode: 502 });
+    }
+    await mutateJobFiles(job.id, () => replaceTranscribedFiles(job, fileName, replacements, async (updatedJob) => {
       const noVocals = results.find((result) => !result.original);
       updatedJob.transcriptions[fileName] = {
         ...transcription, status: 'transcribed', completedAt: new Date().toISOString(),

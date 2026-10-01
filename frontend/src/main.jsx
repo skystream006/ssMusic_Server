@@ -742,9 +742,10 @@ function JobPage({ id }) {
 
   async function transcribe(file, options) {
     const locking = options.transcriptionLocked === true;
-    if (songMutationDisabled(file.name) || (!locking && (!transcriptionActive || file.transcriptionLocked))) return;
+    if (songMutationDisabled(file.name) || (!locking && (!transcriptionActive || (file.transcriptionLocked && options.NoVocalsOnly !== true)))) return;
     setPendingTranscriptions((current) => ({
-      ...current, [file.name]: { status: locking ? 'locking' : 'sent', requestedAt: new Date().toISOString() }
+      ...current, [file.name]: { status: locking ? 'locking' : 'sent', requestedAt: new Date().toISOString(),
+        options: { NoVocalsOnly: options.NoVocalsOnly === true } }
     }));
     setTranscribingFile(null);
     setTranscriptionNotice('');
@@ -754,7 +755,7 @@ function JobPage({ id }) {
         method: locking ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options)
       });
-      setTranscriptionNotice(`Transcription ${locking ? 'locked' : 'complete'}: ${file.name}`);
+      setTranscriptionNotice(`${options.NoVocalsOnly ? 'No-vocals version created' : `Transcription ${locking ? 'locked' : 'complete'}`}: ${file.name}`);
     } catch (requestError) {
       setActionError(`Transcription request for ${file.name}: ${requestError.message}`);
     } finally {
@@ -922,7 +923,7 @@ function JobPage({ id }) {
                     }} />
                   <SongActions name={file.name} className="file-row-actions">
                     {canModify && file.isSong && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
-                    {file.isSong && !file.transcriptionLocked && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" data-action-label="Transcribe song" title={transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name) || !transcriptionActive} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
+                    {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" data-action-label="Transcribe song" title={transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name) || !transcriptionActive} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
                     <a href={file.downloadUrl} aria-label={`Download ${file.name}`} title="Download song"><ArrowDownToLine size={18} /></a>
                     {canModify && <button className="icon-link" type="button" title="Delete song" aria-label={`Delete song ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => removeFile(file)}>
                       {deletingFiles[file.name] ? <RefreshCw className="spin" size={18} /> : <Trash2 size={18} />}

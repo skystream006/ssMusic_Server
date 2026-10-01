@@ -42,8 +42,12 @@ async function checkAudio(data, name) {
 }
 
 export function validateTranscriptionOptions(options = {}) {
+  if (options.NoVocalsOnly !== undefined && typeof options.NoVocalsOnly !== 'boolean') {
+    throw failure('NoVocalsOnly must be a boolean', 400);
+  }
+  if (options.NoVocalsOnly === true) return { NoVocalsOnly: true };
   const fields = validateLyrics(options);
-  for (const key of ['NoVocals', 'VietLyricsFallback', 'Multilingual']) {
+  for (const key of ['NoVocalsOnly', 'NoVocals', 'VietLyricsFallback', 'Multilingual']) {
     if (options[key] === undefined) continue;
     if (typeof options[key] !== 'boolean') {
       throw failure(`${key} must be a boolean`, 400);
@@ -120,8 +124,13 @@ export async function requestTranscription(filePath, options = {}) {
       await checkAudio(audio, entryName);
       results.push({ name: entryName, data: audio, original: entryName === name });
     }
-    if (!results.some((result) => result.original)) throw failure('Transcription archive does not contain the requested song');
+    if (!fields.NoVocalsOnly && !results.some((result) => result.original)) throw failure('Transcription archive does not contain the requested song');
     return results;
+  }
+  if (fields.NoVocalsOnly) {
+    const accompanimentName = `[NoVocals] ${path.basename(name, path.extname(name))}.mp3`;
+    await checkAudio(data, accompanimentName);
+    return [{ name: accompanimentName, data, original: false }];
   }
   await checkAudio(data, name);
   return [{ name, data, original: true }];

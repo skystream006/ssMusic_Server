@@ -834,7 +834,9 @@ test('transcription options validate output flags and force Vietnamese for fallb
   assert.deepEqual(validateTranscriptionOptions({ VietLyricsFallback: false, language: 'ja' }), {
     VietLyricsFallback: false, language: 'ja'
   });
-  for (const key of ['NoVocals', 'VietLyricsFallback', 'Multilingual']) {
+  assert.deepEqual(validateTranscriptionOptions({ NoVocalsOnly: false }), { NoVocalsOnly: false });
+  assert.deepEqual(validateTranscriptionOptions({ NoVocalsOnly: true, NoVocals: false, lyrics: '', language: 'invalid' }), { NoVocalsOnly: true });
+  for (const key of ['NoVocalsOnly', 'NoVocals', 'VietLyricsFallback', 'Multilingual']) {
     for (const value of ['true', 'false', 0, 1, null, {}, []]) {
       assert.throws(() => validateTranscriptionOptions({ [key]: value }), { statusCode: 400 });
     }
@@ -875,6 +877,12 @@ test('transcription options are forwarded as multipart fields without losing fal
   assert.equal(payload.has('VietLyricsFallback'), false);
   assert.equal(payload.has('Multilingual'), false);
   assert.equal(payload.has('language'), false);
+  for (const enabled of [true, false]) {
+    await assert.rejects(requestTranscription(filePath, { NoVocalsOnly: enabled }), /HTTP 503/);
+    assert.equal(payload.get('NoVocalsOnly'), String(enabled));
+    assert.equal(payload.has('NoVocals'), false);
+    assert.equal(payload.has('lyrics'), false);
+  }
 });
 
 function makeTranscriptionAudio() {
@@ -966,6 +974,96 @@ test('transcription locks persist, preserve audio and reject transcription until
   testContext.mock.method(globalThis, 'fetch', async () => new Response(audio));
   await restarted.transcribeJobFile(job.id, name, {}, owner);
   assert.equal((await restarted.getJob(job.id)).transcriptions[name].status, 'transcribed');
+});
+
+test('NoVocalsOnly works on locked songs without replacing originals or allowing normal transcription', async (testContext) => {
+  const outputDir = path.join(fixtureDirectory, 'no-vocals-only');
+  await fs.mkdir(outputDir);
+  const name = 'Song.wav';
+  const audio = makeTranscriptionAudio();
+  await fs.writeFile(path.join(outputDir, name), audio);
+  const manager = await import('../src/jobManager.js?no-vocals-only');
+  const owner = { id: 'owner', role: 'user' };
+  const job = { id: 'no-vocals-only', url: 'https://music.youtube.com/watch?v=novocals', status: 'completed',
+    playlistTitle: 'No vocals fixture', outputDir, files: [name], initiatedBy: owner, createdAt: new Date().toISOString(),
+    songMetadata: { [name]: { transcriptionLocked: true } } };
+  await writeJob(openDatabase(), job);
+  const previousEndpoint = process.env.TRANSCRIPTION_ENDPOINT;
+  process.env.TRANSCRIPTION_ENDPOINT = 'http://transcriber.test/api/transcribe';
+  testContext.after(() => {
+    if (previousEndpoint === undefined) delete process.env.TRANSCRIPTION_ENDPOINT;
+    else process.env.TRANSCRIPTION_ENDPOINT = previousEndpoint;
+  });
+  const mp3 = Buffer.alloc(1251);
+  for (const offset of [0, 417, 834]) mp3.set([0xff, 0xfb, 0x90, 0x64], offset);
+  let responseMode = 'mp3';
+  let includeAccompaniment = true;
+  testContext.mock.method(globalThis, 'fetch', async (endpoint, request) => {
+    const payload = await new Response(request.body).formData();
+    assert.equal(payload.get('NoVocalsOnly'), 'true');
+    assert.deepEqual([...payload.keys()].sort(), ['NoVocalsOnly', 'file']);
+    if (responseMode === 'mp3') return new Response(mp3, { headers: { 'Content-Type': 'audio/mpeg' } });
+    if (responseMode === 'invalid') return new Response(audio);
+    const zip = new AdmZip();
+    const changedOriginal = Buffer.from(audio);
+    changedOriginal[changedOriginal.length - 1] = 1;
+    if (responseMode === 'legacy') zip.addFile(name, changedOriginal);
+    if (includeAccompaniment) zip.addFile('[NoVocals] Song.mp3', mp3);
+    return new Response(zip.toBuffer());
+  });
+  for (const options of [{}, { NoVocalsOnly: false }]) {
+    await assert.rejects(manager.transcribeJobFile(job.id, name, options, owner), { statusCode: 409 });
+  }
+  await assert.rejects(manager.transcribeJobFile(job.id, name, { NoVocalsOnly: 'true' }, owner), { statusCode: 400 });
+  await assert.rejects(manager.transcribeJobFile(job.id, name, { NoVocalsOnly: true }, { id: 'stranger' }), { statusCode: 403 });
+  await manager.transcribeJobFile(job.id, name, { NoVocalsOnly: true, lyrics: '', language: 'invalid' }, owner);
+  const completed = await manager.getJob(job.id);
+  assert.equal(completed.songMetadata[name].transcriptionLocked, true);
+  assert.deepEqual(completed.transcriptions[name].options, { NoVocalsOnly: true });
+  assert.equal(completed.transcriptions[name].noVocalsName, '[NoVocals]/[NoVocals] Song.mp3');
+  assert.deepEqual(await fs.readFile(path.join(outputDir, name)), audio);
+  assert.deepEqual(await fs.readFile(path.join(outputDir, '[NoVocals]', '[NoVocals] Song.mp3')), mp3);
+  for (const mode of ['zip', 'legacy']) {
+    responseMode = mode;
+    await manager.transcribeJobFile(job.id, name, { NoVocalsOnly: true }, owner);
+    assert.deepEqual(await fs.readFile(path.join(outputDir, name)), audio);
+    assert.deepEqual((await manager.getJob(job.id)).files, [name, '[NoVocals]/[NoVocals] Song.mp3']);
+  }
+  includeAccompaniment = false;
+  await assert.rejects(manager.transcribeJobFile(job.id, name, { NoVocalsOnly: true }, owner), /did not return a no-vocals MP3/);
+  responseMode = 'invalid';
+  await assert.rejects(manager.transcribeJobFile(job.id, name, { NoVocalsOnly: true }, owner), /invalid or mismatched audio/);
+  assert.deepEqual(await fs.readFile(path.join(outputDir, name)), audio);
+  assert.deepEqual(await fs.readFile(path.join(outputDir, '[NoVocals]', '[NoVocals] Song.mp3')), mp3);
+  assert.equal((await manager.getJob(job.id)).songMetadata[name].transcriptionLocked, true);
+});
+
+test('standalone NoVocalsOnly MP3 responses are accompaniment regardless of the input format', async (testContext) => {
+  const { requestTranscription } = await import('../src/transcription.js');
+  const previousEndpoint = process.env.TRANSCRIPTION_ENDPOINT;
+  process.env.TRANSCRIPTION_ENDPOINT = 'http://transcriber.test/api/transcribe';
+  testContext.after(() => {
+    if (previousEndpoint === undefined) delete process.env.TRANSCRIPTION_ENDPOINT;
+    else process.env.TRANSCRIPTION_ENDPOINT = previousEndpoint;
+  });
+  const mp3 = Buffer.alloc(1251);
+  for (const offset of [0, 417, 834]) mp3.set([0xff, 0xfb, 0x90, 0x64], offset);
+  let response = mp3;
+  testContext.mock.method(globalThis, 'fetch', async () => new Response(response, {
+    headers: { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="../../outside.mp3"' }
+  }));
+  for (const name of ['Song.mp3', 'Song.wav', 'Song.FLAC', 'Caf\u00e9 100% #1.m4a']) {
+    const filePath = path.join(fixtureDirectory, name);
+    await fs.writeFile(filePath, 'upload');
+    const result = await requestTranscription(filePath, { NoVocalsOnly: true });
+    assert.deepEqual(result, [{ name: `[NoVocals] ${path.parse(name).name}.mp3`, data: mp3, original: false }]);
+  }
+  const filePath = path.join(fixtureDirectory, 'Song.mp3');
+  assert.deepEqual(await requestTranscription(filePath, { NoVocalsOnly: false }), [{ name: 'Song.mp3', data: mp3, original: true }]);
+  const zip = new AdmZip();
+  zip.addFile('[NoVocals] Song.mp3', mp3);
+  response = zip.toBuffer();
+  await assert.rejects(requestTranscription(filePath), /does not contain the requested song/);
 });
 
 test('metadata edits only block the transcribing song and survive karaoke completion', async (testContext) => {
