@@ -518,7 +518,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
 
   async function transcribe(track, options) {
     setTranscribingFile(null);
-    const locking = options.transcriptionLocked === true;
+    const locking = typeof options.transcriptionLocked === 'boolean';
     if (songState(track).disabled || (!locking && (!transcriptionActive || (track.transcriptionLocked && options.NoVocalsOnly !== true)))) {
       setActionError('This song cannot be changed right now. Refresh and try again.'); return;
     }
@@ -533,7 +533,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         method: locking ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options)
       });
       if (locking) metadataSaved(track, result);
-      setTranscriptionNotice(`${options.NoVocalsOnly ? 'No-vocals version created' : `Transcription ${locking ? 'locked' : 'complete'}`}: ${track.name}`);
+      setTranscriptionNotice(`${options.NoVocalsOnly ? 'No-vocals version created' : `Transcription ${locking ? (options.transcriptionLocked ? 'locked' : 'unlocked') : 'complete'}`}: ${track.name}`);
     } catch (requestError) {
       setActionError(`Transcription request for ${track.name}: ${requestError.message}`);
     } finally {

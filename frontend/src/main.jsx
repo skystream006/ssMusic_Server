@@ -741,7 +741,7 @@ function JobPage({ id }) {
   }
 
   async function transcribe(file, options) {
-    const locking = options.transcriptionLocked === true;
+    const locking = typeof options.transcriptionLocked === 'boolean';
     if (songMutationDisabled(file.name) || (!locking && (!transcriptionActive || (file.transcriptionLocked && options.NoVocalsOnly !== true)))) return;
     setPendingTranscriptions((current) => ({
       ...current, [file.name]: { status: locking ? 'locking' : 'sent', requestedAt: new Date().toISOString(),
@@ -755,7 +755,7 @@ function JobPage({ id }) {
         method: locking ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options)
       });
-      setTranscriptionNotice(`${options.NoVocalsOnly ? 'No-vocals version created' : `Transcription ${locking ? 'locked' : 'complete'}`}: ${file.name}`);
+      setTranscriptionNotice(`${options.NoVocalsOnly ? 'No-vocals version created' : `Transcription ${locking ? (options.transcriptionLocked ? 'locked' : 'unlocked') : 'complete'}`}: ${file.name}`);
     } catch (requestError) {
       setActionError(`Transcription request for ${file.name}: ${requestError.message}`);
     } finally {

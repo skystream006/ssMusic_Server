@@ -292,7 +292,7 @@ export function TranscriptionDialog({ file, onClose, onSubmit, serviceActive = f
   const [lyrics, setLyrics] = useState('');
   const [mode, setMode] = useState('align');
   const [submitting, setSubmitting] = useState(false);
-  const locking = locked && !noVocalsOnly;
+  const locking = locked !== Boolean(file.transcriptionLocked);
   const modes = [
     ['prompt', 'Prompt', 'Biases recognition toward known words.'],
     ['align', 'Align', 'Maps authoritative lyric lines onto ASR timing.'],
@@ -314,7 +314,7 @@ export function TranscriptionDialog({ file, onClose, onSubmit, serviceActive = f
     event.preventDefault();
     if (submitting || (!locking && !serviceActive)) return;
     setSubmitting(true);
-    onSubmit(file, noVocalsOnly ? { NoVocalsOnly: true } : locked ? { transcriptionLocked: true } : {
+    onSubmit(file, locking ? { transcriptionLocked: locked } : noVocalsOnly ? { NoVocalsOnly: true } : {
       Multilingual: multilingual,
       NoVocals: noVocals,
       VietLyricsFallback: vietLyricsFallback,
@@ -323,17 +323,17 @@ export function TranscriptionDialog({ file, onClose, onSubmit, serviceActive = f
     });
   }
 
-  return <dialog ref={dialogRef} className={`confirmation-dialog transcription-dialog${addLyrics && !locked && !noVocalsOnly ? ' transcription-dialog-expanded' : ''}`} aria-labelledby={titleId}
+  return <dialog ref={dialogRef} className={`confirmation-dialog transcription-dialog${addLyrics && !locking && !locked && !noVocalsOnly ? ' transcription-dialog-expanded' : ''}`} aria-labelledby={titleId}
     onCancel={(event) => { event.preventDefault(); if (!submitting) onClose(); }}>
     <form onSubmit={submit}>
       <div className="folder-dialog-heading"><h2 id={titleId}>Transcribe song</h2>
-        {!file.transcriptionLocked && !noVocalsOnly && <TranscriptionLockButton locked={locked} disabled={submitting} onChange={setLocked} />}</div>
+        <TranscriptionLockButton locked={locked} disabled={submitting} onChange={setLocked} /></div>
       <p className="transcription-file"><FileAudio size={22} /><span>{file.name}<small>{formatBytes(file.sizeBytes)}</small></span></p>
-      {(!locked || file.transcriptionLocked) && <div className="transcription-option">
+      {!locking && <div className="transcription-option">
         <label className="lyrics-toggle"><input type="checkbox" checked={noVocalsOnly} disabled={submitting || Boolean(file.transcriptionLocked)}
           onChange={(event) => setNoVocalsOnly(event.target.checked)} />Generate NoVocals Only</label>
       </div>}
-      {!locked && !noVocalsOnly && <fieldset disabled={submitting} className="transcription-fields">
+      {!locking && !locked && !noVocalsOnly && <fieldset disabled={submitting} className="transcription-fields">
         <div className="transcription-language">
           <div className="transcription-option"><label htmlFor={`${titleId}-language`}>Language (optional)</label>
             <TranscriptionHelp id={`${titleId}-language-help`} label="Language">Choose the song's language or use Auto-detect. Viet Lyrics Fallback selects Vietnamese and locks this setting while enabled.</TranscriptionHelp>

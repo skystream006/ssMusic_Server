@@ -1078,8 +1078,10 @@ or contacts the transcription service directly.
 In job details, select the microphone icon beside a song to open **Transcribe song**.
 Microphone buttons are disabled unless the page's transcription health check reports
 **Active**. The hover message asks you to refresh once the service is available.
-The dialog's top-right lock toggle hides its transcription options; **Submit** then
-locks the song without starting transcription. Unlock it from **Edit song metadata**.
+The dialog's top-right lock toggle can lock or unlock transcription. Changing it
+hides the processing options; **Submit** saves only the lock change without starting
+transcription or requiring the transcription service. **Cancel** discards the change.
+The lock can also be changed from **Edit song metadata**.
 **Generate NoVocals Only** hides the other options and runs vocal separation without
 transcribing or changing the original song or its embedded lyrics. For locked songs,
 it is the only option and is selected automatically. This mode requires an active

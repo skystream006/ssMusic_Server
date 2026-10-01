@@ -358,7 +358,8 @@ test('locked transcription offers only NoVocalsOnly and requires an active servi
     file: { name: 'Song.mp3', sizeBytes: 1024, transcriptionLocked }, serviceActive, onClose() {}, onSubmit() {}
   }));
   const locked = render(true);
-  assert.doesNotMatch(locked, /Unlock transcription|Language \(optional\)|lyrics-mode-options|transcription-fields/);
+  assert.match(locked, /aria-label="Unlock transcription" aria-pressed="true"/);
+  assert.doesNotMatch(locked, /Language \(optional\)|lyrics-mode-options|transcription-fields/);
   assert.match(locked, /<input type="checkbox" disabled="" checked=""\/>Generate NoVocals Only/);
   assert.equal((locked.match(/type="checkbox"/g) || []).length, 1);
   assert.match(locked.match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
