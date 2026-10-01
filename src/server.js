@@ -12,7 +12,7 @@ import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFileP
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
-import { findNoVocals, individualSongsId, orderFiles, songKey } from './library.js';
+import { findNoVocals, individualPlaylistId, orderFiles, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
@@ -208,7 +208,7 @@ app.post('/api/library/links', async (req, res) => {
     const jobs = (await getLibraryJobs(req.user));
     if (!jobs.some((item) => item.id === job.id)) return res.status(403).json({ error: 'Only job owners and contributors can add this playlist' });
     const library = (await linkLibraryJob(req.user.id, job, jobs));
-    return res.json({ ...library, selectedId: job.isPlaylist === false ? individualSongsId : job.id });
+    return res.json({ ...library, selectedId: job.isPlaylist === false ? individualPlaylistId(job) : job.id });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }

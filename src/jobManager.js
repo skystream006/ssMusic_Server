@@ -556,14 +556,14 @@ export async function setJobTitle(id, title, user = null) {
   return job;
 }
 
-export async function importJobFiles({ files, playlistId, playlistTitle, source = 'files', individual = false, playlistSongCount }, user) {
+export async function importJobFiles({ files, playlistId, playlistTitle, source = 'files', individual = false, playlistSongCount, downloadType = 'audio' }, user) {
   if (!user?.id) throw Object.assign(new Error('Authentication required'), { statusCode: 401 });
   const linkedPlaylist = source === 'itunes' && !playlistId && !individual
     && Number.isSafeInteger(playlistSongCount) && playlistSongCount > 0;
   if (!Array.isArray(files) || (!files.length && !linkedPlaylist) || files.some((file) => !isPlayableFile(file.name) || !file.path)) {
     throw Object.assign(new Error('Select supported audio or movie files'), { statusCode: 400 });
   }
-  const job = playlistId ? (await getJob(playlistId)) : newJob(`import:${source}`, { id: user.id, name: user.name });
+  const job = playlistId ? (await getJob(playlistId)) : newJob(`import:${source}`, { id: user.id, name: user.name }, false, downloadType);
   if (!job) throw Object.assign(new Error('Playlist not found'), { statusCode: 404 });
   if (playlistId) {
     (await assertCanModifyJob(job, user, true));

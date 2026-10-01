@@ -885,6 +885,10 @@ even if all its source jobs are removed. Contributors can link an existing
 individual job to their own independent collection. Removing contributor access
 removes that job's songs from their library.
 
+Single-item jobs using **Video only** go to a separate permanent **Individual
+Videos** playlist. Audio-only singles continue to use **Individual Songs**;
+full video playlists keep their own playlist entries.
+
 Use **New playlist folder** to create a folder. A selected folder becomes the
 default location for new subfolders. Folders support nesting up to 32 levels.
 The selected item's **Location** menu moves it to any valid folder or back to

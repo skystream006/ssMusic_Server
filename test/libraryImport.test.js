@@ -227,6 +227,14 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   const movies = await imports.importUploadedFiles([movie], { createNew: 'true', playlistTitle: 'Movies' }, owner);
   assert.deepEqual(movies.jobs[0].files, ['Movie.mp4']);
   assert.equal(movies.jobs[0].playlistSongCount, 1);
+  const singleVideo = await manager.importJobFiles({ files: [movie], playlistTitle: 'Single video', individual: true, downloadType: 'video' }, owner);
+  await linkLibraryJob(owner.id, singleVideo, await manager.getJobs());
+  const importedVideo = await imports.importUploadedFiles([movie], { createNew: 'false', playlistId: 'individual-videos' }, owner);
+  assert.equal(importedVideo.jobs[0].downloadType, 'video');
+  const videoJobs = await manager.getJobs();
+  const videoTracks = getPlaylistTracks(await getLibrary(owner.id, videoJobs), videoJobs);
+  assert.equal(videoTracks.get('individual-videos').some((track) => track.jobId === importedVideo.jobs[0].id), true);
+  assert.equal(videoTracks.get('individual-songs').some((track) => track.jobId === importedVideo.jobs[0].id), false);
   const mixed = await imports.importUploadedFiles([movie], { createNew: 'false', playlistId: job.id }, owner);
   assert.deepEqual(mixed.jobs[0].files, ['Song.wav', 'Song (2).wav', 'Movie.mp4']);
   assert.equal(mixed.jobs[0].playlistSongCount, 3);

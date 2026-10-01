@@ -1,4 +1,4 @@
-import { getPlaylistIds, getPlaylistTracks, individualSongsId, isNoVocals, reconcileLibrary, songKey, songMetadataFields, songSearchText, songStem } from './library.js';
+import { getPlaylistIds, getPlaylistTracks, individualPlaylistNames, isNoVocals, reconcileLibrary, songKey, songMetadataFields, songSearchText, songStem } from './library.js';
 import { mediaType } from './media.js';
 
 function hydrate(job, rows) {
@@ -195,7 +195,7 @@ export async function pagePostgresTracks(database, userId, { entryId = null, pag
   return { version, page: selectedPage, pageSize, total: count, totalPages, files: rows.map((row) => {
     const job = JSON.parse(row.job_data);
     return { ...JSON.parse(row.metadata), jobId: row.job_id, name: row.name, playlistId: row.playlist_id,
-      playlistTitle: row.playlist_id === individualSongsId ? 'Individual Songs' : job.playlistTitle,
+      playlistTitle: Object.hasOwn(individualPlaylistNames, row.playlist_id) ? individualPlaylistNames[row.playlist_id] : job.playlistTitle,
       transcription: row.transcription ? JSON.parse(row.transcription) : null, sourceJob: { ...job, transcriptionPending: row.transcription_pending } };
   }) };
 }

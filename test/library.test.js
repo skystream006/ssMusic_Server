@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test, { beforeEach } from 'node:test';
 import { closeDatabases, openDatabase, writeJob, writeUser } from '../src/database.js';
-import { getPlaylistIds, getPlaylistTracks, individualSongsId, orderFiles, songKey, themes } from '../src/library.js';
+import { getPlaylistIds, getPlaylistTracks, individualSongsId, individualVideosId, orderFiles, songKey, themes } from '../src/library.js';
 import { addLibraryJobFiles, countLibraryFileLinks, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, removeLibrarySongLink, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from '../src/libraryStore.js';
 import { submitJobUrl } from '../frontend/src/jobSubmission.js';
 import { createTestDatabase } from '../test-support/postgres.js';
@@ -397,6 +397,39 @@ test('individual links share one permanent personal playlist, even after every s
   assert.equal(empty.entries.find((entry) => entry.id === individualSongsId).name, 'Individual Songs');
   assert.equal(empty.entries.find((entry) => entry.id === individualSongsId).protected, true);
   assert.deepEqual(getPlaylistTracks(empty, jobs).get(individualSongsId), []);
+});
+
+test('single video jobs use a protected Individual Videos playlist without changing audio or full playlists', async () => {
+  const video = { id: 'video', isPlaylist: false, downloadType: 'video', files: ['Movie.mp4'] };
+  const audio = { id: 'audio', isPlaylist: false, downloadType: 'audio', files: ['Song.mp3'] };
+  const playlist = { id: 'videos', isPlaylist: true, downloadType: 'video', files: ['Episode.mp4'] };
+  const available = [...jobs, video, audio, playlist];
+  let library = await linkLibraryJob('alice', video, available);
+  assert.equal(library.entries.some((entry) => entry.id === individualSongsId), false);
+  assert.deepEqual(library.entries.find((entry) => entry.id === individualVideosId), {
+    id: individualVideosId, type: 'playlist', parentId: null, name: 'Individual Videos', protected: true
+  });
+  assert.equal(library.entries.some((entry) => entry.id === video.id), false);
+  assert.deepEqual(await linkLibraryJob('alice', video, available), library);
+  library = await linkLibraryJob('alice', audio, available);
+  library = await linkLibraryJob('alice', playlist, available);
+  const tracks = getPlaylistTracks(library, available);
+  assert.deepEqual(tracks.get(individualVideosId).map((track) => track.name), ['Movie.mp4']);
+  assert.deepEqual(tracks.get(individualSongsId).map((track) => track.name), ['Song.mp3']);
+  assert.deepEqual(tracks.get(playlist.id).map((track) => track.name), ['Episode.mp4']);
+  assert.equal((await getLibrary('bob', available)).entries.some((entry) => entry.id === individualVideosId), false);
+  library = await moveLibrarySong('alice', { version: library.version, jobId: video.id, name: 'Movie.mp4', playlistId: 'jazz' }, available);
+  assert.deepEqual(getPlaylistTracks(library, available).get(individualVideosId), []);
+  library = await transferLibrarySongs('alice', { version: library.version, action: 'move', sourcePlaylistId: 'jazz',
+    playlistId: individualVideosId, keys: [songKey({ jobId: video.id, name: 'Movie.mp4' })] }, available);
+  library = await setLibrary('alice', { ...library, singleVideoJobIds: [],
+    entries: library.entries.filter((entry) => entry.id !== individualVideosId) }, available);
+  assert.equal(library.entries.find((entry) => entry.id === individualVideosId).protected, true);
+  await closeDatabases();
+  assert.deepEqual(await getLibrary('alice', available), library);
+  const empty = await getLibrary('alice', jobs);
+  assert.equal(empty.entries.find((entry) => entry.id === individualVideosId).name, 'Individual Videos');
+  assert.deepEqual(getPlaylistTracks(empty, jobs).get(individualVideosId), []);
 });
 
 test('songs move between personal playlists without losing source identity or leaking to other users', async () => {

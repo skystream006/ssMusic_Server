@@ -890,6 +890,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(videoJob.status, 202, videoJob.text);
   assert.equal(videoJob.body.downloadType, 'video');
   assert.equal(videoJob.body.isPlaylist, true);
+  const videoPlaylistLink = await call('/api/library/links', 'POST', credentials.Owner[0], { jobId: videoJob.body.id });
+  assert.equal(videoPlaylistLink.body.selectedId, videoJob.body.id);
   const videoResult = await waitForJob(videoJob.body.id, credentials.Owner[0]);
   assert.match(videoResult.body.command, /--merge-output-format mp4/);
   assert.doesNotMatch(videoResult.body.command, /--extract-audio/);
@@ -904,8 +906,24 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const shortJob = await call('/api/jobs', 'POST', credentials.Owner[0], { url: 'https://youtu.be/short-video', downloadType: 'video' });
   assert.equal(shortJob.status, 202, shortJob.text);
   assert.equal(shortJob.body.isPlaylist, false);
-  await waitForJob(shortJob.body.id, credentials.Owner[0]);
+  const videoLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+  assert.equal(videoLibrary.playlists.find((playlist) => playlist.id === 'individual-videos').playlistTitle, 'Individual Videos');
+  assert.equal(videoLibrary.entries.some((entry) => entry.id === shortJob.body.id), false);
+  const videoLink = await call('/api/library/links', 'POST', credentials.Owner[0], { jobId: shortJob.body.id });
+  assert.equal(videoLink.status, 200);
+  assert.equal(videoLink.body.selectedId, 'individual-videos');
+  const shortResult = await waitForJob(shortJob.body.id, credentials.Owner[0]);
+  await fs.writeFile(path.join(shortResult.body.outputDir, 'Single.mp4'), 'single video');
+  await writeJob(openDatabase(), { ...shortResult.body, files: ['Single.mp4'] });
+  await closeDatabases();
+  const videoTracks = (await call('/api/library/tracks?entryId=individual-videos', 'GET', credentials.Owner[0])).body.files;
+  assert.equal(videoTracks.length, 1);
+  assert.equal(videoTracks[0].jobId, shortJob.body.id);
+  assert.equal(videoTracks[0].playlistId, 'individual-videos');
+  assert.equal(videoTracks[0].playlistTitle, 'Individual Videos');
+  assert.equal((await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Owner[0])).body.files.some((track) => track.jobId === shortJob.body.id), false);
   assert.equal((await call(`/api/jobs/${shortJob.body.id}`, 'DELETE', credentials.Owner[0])).status, 204);
+  assert.equal((await call('/api/library', 'GET', credentials.Owner[0])).body.entries.find((entry) => entry.id === 'individual-videos').protected, true);
 
   const upload = async (fields, files, headers = credentials.Owner[0]) => {
     const form = new FormData();

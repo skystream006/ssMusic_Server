@@ -13,7 +13,7 @@ import yauzl from 'yauzl';
 import { fileTypeFromFile } from 'file-type';
 import { deleteJob, getJobs, importJobFiles } from './jobManager.js';
 import { getLibrary, linkLibraryJob, setLibrary } from './libraryStore.js';
-import { individualSongsId, songKey } from './library.js';
+import { individualPlaylistNames, individualVideosId, songKey } from './library.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 
@@ -357,9 +357,11 @@ export async function importUploadedFiles(files, options, user) {
   if (!files.length) throw failure('Select audio or movie files to import');
   const validated = [];
   for (const file of files) validated.push(await validateImportMedia(file));
-  const individual = !createNew && options.playlistId === individualSongsId;
+  const individual = !createNew && Object.hasOwn(individualPlaylistNames, options.playlistId);
+  const individualVideo = individual && options.playlistId === individualVideosId;
   const job = await importJobFiles({ files: validated, playlistId: createNew || individual ? undefined : options.playlistId,
-    playlistTitle: individual ? 'Imported songs' : options.playlistTitle, individual }, user);
+    playlistTitle: individual ? (individualVideo ? 'Imported videos' : 'Imported songs') : options.playlistTitle,
+    individual, downloadType: individualVideo ? 'video' : 'audio' }, user);
   if (individual) {
     try { (await linkLibraryJob(user.id, job, (await libraryJobs(user)))); }
     catch (error) { await deleteJob(job.id, user); throw error; }
