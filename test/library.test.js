@@ -25,11 +25,11 @@ beforeEach(async (context) => {
 });
 
 test('each account retains its own color and light or dark mode across database restarts', async () => {
-  assert.deepEqual((await getPreferences('alice')), { theme: 'light', mode: 'light' });
+  assert.deepEqual((await getPreferences('alice')), { theme: 'midnight', mode: 'light' });
   for (const theme of themes) {
     for (const mode of ['light', 'dark']) {
       assert.deepEqual((await setTheme('alice', theme.id, mode)), { theme: theme.id, mode });
-      assert.deepEqual((await getPreferences('bob')), { theme: 'light', mode: 'light' });
+      assert.deepEqual((await getPreferences('bob')), { theme: 'midnight', mode: 'light' });
     }
   }
   (await assert.rejects(async () => (await setTheme('alice', 'unknown')), { statusCode: 400 }));
@@ -38,6 +38,19 @@ test('each account retains its own color and light or dark mode across database 
   assert.deepEqual((await getPreferences('alice')), { theme: 'black', mode: 'dark' });
   assert.deepEqual((await setTheme('alice', 'green')), { theme: 'green', mode: 'dark' });
   assert.deepEqual((await setTheme('alice', undefined, 'light')), { theme: 'green', mode: 'light' });
+});
+
+test('Porcelain is removed and legacy preferences fall back to blue without changing mode', async () => {
+  assert.equal(themes.some((theme) => theme.id === 'light' || theme.name === 'Porcelain'), false);
+  assert.ok(themes.some((theme) => theme.id === 'green'));
+  const database = openDatabase();
+  await database.prepare('INSERT INTO user_preferences (user_id, theme, theme_mode) VALUES ($1, $2, $3)').run('alice', 'light', 'dark');
+  assert.deepEqual(await getPreferences('alice'), { theme: 'midnight', mode: 'dark' });
+  assert.deepEqual(await setTheme('alice', undefined, 'light'), { theme: 'midnight', mode: 'light' });
+  assert.deepEqual(await setTheme('alice', 'light', 'dark'), { theme: 'midnight', mode: 'dark' });
+  assert.equal((await database.prepare('SELECT theme FROM user_preferences WHERE user_id = $1').get('alice')).theme, 'midnight');
+  await database.prepare('INSERT INTO user_preferences (user_id, theme) VALUES ($1, $2)').run('bob', 'light');
+  assert.deepEqual(await getPreferences('bob'), { theme: 'midnight', mode: 'light' });
 });
 
 test('unspecified theme modes preserve established light and dark defaults', async () => {

@@ -20,13 +20,14 @@ function invalid(message, statusCode = 400) {
 
 export async function getPreferences(userId) {
   const row = (await openDatabase().prepare('SELECT theme, theme_mode FROM user_preferences WHERE user_id = $1').get(userId));
-  const theme = row?.theme || 'light';
-  return { theme, mode: row?.theme_mode || (['black', 'midnight'].includes(theme) ? 'dark' : 'light') };
+  const theme = !row?.theme || row.theme === 'light' ? 'midnight' : row.theme;
+  return { theme, mode: row?.theme_mode || (['black', 'midnight'].includes(row?.theme) ? 'dark' : 'light') };
 }
 
 export async function setTheme(userId, theme, mode) {
   const current = (await getPreferences(userId));
   if (theme === undefined) theme = current.theme;
+  if (theme === 'light') theme = 'midnight';
   if (mode === undefined) mode = current.mode;
   if (!themes.some((option) => option.id === theme)) invalid('Unknown theme');
   if (!['light', 'dark'].includes(mode)) invalid('Unknown theme mode');

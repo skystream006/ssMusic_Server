@@ -323,7 +323,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     { theme: 'royal-purple', mode: 'light' });
   assert.deepEqual((await call('/api/preferences', 'PUT', credentials.Owner[1], { mode: 'dark' })).body, { theme: 'royal-purple', mode: 'dark' });
   assert.deepEqual((await call('/api/preferences', 'GET', credentials.Owner[1])).body, { theme: 'royal-purple', mode: 'dark' });
-  assert.deepEqual((await call('/api/preferences', 'GET', credentials.Other[0])).body, { theme: 'light', mode: 'light' });
+  assert.deepEqual((await call('/api/preferences', 'GET', credentials.Other[0])).body, { theme: 'midnight', mode: 'light' });
   assert.equal((await call('/api/preferences', 'PUT', credentials.Owner[0], { mode: 'invalid' })).status, 400);
   assert.equal((await call('/api/preferences', 'PUT', credentials.Owner[0], { theme: 'invalid' })).status, 400);
   const initialLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;

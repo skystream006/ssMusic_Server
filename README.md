@@ -981,15 +981,19 @@ Themes, folders, playlist order, and song order belong to the signed-in account
 and persist in PostgreSQL across browsers and server restarts. Organizing your library
 does not change anyone else's layout or grant additional job-management access.
 Choose the palette icon in the account bar or **User settings > Appearance** for
-Porcelain, Midnight blue, Royal purple, Gold, Green, Pink, or Black. Every color
+Midnight blue, Royal purple, Gold, Green, Pink, or Black. Every color
 has **Light** and **Dark** counterparts. Color and mode are saved separately;
 changing color keeps the chosen mode. Existing Black and Midnight blue users
 retain dark mode on upgrade; the other existing themes retain light mode.
+New accounts default to Midnight blue in light mode. The retired Porcelain palette
+falls back to Midnight blue while preserving light/dark mode; other saved colors
+remain unchanged.
 
 Authenticated library APIs (sessions and PATs):
 
 - `GET /api/preferences` and `PUT /api/preferences` with `{ "theme": "royal-purple", "mode": "dark" }`.
-    Theme IDs are `light`, `midnight`, `royal-purple`, `gold`, `green`, `pink`, and `black`.
+    Theme IDs are `midnight`, `royal-purple`, `gold`, `green`, `pink`, and `black`.
+    The legacy palette ID `light` is accepted as an alias for `midnight`.
     Either field can be updated independently; mode is `light` or `dark`.
 - `GET /api/library`: returns `version`, `entries`, `songOrder`, `playlistSongOrder`,
     `songMoves`, `songAdds`, server-managed `songRemovals`, `singleJobIds`, visible

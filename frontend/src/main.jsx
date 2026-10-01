@@ -1484,14 +1484,14 @@ function App() {
     if (user) {
       request('/api/preferences').then((result) => { if (active) setPreferences({ ...result, userId: user.id }); })
         .catch((error) => {
-          if (active) { setPreferences({ theme: 'light', mode: 'light', userId: user.id }); setThemeError(error.message); }
+          if (active) { setPreferences({ theme: 'midnight', mode: 'light', userId: user.id }); setThemeError(error.message); }
         });
     } else setPreferences(null);
     return () => { active = false; accountRef.current = null; };
   }, [user?.id]);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = preferences?.userId === user?.id ? preferences?.theme || 'light' : 'light';
+    document.documentElement.dataset.theme = preferences?.userId === user?.id ? preferences?.theme || 'midnight' : 'midnight';
     document.documentElement.dataset.themeMode = preferences?.userId === user?.id ? preferences?.mode || 'light' : 'light';
   }, [preferences, user?.id]);
 
