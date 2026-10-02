@@ -1,10 +1,11 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Save, Search, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
 import { ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory } from './navigation.js';
 import { findNoVocals, isNoVocals, songSearchText } from '../../src/library.js';
 import { mediaType } from '../../src/media.js';
+import { buildLyricsUpdate, formatSyltForEdit } from './lyricsEditing.js';
 import { Film, Minimize2 } from 'lucide-react';
 export { findNoVocals, isNoVocals } from '../../src/library.js';
 
@@ -25,31 +26,26 @@ export function formatLyricsForCopy(metadata, mode) {
 }
 
 export function LyricsEditor({ metadata, name, mode, onSave, onCancel }) {
-  const [sylt, setSylt] = useState(() => (metadata.sylt || []).map((line, index) => ({ ...line, time: String(line.time), id: index })));
+  const helpId = useId();
+  const [sylt, setSylt] = useState(() => formatSyltForEdit(metadata.sylt));
   const [uslt, setUslt] = useState(metadata.uslt || '');
-  const [changed, setChanged] = useState({ sylt: false, uslt: false });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const nextLine = useRef(sylt.length);
+  const { updates, validationError } = useMemo(() => {
+    try { return { updates: buildLyricsUpdate(metadata, sylt, uslt), validationError: '' }; }
+    catch (validationError) { return { updates: {}, validationError: validationError.message }; }
+  }, [metadata, sylt, uslt]);
 
-  function changeLine(id, field, value) {
-    setSylt((current) => current.map((line) => line.id === id ? { ...line, [field]: value } : line));
-    setChanged((current) => ({ ...current, sylt: true }));
+  function changeText(value) {
+    if (mode === 'uslt') setUslt(value);
+    else setSylt(value);
+    setError('');
   }
 
   async function save(event) {
     event.preventDefault();
-    if (saving) return;
+    if (saving || validationError || !Object.keys(updates).length) return;
     setError('');
-    const updates = {};
-    if (changed.sylt) {
-      if (sylt.some((line) => line.time.trim() === '' || !Number.isFinite(Number(line.time)) || Number(line.time) < 0 || Number(line.time) > 4294967.295)) {
-        setError('Each SYLT line needs a time between 0 and 4294967.295 seconds.'); return;
-      }
-      updates.sylt = sylt.map((line) => ({ time: Number(line.time), text: line.text }));
-    }
-    if (changed.uslt) updates.uslt = uslt;
-    if (!Object.keys(updates).length) return;
     setSaving(true);
     try { await onSave(updates); onCancel(); }
     catch (saveError) { setError(saveError.message); }
@@ -58,29 +54,21 @@ export function LyricsEditor({ metadata, name, mode, onSave, onCancel }) {
 
   return <form className="lyrics-editor" aria-label="Edit lyrics" onSubmit={save}>
     <p className="metadata-filename">{name}</p>
+    <p className="lyrics-editor-help" id={helpId}>{mode === 'uslt'
+      ? 'Plain lyrics, up to 100,000 characters. Clear to remove USLT.'
+      : 'One [HH:MM:SS.mmm] text per line; edit times/text, add or delete lines. Blank rows are ignored; a timestamp alone keeps an empty lyric. Use \\n for a line break and \\\\ for a backslash. Up to 10,000 lines / 100,000 text characters. Clear to remove SYLT.'}</p>
     <fieldset disabled={saving}>
-      {mode === 'uslt' ? <textarea className="lyrics-plain-editor" aria-label="USLT lyrics" value={uslt} maxLength={100000}
-        onChange={(event) => { setUslt(event.target.value); setChanged((current) => ({ ...current, uslt: true })); }} /> : <>
-        <div className="lyrics-line-heading"><span>Time (s)</span><span>Lyrics</span></div>
-        {sylt.map((line, index) => <div className="lyrics-line" key={line.id}>
-          <input type="number" aria-label={`Time in seconds for line ${index + 1}`} min="0" max="4294967.295" step="0.001" required
-            value={line.time} onChange={(event) => changeLine(line.id, 'time', event.target.value)} />
-          <textarea aria-label={`Lyrics line ${index + 1}`} rows={2} maxLength={100000} value={line.text}
-            onChange={(event) => changeLine(line.id, 'text', event.target.value)} />
-          <button className="music-icon-button" type="button" title="Delete lyric line" aria-label={`Delete lyric line ${index + 1}`} onClick={() => {
-            setSylt((current) => current.filter((item) => item.id !== line.id)); setChanged((current) => ({ ...current, sylt: true }));
-          }}><Trash2 size={17} /></button>
-        </div>)}
-        <button className="music-icon-button" type="button" title="Add lyric line" aria-label="Add lyric line" disabled={sylt.length >= 10000} onClick={() => {
-          const line = { id: nextLine.current++, time: String(Number(sylt.at(-1)?.time) || 0), text: '' };
-          setSylt((current) => [...current, line]); setChanged((current) => ({ ...current, sylt: true }));
-        }}><Plus size={19} /></button>
-      </>}
+      <textarea className={`lyrics-text-editor${mode === 'sylt' ? ' lyrics-sylt-editor' : ''}`}
+        aria-label={mode === 'uslt' ? 'USLT lyrics' : 'SYLT lyrics'} aria-describedby={helpId}
+        value={mode === 'uslt' ? uslt : sylt} maxLength={mode === 'uslt' ? 100000 : undefined}
+        spellCheck={mode === 'uslt'} onChange={(event) => changeText(event.target.value)} />
     </fieldset>
-    {error && <p className="notice error" role="alert">{error}</p>}
+    {(validationError || error) && <p className="notice error" role="alert">{validationError || error}</p>}
     <div className="dialog-actions">
+      <button className="secondary-button" type="button" disabled={saving || !(mode === 'uslt' ? uslt : sylt)}
+        onClick={() => changeText('')}>Clear {mode === 'uslt' ? 'USLT' : 'SYLT'}</button>
       <button className="secondary-button" type="button" disabled={saving} onClick={onCancel}><X size={17} />Cancel</button>
-      <button className="primary-button" type="submit" disabled={saving || (!changed.sylt && !changed.uslt)}>
+      <button className="primary-button" type="submit" disabled={saving || Boolean(validationError) || !Object.keys(updates).length}>
         {saving ? <RefreshCw className="spin" size={17} /> : <Save size={17} />}{saving ? 'Saving...' : 'Save lyrics'}</button>
     </div>
   </form>;

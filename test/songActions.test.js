@@ -391,18 +391,25 @@ test('copying SYLT preserves timestamps while USLT stays plain text', () => {
   }
 });
 
-test('lyrics editor exposes timed SYLT lines and multiline USLT with save and cancel controls', () => {
-  const metadata = { sylt: [{ time: 1.234, text: 'Timed line' }], uslt: 'Plain line\nSecond line' };
+test('lyrics editor exposes a single timestamped SYLT text field and multiline USLT', () => {
+  const metadata = { sylt: [{ time: 1.234, text: 'Timed line' }, { time: 62.345, text: 'Next\nline' }], uslt: 'Plain line\nSecond line' };
   const render = (mode) => renderToStaticMarkup(createElement(LyricsEditor, { metadata, name: 'Song.mp3', mode, onSave() {}, onCancel() {} }));
   const timed = render('sylt');
-  assert.match(timed, /aria-label="Time in seconds for line 1"[^>]*step="0.001"[^>]*value="1.234"/);
-  assert.match(timed, /aria-label="Lyrics line 1"[^>]*>Timed line<\/textarea>/);
-  assert.match(timed, /aria-label="Add lyric line"/);
-  assert.match(timed, /aria-label="Delete lyric line 1"/);
+  assert.match(timed, /aria-label="SYLT lyrics"[^>]*>\[00:00:01\.234\] Timed line\n\[00:01:02\.345\] Next\\nline<\/textarea>/);
+  assert.match(timed, /lyrics-sylt-editor/);
+  assert.match(timed, /One \[HH:MM:SS\.mmm\] text per line/);
+  assert.match(timed, /Clear SYLT/);
+  assert.doesNotMatch(timed, /maxLength=/);
   const plain = render('uslt');
   assert.match(plain, /aria-label="USLT lyrics"[^>]*>Plain line\nSecond line<\/textarea>/);
-  assert.doesNotMatch(plain, /type="number"|Add lyric line/);
+  assert.match(plain, /maxLength="100000"/);
+  assert.match(plain, /Clear USLT/);
+  assert.doesNotMatch(plain, /lyrics-sylt-editor/);
   for (const html of [timed, plain]) {
+    assert.equal((html.match(/<textarea/g) || []).length, 1);
+    assert.doesNotMatch(html, /type="number"|Add lyric line|Delete lyric line/);
+    const helpId = html.match(/aria-describedby="([^"]+)"/)[1];
+    assert.ok(html.includes(`id="${helpId}"`));
     assert.match(html, /Save lyrics/);
     assert.match(html, /Cancel/);
     assert.match(html.match(/<button[^>]*type="submit"[^>]*>/)[0], /disabled/);
