@@ -206,7 +206,7 @@ export async function updatePostgresSong(database, job, name, field, value) {
     const result = field === 'metadata'
       ? await database.prepare(`UPDATE songs SET metadata = $1, search_text = lower($2) WHERE job_id = $3 AND name = $4`)
         .run(JSON.stringify(value), songSearchText({ ...value, name, playlistTitle: job.playlistTitle }), job.id, name)
-      : await database.prepare('UPDATE songs SET transcription = $1 WHERE job_id = $2 AND name = $3').run(JSON.stringify(value), job.id, name);
+      : await database.prepare('UPDATE songs SET transcription = $1 WHERE job_id = $2 AND name = $3').run(value === null ? null : JSON.stringify(value), job.id, name);
     if (!result.changes) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
     await database.prepare("UPDATE jobs SET data = jsonb_set(data, '{updatedAt}', $1::jsonb) WHERE id = $2").run(JSON.stringify(job.updatedAt), job.id);
     await database.prepare('UPDATE user_catalog SET revision = revision + 1 WHERE user_id IN (SELECT user_id FROM job_users WHERE job_id = $1)').run(job.id);

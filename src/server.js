@@ -16,6 +16,7 @@ import { findNoVocals, individualPlaylistId, orderFiles, songKey } from './libra
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
+import { createReplaceFileHandler } from './replaceFile.js';
 import { countMediaFiles, createMediaCountMonitor, getSystemHealth } from './health.js';
 import { isYouTubeUrl } from './utils.js';
 import { scheduleDailyMaintenance, scheduleLibraryBackups } from './scheduler.js';
@@ -458,6 +459,8 @@ app.patch('/api/jobs/:id/files/:name/metadata', async (req, res) => {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
+
+app.post('/api/jobs/:id/files/:name/replace', createReplaceFileHandler(listJobFiles));
 
 app.post('/api/jobs/:id/files/:name/transcribe', async (req, res) => {
   try {

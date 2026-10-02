@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Save, Search, Shuffle, SkipBack, SkipForward, Trash2, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Save, Search, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
 import { ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory } from './navigation.js';
@@ -83,6 +83,13 @@ export function queueSongNext(songs, selected, track) {
   const index = queue.findIndex((item) => key(item) === selected);
   queue.splice(index + 1, 0, track);
   return queue;
+}
+
+export function replaceSongFile(tracks, jobId, name, file) {
+  const matches = (track) => track?.jobId === jobId && track.name === name;
+  const replace = (track) => ({ ...track, ...file, transcription: undefined });
+  return tracks?.map((track) => matches(track) ? replace(track)
+    : matches(track.noVocalsVersion) ? { ...track, noVocalsVersion: replace(track.noVocalsVersion) } : track);
 }
 
 export function SongGroups({ tracks, children }) {
@@ -256,6 +263,13 @@ export function PlaybackProvider({ children, request }) {
         transcriptionLocked: result.transcriptionLocked } : track));
   }
 
+  function replaceFile(jobId, name, result) {
+    if (selectedRef.current === JSON.stringify([jobId, name])) {
+      autoPlayRef.current = Boolean(audioRef.current && !audioRef.current.paused);
+    }
+    setSongs((current) => replaceSongFile(current, jobId, name, result.file));
+  }
+
   function removeJob(jobId) {
     setSongs((current) => current?.filter((track) => track.jobId !== jobId));
     setSelected((current) => current && JSON.parse(current)[0] === jobId ? null : current);
@@ -265,7 +279,7 @@ export function PlaybackProvider({ children, request }) {
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeat, setRepeat, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen,
-    selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata }}>
+    selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata, replaceFile }}>
     {children}
     <section className="movie-player" aria-label="Movie player" hidden={!isVideo || !videoOpen}>
       <header><Film size={18} /><strong>{metadata?.title || song?.name}</strong>
@@ -495,6 +509,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 onSaved={(result) => libraryView.onMetadataSaved(track, result)} onError={libraryView.onRatingError} />
               <SongActions name={track.name} className="song-order-actions">
                 {action.canModify && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Edit song metadata" aria-label={`Edit metadata ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onEditMetadata(track)}><Pencil size={16} /></button>}
+                {action.canModify && !libraryView.readOnly && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Replace File" aria-label={`Replace File ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onReplaceFile(track)}><Upload size={16} /></button>}
                 {!libraryView.readOnly && mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" data-action-label="Transcribe song" title={libraryView.transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${track.name}`} disabled={action.disabled || !libraryView.transcriptionActive} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
                 {action.canModify && <button className="music-icon-button" type="button" title="Remove song from playlist" aria-label={`Delete song ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
                 {!libraryView.readOnly && <button className="music-icon-button" type="button" title="Move to playlist" aria-label={`Move ${track.name} to playlist`} disabled={libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>}

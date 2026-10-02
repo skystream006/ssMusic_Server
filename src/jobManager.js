@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { isPlaylistUrl, normalizeJobUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob, withTransaction } from './database.js';
 import { deletePostgresJob, indexPostgresSongMetadata, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
@@ -549,11 +550,14 @@ export async function setJobTitle(id, title, user = null) {
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 200 || /[\x00-\x1f\x7f]/.test(title)) {
     throw Object.assign(new Error('Playlist title must be between 1 and 200 characters without control characters'), { statusCode: 400 });
   }
-  job.playlistTitle = title.trim();
-  job.playlistTitleOverride = job.playlistTitle;
-  job.updatedAt = new Date().toISOString();
-  await persistJob(job);
-  return job;
+  jobMutations.add(id);
+  try {
+    job.playlistTitle = title.trim();
+    job.playlistTitleOverride = job.playlistTitle;
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+    return job;
+  } finally { jobMutations.delete(id); }
 }
 
 export async function importJobFiles({ files, playlistId, playlistTitle, source = 'files', individual = false, playlistSongCount, downloadType = 'audio' }, user) {
@@ -633,9 +637,12 @@ export async function rerunJob(id, user = null) {
   job.output = null;
   job.updatedAt = new Date().toISOString();
 
-  await persistJob(job);
-  startJob(job);
-  return job;
+  jobMutations.add(id);
+  try {
+    await persistJob(job);
+    startJob(job);
+    return job;
+  } finally { jobMutations.delete(id); }
 }
 
 export async function deleteJob(id, user = null) {
@@ -786,6 +793,93 @@ export async function setSongMetadata(id, fileName, value, user = null) {
   } finally { jobMutations.delete(id); }
 }
 
+export async function replaceJobFile(id, fileName, user, receiveFile) {
+  const job = await getJob(id);
+  if (!job) return null;
+  await assertCanModifyJob(job, user, true);
+  assertJobIsIdle(job, 'replace files in');
+  if (!isValidJobFileName(fileName) || !isSongFile(fileName)) {
+    throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
+  }
+  if (!job.outputDir || !job.files.includes(fileName)) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+
+  const aliases = (await database.prepare("SELECT data FROM jobs WHERE data->>'outputDir' = $1").all(job.outputDir))
+    .map((row) => JSON.parse(row.data));
+  for (const alias of aliases) assertJobIsIdle(jobs.get(alias.id) || alias, 'replace files in');
+  for (const alias of aliases) jobMutations.add(alias.id);
+  let directory;
+  try {
+    return await mutateJobFiles(id, async () => {
+      const affected = [];
+      for (const alias of aliases) {
+        const currentJob = await getJob(alias.id);
+        if (currentJob?.files.includes(fileName)) affected.push(currentJob);
+      }
+      if (!affected.some((alias) => alias.id === id)) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+      const outputDir = await fs.realpath(job.outputDir);
+      const filePath = path.join(outputDir, fileName.startsWith('[NoVocals]/') ? '[NoVocals]' : '', path.basename(fileName));
+      const realPath = await fs.realpath(filePath).catch(() => null);
+      if (!realPath) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+      if (realPath !== filePath || !isFileInsideJobFolder({ outputDir }, realPath)) {
+        throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
+      }
+      const original = await fs.lstat(filePath);
+      if (!original.isFile()) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+      directory = path.join(path.dirname(filePath), `.replace-${randomUUID()}`);
+      await fs.mkdir(directory, { mode: 0o700 });
+      const staged = path.join(directory, path.basename(fileName));
+      const backup = path.join(directory, 'original');
+      await receiveFile(staged);
+      const metadata = await readSongMetadata(staged);
+      const indexed = { ...Object.fromEntries(songMetadataFields.map((field) => [field, metadata[field]])),
+        rating: metadata.rating };
+      const updatedAt = new Date().toISOString();
+      const updatedJobs = affected.map((alias) => {
+        const noVocalsName = alias.transcriptions?.[fileName]?.noVocalsName;
+        const transcription = noVocalsName && noVocalsName !== fileName && isValidJobFileName(noVocalsName)
+          && alias.files.includes(noVocalsName) ? { noVocalsName } : null;
+        const updated = { ...alias, updatedAt,
+          songMetadata: { ...alias.songMetadata, [fileName]: { ...indexed,
+            transcriptionLocked: Boolean(alias.songMetadata?.[fileName]?.transcriptionLocked) } },
+          transcriptions: { ...alias.transcriptions } };
+        if (transcription) updated.transcriptions[fileName] = transcription;
+        else delete updated.transcriptions[fileName];
+        return updated;
+      });
+      const updatedJob = updatedJobs.find((alias) => alias.id === id);
+      metadata.transcriptionLocked = updatedJob.songMetadata[fileName].transcriptionLocked;
+      await fs.chmod(staged, original.mode & 0o777);
+      const revision = new Date(Math.max(Date.now(), Math.ceil(original.mtimeMs) + 1));
+      await fs.utimes(staged, revision, revision);
+      const current = await fs.lstat(filePath);
+      if (await fs.realpath(filePath) !== filePath || current.ino !== original.ino || current.dev !== original.dev
+        || current.size !== original.size || current.mtimeMs !== original.mtimeMs || current.ctimeMs !== original.ctimeMs) {
+        throw Object.assign(new Error('The original song changed during upload. Refresh and try again.'), { statusCode: 409 });
+      }
+      // A hard link keeps the original available for rollback without an extra audio-sized copy.
+      await fs.link(filePath, backup);
+      let replaced = false;
+      try {
+        await fs.rename(staged, filePath);
+        replaced = true;
+        await withTransaction(database, async () => {
+          for (const alias of updatedJobs) {
+            await updatePostgresSong(database, alias, fileName, 'metadata', alias.songMetadata[fileName]);
+            await updatePostgresSong(database, alias, fileName, 'transcription', alias.transcriptions[fileName] || null);
+          }
+        });
+      } catch (error) {
+        if (replaced) await fs.rename(backup, filePath);
+        throw error;
+      }
+      return { job: updatedJob, metadata };
+    });
+  } finally {
+    try { if (directory) await fs.rm(directory, { recursive: true, force: true }); }
+    finally { for (const alias of aliases) jobMutations.delete(alias.id); }
+  }
+}
+
 export async function deleteJobFile(id, fileName, user = null, membership = null) {
   const job = (await getJob(id));
   if (!job) return null;
@@ -864,16 +958,19 @@ export async function setJobContributors(id, userIds, user = null) {
     error.statusCode = 400;
     throw error;
   }
-  const available = new Map((await getAvailableContributors(id, user)).map((candidate) => [candidate.id, candidate]));
-  if (userIds.some((userId) => !available.has(userId))) {
-    const error = new Error('Contributors must be approved users other than the job owner');
-    error.statusCode = 400;
-    throw error;
-  }
-  job.contributors = [...new Set(userIds)].map((userId) => available.get(userId));
-  job.updatedAt = new Date().toISOString();
-  await persistJob(job);
-  return job;
+  jobMutations.add(id);
+  try {
+    const available = new Map((await getAvailableContributors(id, user)).map((candidate) => [candidate.id, candidate]));
+    if (userIds.some((userId) => !available.has(userId))) {
+      const error = new Error('Contributors must be approved users other than the job owner');
+      error.statusCode = 400;
+      throw error;
+    }
+    job.contributors = [...new Set(userIds)].map((userId) => available.get(userId));
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+    return job;
+  } finally { jobMutations.delete(id); }
 }
 
 export async function getJobs(userId) {

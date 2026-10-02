@@ -8,11 +8,13 @@ let server;
 let SongActions;
 let SongRating;
 let ListSongRating;
+let ReplaceFileDialog;
 let TranscriptionDialog;
 let TranscriptionStatus;
 let SongGroups;
 let findNoVocals;
 let queueSongNext;
+let replaceSongFile;
 let formatLyricsForCopy;
 let LyricsEditor;
 let ExportLibraryDialog;
@@ -26,8 +28,8 @@ let LibraryAccessList;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, SongRating, ListSongRating, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ SongActions, SongRating, ListSongRating, ReplaceFileDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -124,12 +126,76 @@ test('Shared playlist rows retain playback but omit server mutation controls', (
     })));
     assert.match(html, /aria-label="Play Song.mp3"/);
     assert.match(html, /aria-label="Download Song.mp3"/);
-    assert.doesNotMatch(html, /aria-label="(?:Drag|Move|Transcribe|Delete|Edit metadata|Select songs)/);
+    assert.doesNotMatch(html, /aria-label="(?:Drag|Move|Transcribe|Delete|Edit metadata|Replace File|Select songs)/);
     assert.doesNotMatch(html, /draggable="true"/);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+});
+
+test('replacement dialog accepts one matching-format song and warns about overwriting linked copies', () => {
+  for (const name of ['Song.mp3', '[NoVocals]/Song.MP3', 'Song.flac']) {
+    const html = renderToStaticMarkup(createElement(ReplaceFileDialog, {
+      file: { name }, jobId: 'job', request() {}, onSaved() {}, onClose() {}
+    }));
+    assert.match(html, /<h2[^>]*>Replace File<\/h2>/);
+    assert.match(html, /permanently overwrites the song and its embedded metadata in every playlist/);
+    assert.match(html, /server filename and playlist links stay unchanged/);
+    assert.match(html, /512 MB/);
+    const input = html.match(/<input[^>]*type="file"[^>]*>/g);
+    assert.equal(input.length, 1);
+    assert.ok(input[0].includes(`accept="${name.slice(name.lastIndexOf('.')).toLowerCase()}"`));
+    assert.doesNotMatch(input[0], /multiple/);
+    assert.match(html, /type="submit" disabled=""/);
+    assert.match(html, /type="button">Cancel/);
+  }
+});
+
+test('song replacement actions respect audio formats, permissions and busy states in both layouts', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const render = ({ name = 'Song.mp3', canModify = true, disabled = false, saving = false, readOnly = false } = {}) =>
+      renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+        libraryView: { tracks: [{ jobId: 'job', name }], title: 'Playlist', selectedId: 'playlist', saving, readOnly,
+          songState: () => ({ canModify, disabled }) }
+      })));
+    const buttons = (html) => html.match(/<button[^>]*aria-label="Replace File [^"]*"[^>]*>/g) || [];
+    for (const name of ['Song.mp3', '[NoVocals]/Song.mp3', 'Song.wav', 'Song.flac']) {
+      const actions = buttons(render({ name }));
+      assert.equal(actions.length, 2, name);
+      for (const button of actions) assert.doesNotMatch(button, /disabled/);
+    }
+    for (const options of [{ disabled: true }, { saving: true }]) {
+      for (const button of buttons(render(options))) assert.match(button, /disabled=""/);
+    }
+    for (const options of [{ canModify: false }, { readOnly: true, canModify: false }, { name: 'Movie.mp4' }]) {
+      assert.equal(buttons(render(options)).length, 0);
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test('replacing queued audio also refreshes nested karaoke versions without losing playlist identity', () => {
+  const original = { jobId: 'job', name: 'Song.mp3', playlistId: 'playlist', playlistTitle: 'Playlist' };
+  const noVocals = { ...original, name: '[NoVocals]/Song.mp3', streamUrl: '/old', title: 'Old title',
+    transcription: { status: 'transcribed' } };
+  original.noVocalsVersion = { ...noVocals };
+  const other = { ...noVocals, jobId: 'other' };
+  const queue = [original, noVocals, other];
+  const file = { name: noVocals.name, title: 'Replacement', artist: '', streamUrl: '/new', sizeBytes: 123 };
+  const updated = replaceSongFile(queue, 'job', file.name, file);
+  assert.deepEqual(updated[1], { ...noVocals, ...file, transcription: undefined });
+  assert.deepEqual(updated[0].noVocalsVersion, updated[1]);
+  assert.equal(updated[0].name, original.name);
+  assert.equal(updated[0].playlistId, 'playlist');
+  assert.equal(updated[2], other);
+  assert.equal(queue[1].streamUrl, '/old');
+  assert.equal(queueSongNext(updated, JSON.stringify(['job', original.name]), updated[0].noVocalsVersion)[1].streamUrl, '/new');
+  assert.equal(replaceSongFile(null, 'job', file.name, file), undefined);
 });
 
 test('track search matches artist, album and other song metadata in unpaged views', () => {

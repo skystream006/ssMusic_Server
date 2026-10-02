@@ -1,5 +1,5 @@
 import { Children, cloneElement, useEffect, useId, useRef, useState } from 'react';
-import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Star, Trash2, X } from 'lucide-react';
+import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Star, Trash2, Upload, X } from 'lucide-react';
 import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
 
 export const transcriptionInactiveMessage = 'Transciption service is currently inactive. Refresh the page when transcription service is available';
@@ -164,6 +164,69 @@ export function ListSongRating({ file, jobId, request, canModify, disabled, onSa
       disabled={disabled || saving} onChange={canModify ? save : undefined} />}
     {saving && <span className="sr-only" role="status">Saving rating for {file.name}</span>}
   </span>;
+}
+
+export function ReplaceFileDialog({ file, jobId, request, onSaved, onClose }) {
+  const dialogRef = useRef(null);
+  const submittingRef = useRef(false);
+  const headingId = useId();
+  const [replacement, setReplacement] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+
+  async function replace(event) {
+    event.preventDefault();
+    if (!replacement || submittingRef.current) return;
+    setError('');
+    if (!replacement.name.toLowerCase().endsWith(extension) || !replacement.size || replacement.size > 512 * 1024 ** 2) {
+      setError(`Choose a non-empty ${extension} song file no larger than 512 MB.`);
+      return;
+    }
+    submittingRef.current = true;
+    setSaving(true);
+    try {
+      const body = new FormData();
+      body.set('file', replacement);
+      const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/replace`, {
+        method: 'POST', body
+      });
+      onSaved(result);
+      onClose();
+    } catch (saveError) { setError(saveError.message); }
+    finally { submittingRef.current = false; setSaving(false); }
+  }
+
+  return <dialog ref={dialogRef} className="confirmation-dialog" aria-labelledby={headingId}
+    onCancel={(event) => { event.preventDefault(); if (!submittingRef.current) onClose(); }}>
+    <form onSubmit={replace} aria-busy={saving}>
+      <h2 id={headingId}>Replace File</h2>
+      <p className="metadata-filename">{file.name}</p>
+      <p>This permanently overwrites the song and its embedded metadata in every playlist that links to it. The server filename and playlist links stay unchanged.</p>
+      <label className="import-field import-upload"><span><FileAudio size={18} />Replacement song file</span>
+        <input type="file" accept={extension} required disabled={saving} onChange={(event) => {
+          setReplacement(event.target.files?.[0] || null);
+          setError('');
+        }} />
+      </label>
+      <p>Choose one {extension} file, up to 512 MB. Convert other formats before uploading; renaming the extension is not enough.</p>
+      {error && <p className="notice error" role="alert">{error}</p>}
+      {saving && <p role="status">Uploading and replacing file...</p>}
+      <div className="dialog-actions">
+        <button className="secondary-button" type="button" disabled={saving} onClick={onClose}>Cancel</button>
+        <button className="primary-button" type="submit" disabled={!replacement || saving}>
+          {saving ? <RefreshCw className="spin" size={17} /> : <Upload size={17} />}{saving ? 'Replacing...' : 'Replace File'}
+        </button>
+      </div>
+    </form>
+  </dialog>;
 }
 
 export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
