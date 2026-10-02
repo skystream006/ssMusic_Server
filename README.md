@@ -1176,9 +1176,15 @@ The active line uses larger text and the current palette's accent color, brighte
 in the fullscreen lyrics overlay. **Copy lyrics** in SYLT mode includes each
 timestamp as `[mm:ss.mmm]` before its text; copying USLT keeps plain text only.
 **USLT** displays the embedded plain-text lyrics. Untagged songs remain playable.
-Owners, contributors, and administrators can use **Edit lyrics** to edit SYLT
-timestamps and lines or USLT text, then **Save lyrics**. Switching lyric types keeps
-both drafts; **Cancel** discards them. Edits remain attached to the original song
+Owners, contributors, and administrators can use **Edit lyrics**, then **Save lyrics**.
+Like ssMusic_Player, SYLT uses a single text field with one `[HH:MM:SS.mmm] text`
+entry per line. Edit timestamps and text directly, or add/delete lines. Blank rows
+are ignored; a timestamp alone keeps an empty timed lyric. Use `\n` for a line
+break within a lyric, `\r` for a carriage return, and `\\` for a literal backslash.
+Invalid timestamps or exceeded limits show an error and prevent saving.
+USLT remains plain text. **Clear SYLT** or **Clear USLT** removes that format only
+after saving. Switching lyric types keeps both drafts; **Cancel** discards them.
+Only changed formats are saved. Edits remain attached to the original song
 even if playback advances, and saving does not restart playback.
 Title, artist, album and supported embedded cover artwork are read from MP3 tags.
 Streaming uses authenticated, byte-range-enabled `/api/jobs/:id/stream/:name`;
