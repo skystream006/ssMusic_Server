@@ -1072,6 +1072,29 @@ Each format is limited to 100,000 characters; SYLT accepts at most 10,000 lines
 with nonnegative timestamps up to 4294967.295 seconds (ID3's millisecond range).
 Omitted formats are preserved; `uslt: ""` or `sylt: []` clears that format.
 
+## Replace a song file
+
+Choose **Replace File** from a song's actions in the library or job details.
+Select one non-empty audio file in the **same format** as the current song
+(up to 512 MB), then confirm with **Replace File**. Convert other formats first;
+changing a file extension does not convert its contents.
+
+The upload overwrites the audio and embedded tags, artwork, ratings, and lyrics.
+The server filename, playlist links, ordering, and transcription lock stay intact.
+All playlists linking to the song use the replacement. Other files, including
+existing NoVocals versions, are not overwritten. The song list and any queued
+copy refresh after replacement, and the player reloads the new audio.
+
+Only the job owner, contributors, or an administrator can replace songs.
+Active downloads and conflicting mutations or transcriptions return `409`.
+Invalid uploads leave the original file unchanged.
+
+`POST /api/jobs/:id/files/:name/replace` accepts `multipart/form-data` with exactly
+one `file` field and no other fields. URL-encode the full server filename,
+including `[NoVocals]/`. A successful response contains the refreshed `file`
+descriptor (including its versioned `streamUrl`) and song `metadata`.
+Missing, invalid, or mismatched audio returns `400`; files over 512 MB return `413`.
+
 ## Transcription and job player
 
 Set `TRANSCRIPTION_ENDPOINT` in `.env` to the transcription service's complete URL,

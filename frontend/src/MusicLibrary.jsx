@@ -5,7 +5,7 @@ import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
 import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
-import { canManageJob, canModifyJob, formatBytes, MetadataDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
+import { canManageJob, canModifyJob, formatBytes, MetadataDialog, ReplaceFileDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { replaceURL } from './navigation.js';
 
@@ -364,6 +364,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const playback = usePlayback();
   const sidebarRef = useRef(null);
   const [editingMetadata, setEditingMetadata] = useState(null);
+  const [replacingFile, setReplacingFile] = useState(null);
   const [library, setLibrary] = useState(null);
   const [selectedId, setSelectedId] = useState(new URLSearchParams(window.location.search).get('playlist'));
   const [trackResult, setTrackResult] = useState(null);
@@ -921,11 +922,18 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         remove: removeSelectedSongs, canRemove: songSelection.length > 0 && songSelection.every((track) => !songState(track).disabled),
         transfer: (action) => setBulkDialog({ type: 'songs', action, version: library.version, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,
       songState, transcriptionActive, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
+      onReplaceFile: setReplacingFile,
       onMetadataSaved: metadataSaved, onRatingError: setActionError,
       saving: saving || tracksLoading || searchPending, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
     {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
     {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
       metadataSaved(editingMetadata, result);
+      setRefresh((value) => value + 1);
+    }} />}
+    {replacingFile && <ReplaceFileDialog file={replacingFile} jobId={replacingFile.jobId} request={request} onClose={() => setReplacingFile(null)} onSaved={(result) => {
+      playback.replaceFile(replacingFile.jobId, replacingFile.name, result);
+      setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(replacingFile)
+        ? { ...track, ...result.file, transcription: undefined } : track) } : current);
       setRefresh((value) => value + 1);
     }} />}
     {folderDialog && <FolderDialog folder={folderDialog.folder} parentId={folderDialog.parentId} folders={possibleFolders(folderDialog.folder?.id)} saving={saving} onSave={saveFolder} onClose={() => setFolderDialog(null)} />}

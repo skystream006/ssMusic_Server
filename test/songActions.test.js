@@ -8,6 +8,7 @@ let server;
 let SongActions;
 let SongRating;
 let ListSongRating;
+let ReplaceFileDialog;
 let TranscriptionDialog;
 let TranscriptionStatus;
 let SongGroups;
@@ -26,7 +27,7 @@ let LibraryAccessList;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, SongRating, ListSongRating, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, SongRating, ListSongRating, ReplaceFileDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -124,8 +125,53 @@ test('Shared playlist rows retain playback but omit server mutation controls', (
     })));
     assert.match(html, /aria-label="Play Song.mp3"/);
     assert.match(html, /aria-label="Download Song.mp3"/);
-    assert.doesNotMatch(html, /aria-label="(?:Drag|Move|Transcribe|Delete|Edit metadata|Select songs)/);
+    assert.doesNotMatch(html, /aria-label="(?:Drag|Move|Transcribe|Delete|Edit metadata|Replace File|Select songs)/);
     assert.doesNotMatch(html, /draggable="true"/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test('replacement dialog accepts one matching-format song and warns about overwriting linked copies', () => {
+  for (const name of ['Song.mp3', '[NoVocals]/Song.MP3', 'Song.flac']) {
+    const html = renderToStaticMarkup(createElement(ReplaceFileDialog, {
+      file: { name }, jobId: 'job', request() {}, onSaved() {}, onClose() {}
+    }));
+    assert.match(html, /<h2[^>]*>Replace File<\/h2>/);
+    assert.match(html, /permanently overwrites the song and its embedded metadata in every playlist/);
+    assert.match(html, /server filename and playlist links stay unchanged/);
+    assert.match(html, /512 MB/);
+    const input = html.match(/<input[^>]*type="file"[^>]*>/g);
+    assert.equal(input.length, 1);
+    assert.ok(input[0].includes(`accept="${name.slice(name.lastIndexOf('.')).toLowerCase()}"`));
+    assert.doesNotMatch(input[0], /multiple/);
+    assert.match(html, /type="submit" disabled=""/);
+    assert.match(html, /type="button">Cancel/);
+  }
+});
+
+test('song replacement actions respect audio formats, permissions and busy states in both layouts', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const render = ({ name = 'Song.mp3', canModify = true, disabled = false, saving = false, readOnly = false } = {}) =>
+      renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+        libraryView: { tracks: [{ jobId: 'job', name }], title: 'Playlist', selectedId: 'playlist', saving, readOnly,
+          songState: () => ({ canModify, disabled }) }
+      })));
+    const buttons = (html) => html.match(/<button[^>]*aria-label="Replace File [^"]*"[^>]*>/g) || [];
+    for (const name of ['Song.mp3', '[NoVocals]/Song.mp3', 'Song.wav', 'Song.flac']) {
+      const actions = buttons(render({ name }));
+      assert.equal(actions.length, 2, name);
+      for (const button of actions) assert.doesNotMatch(button, /disabled/);
+    }
+    for (const options of [{ disabled: true }, { saving: true }]) {
+      for (const button of buttons(render(options))) assert.match(button, /disabled=""/);
+    }
+    for (const options of [{ canModify: false }, { readOnly: true, canModify: false }, { name: 'Movie.mp4' }]) {
+      assert.equal(buttons(render(options)).length, 0);
+    }
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;

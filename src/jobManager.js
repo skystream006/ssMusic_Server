@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { isPlaylistUrl, normalizeJobUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob, withTransaction } from './database.js';
 import { deletePostgresJob, indexPostgresSongMetadata, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
@@ -784,6 +785,74 @@ export async function setSongMetadata(id, fileName, value, user = null) {
       return metadata;
     });
   } finally { jobMutations.delete(id); }
+}
+
+export async function replaceJobFile(id, fileName, user, receiveFile) {
+  const job = await getJob(id);
+  if (!job) return null;
+  await assertCanModifyJob(job, user, true);
+  assertJobIsIdle(job, 'replace files in');
+  if (!isValidJobFileName(fileName) || !isSongFile(fileName)) {
+    throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
+  }
+  if (!job.outputDir || !job.files.includes(fileName)) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+
+  const aliases = (await database.prepare("SELECT data FROM jobs WHERE data->>'outputDir' = $1").all(job.outputDir))
+    .map((row) => JSON.parse(row.data));
+  for (const alias of aliases) assertJobIsIdle(jobs.get(alias.id) || alias, 'replace files in');
+  for (const alias of aliases) jobMutations.add(alias.id);
+  let directory;
+  try {
+    return await mutateJobFiles(id, async () => {
+      const outputDir = await fs.realpath(job.outputDir);
+      const filePath = path.join(outputDir, fileName);
+      const realPath = await fs.realpath(filePath).catch(() => null);
+      if (!realPath) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+      if (realPath !== filePath || !isFileInsideJobFolder({ outputDir }, realPath)) {
+        throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
+      }
+      const original = await fs.lstat(filePath);
+      if (!original.isFile()) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+      directory = path.join(path.dirname(filePath), `.replace-${randomUUID()}`);
+      await fs.mkdir(directory, { mode: 0o700 });
+      const staged = path.join(directory, path.basename(fileName));
+      const backup = path.join(directory, 'original');
+      await receiveFile(staged);
+      const metadata = await readSongMetadata(staged);
+      metadata.transcriptionLocked = Boolean(job.songMetadata?.[fileName]?.transcriptionLocked);
+      const indexed = { ...Object.fromEntries(songMetadataFields.map((field) => [field, metadata[field]])),
+        rating: metadata.rating, transcriptionLocked: metadata.transcriptionLocked };
+      const noVocalsName = job.transcriptions?.[fileName]?.noVocalsName;
+      const transcription = noVocalsName && noVocalsName !== fileName && isValidJobFileName(noVocalsName)
+        && job.files.includes(noVocalsName) ? { noVocalsName } : null;
+      const updatedJob = { ...job, updatedAt: new Date().toISOString(),
+        songMetadata: { ...job.songMetadata, [fileName]: indexed },
+        transcriptions: { ...job.transcriptions } };
+      if (transcription) updatedJob.transcriptions[fileName] = transcription;
+      else delete updatedJob.transcriptions[fileName];
+      await fs.chmod(staged, original.mode & 0o777);
+      const revision = new Date(Math.max(Date.now(), Math.ceil(original.mtimeMs) + 1));
+      await fs.utimes(staged, revision, revision);
+      // A hard link keeps the original available for rollback without an extra audio-sized copy.
+      await fs.link(filePath, backup);
+      let replaced = false;
+      try {
+        await fs.rename(staged, filePath);
+        replaced = true;
+        await withTransaction(database, async () => {
+          await updatePostgresSong(database, updatedJob, fileName, 'metadata', indexed);
+          await updatePostgresSong(database, updatedJob, fileName, 'transcription', transcription);
+        });
+      } catch (error) {
+        if (replaced) await fs.rename(backup, filePath);
+        throw error;
+      }
+      return { job: updatedJob, metadata };
+    });
+  } finally {
+    try { if (directory) await fs.rm(directory, { recursive: true, force: true }); }
+    finally { for (const alias of aliases) jobMutations.delete(alias.id); }
+  }
 }
 
 export async function deleteJobFile(id, fileName, user = null, membership = null) {

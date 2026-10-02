@@ -56,7 +56,7 @@ import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
 import { isPlayableFile } from '../../src/media.js';
-import { canManageJob, canModifyJob, canRunJobAction, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, SongActions, TranscriptionDialog, transcriptionInactiveMessage, TranscriptionStatus, useTranscriptionService } from './SongActions.jsx';
+import { canManageJob, canModifyJob, canRunJobAction, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, ReplaceFileDialog, SongActions, TranscriptionDialog, transcriptionInactiveMessage, TranscriptionStatus, useTranscriptionService } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -689,6 +689,7 @@ function ContributorDialog({ job, onClose, onSaved }) {
 function JobPage({ id }) {
   const playback = usePlayback();
   const [editingMetadata, setEditingMetadata] = useState(null);
+  const [replacingFile, setReplacingFile] = useState(null);
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
   const [fileRevision, setFileRevision] = useState(0);
@@ -830,6 +831,10 @@ function JobPage({ id }) {
         playback.updateMetadata(id, editingMetadata.name, result);
         setFileRevision((revision) => revision + 1);
       }} />}
+      {replacingFile && <ReplaceFileDialog file={replacingFile} jobId={id} request={request} onClose={() => setReplacingFile(null)} onSaved={(result) => {
+        playback.replaceFile(id, replacingFile.name, result);
+        setFileRevision((revision) => revision + 1);
+      }} />}
       {editingContributors && <ContributorDialog job={job} onClose={() => setEditingContributors(false)} onSaved={() => {
         setEditingContributors(false);
         setFileRevision((revision) => revision + 1);
@@ -923,6 +928,7 @@ function JobPage({ id }) {
                     }} />
                   <SongActions name={file.name} className="file-row-actions">
                     {canModify && file.isSong && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
+                    {canModify && file.isSong && <button className="icon-link" type="button" title="Replace File" aria-label={`Replace File ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setReplacingFile(file)}><Upload size={18} /></button>}
                     {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" data-action-label="Transcribe song" title={transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name) || !transcriptionActive} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
                     <a href={file.downloadUrl} aria-label={`Download ${file.name}`} title="Download song"><ArrowDownToLine size={18} /></a>
                     {canModify && <button className="icon-link" type="button" title="Delete song" aria-label={`Delete song ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => removeFile(file)}>
