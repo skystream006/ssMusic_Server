@@ -31,7 +31,7 @@ export function createReplaceFileHandler(listJobFiles) {
           reject(error);
         }));
         if (!req.file) throw failure('Select one replacement audio file');
-        await validateImportAudio({ name: req.params.name, path: staged });
+        await validateImportAudio({ name: req.params.name, path: staged }, { requireProbe: true });
       });
       if (!result) return res.status(404).json({ error: 'Job not found' });
       const files = await listJobFiles(result.job, undefined, [req.params.name]);

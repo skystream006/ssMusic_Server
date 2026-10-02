@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import NodeID3 from 'node-id3';
+import { fileTypeFromBuffer } from 'file-type';
 import { writeJob } from '../src/database.js';
 import { readPostgresJob, readPostgresJobs } from '../src/postgresCatalog.js';
 import { createTestDatabase } from '../test-support/postgres.js';
@@ -29,6 +30,22 @@ function audio(tags = {}) {
   const frame = Buffer.alloc(417);
   Buffer.from([0xff, 0xfb, 0x90, 0x64]).copy(frame);
   return NodeID3.write(tags, Buffer.concat([frame, frame, frame]));
+}
+function wavAudio() {
+  const wav = Buffer.alloc(204);
+  wav.write('RIFF');
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24);
+  wav.writeUInt32LE(16000, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write('data', 36);
+  wav.writeUInt32LE(wav.length - 44, 40);
+  return wav;
 }
 async function waitUntil(predicate) {
   for (let attempt = 0; attempt < 500; attempt += 1) {
@@ -122,9 +139,16 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
   await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve))));
   const [httpPort, httpsPort] = listeners.map((listener) => listener.address().port);
   await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.close(resolve))));
+  const ffmpegLocation = path.resolve(process.env.FFMPEG_PATH || path.join('runtime', 'ffmpeg', 'bin'));
+  const ffmpegDirectory = /^ffmpeg(?:\.exe)?$/i.test(path.basename(ffmpegLocation)) ? path.dirname(ffmpegLocation) : ffmpegLocation;
+  const probeName = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe';
+  const probeDirectory = path.join(directory, 'probe-runtime');
+  const probePath = path.join(probeDirectory, probeName);
+  await fs.mkdir(probeDirectory);
+  await fs.symlink(path.join(ffmpegDirectory, probeName), probePath);
   server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
     '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
-    cwd: directory, env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath,
+    cwd: directory, env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath, FFMPEG_PATH: probeDirectory,
       HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '', PASSKEY_RP_ID: 'localhost', PASSKEY_ORIGIN: `https://localhost:${httpsPort}`,
       TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: `http://127.0.0.1:${transcriptionServer.address().port}` },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -226,6 +250,64 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
     assert.equal((await replace(undefined, credentials.Owner[0], linkedFolder.id, noVocalsName)).status, 400);
     assert.deepEqual(await fs.readFile(outside), original);
     await assertClean(unsafe.outputDir);
+  });
+
+  await context.test('rejects recognizable header-only audio without replacing the original', async () => {
+    const wavJob = await seedJob('header-only', { files: ['Original.wav'] });
+    await fs.writeFile(path.join(wavJob.outputDir, 'Original.wav'), wavAudio());
+    const headerOnly = [
+      { id: wavJob.id, name: 'Original.wav', data: Buffer.from('RIFF\x04\x00\x00\x00WAVE', 'binary'), detected: 'wav' },
+      { id: job.id, name: songName, data: Buffer.concat([Buffer.from('ID3\x03\x00\x00\x00\x00\x00\x00', 'binary'),
+        Buffer.from([0xff, 0xfb, 0x90, 0x64])]), detected: 'mp3' }
+    ];
+    for (const fixture of headerOnly) {
+      assert.equal((await fileTypeFromBuffer(fixture.data)).ext, fixture.detected);
+      const beforeJob = await readPostgresJob(database, fixture.id);
+      const filePath = path.join(beforeJob.outputDir, fixture.name);
+      const before = await fs.readFile(filePath);
+      const result = await replace([{ name: fixture.name, data: fixture.data }], credentials.Owner[0], fixture.id, fixture.name);
+      assert.equal(result.status, 400, JSON.stringify(result.body));
+      assert.match(result.body.error, /ffprobe could not confirm/);
+      assert.deepEqual(await fs.readFile(filePath), before);
+      assert.deepEqual(await readPostgresJob(database, fixture.id), beforeJob);
+      await assertClean(beforeJob.outputDir);
+    }
+  });
+
+  await context.test('rejects complete WAV headers with no sample payload despite a valid audio stream description', async () => {
+    const wavJob = await seedJob('empty-wave', { files: ['Original.wav'] });
+    const filePath = path.join(wavJob.outputDir, 'Original.wav');
+    const originalWav = wavAudio();
+    await fs.writeFile(filePath, originalWav);
+    const beforeJob = await readPostgresJob(database, wavJob.id);
+    const truncated = originalWav.subarray(0, 44);
+    const empty = Buffer.from(truncated);
+    empty.writeUInt32LE(36, 4);
+    empty.writeUInt32LE(0, 40);
+    for (const data of [truncated, empty]) {
+      assert.equal((await fileTypeFromBuffer(data)).ext, 'wav');
+      const result = await replace([{ name: 'empty.wav', data }], credentials.Owner[0], wavJob.id, 'Original.wav');
+      assert.equal(result.status, 400, JSON.stringify(result.body));
+      assert.match(result.body.error, /ffprobe could not confirm/);
+      assert.deepEqual(await fs.readFile(filePath), originalWav);
+      assert.deepEqual(await readPostgresJob(database, wavJob.id), beforeJob);
+      await assertClean(wavJob.outputDir);
+    }
+  });
+
+  await context.test('fails safely with an actionable error when ffprobe is unavailable', async () => {
+    const filePath = path.join(job.outputDir, songName);
+    const before = await fs.readFile(filePath);
+    const beforeJob = await readPostgresJob(database, job.id);
+    await fs.unlink(probePath);
+    try {
+      const result = await replace();
+      assert.equal(result.status, 400, JSON.stringify(result.body));
+      assert.match(result.body.error, /ffprobe is unavailable.*Install FFmpeg or check FFMPEG_PATH/);
+      assert.deepEqual(await fs.readFile(filePath), before);
+      assert.deepEqual(await readPostgresJob(database, job.id), beforeJob);
+      await assertClean();
+    } finally { await fs.symlink(path.join(ffmpegDirectory, probeName), probePath); }
   });
 
   await context.test('refreshes metadata, artwork, lyrics, search and stream revision while keeping all playlist links and locks', async () => {
@@ -336,19 +418,7 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
   });
 
   await context.test('accepts same-format WAV audio without conversion and rejects disguised MP3 content', async () => {
-    const wav = Buffer.alloc(204);
-    wav.write('RIFF');
-    wav.writeUInt32LE(wav.length - 8, 4);
-    wav.write('WAVEfmt ', 8);
-    wav.writeUInt32LE(16, 16);
-    wav.writeUInt16LE(1, 20);
-    wav.writeUInt16LE(1, 22);
-    wav.writeUInt32LE(8000, 24);
-    wav.writeUInt32LE(16000, 28);
-    wav.writeUInt16LE(2, 32);
-    wav.writeUInt16LE(16, 34);
-    wav.write('data', 36);
-    wav.writeUInt32LE(wav.length - 44, 40);
+    const wav = wavAudio();
     const wavJob = await seedJob('wave', { files: ['Original.wav'],
       transcriptions: { 'Original.wav': { status: 'failed', error: 'Stale failure' } } });
     await fs.writeFile(path.join(wavJob.outputDir, 'Original.wav'), wav);
@@ -435,6 +505,68 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
     await waitUntil(async () => !(await fs.readdir(shared.outputDir)).some((name) => name.startsWith('.replace-')));
     assert.equal((await replace(undefined, credentials.Admin[0], 'other-owner')).status, 200);
     await assertClean(shared.outputDir);
+  });
+
+  await context.test('updates every indexed alias and resets transcription while preserving alias-specific associations and locks', async () => {
+    const otherNoVocals = '[NoVocals]/Other instrumental.mp3';
+    const aliases = [await readPostgresJob(database, shared.id), await readPostgresJob(database, 'other-owner')];
+    for (const [index, alias] of aliases.entries()) {
+      const companion = index ? otherNoVocals : noVocalsName;
+      await fs.mkdir(path.dirname(path.join(alias.outputDir, companion)), { recursive: true });
+      await fs.writeFile(path.join(alias.outputDir, companion), kept);
+      alias.files.push(companion);
+      alias.songMetadata = { ...alias.songMetadata, [songName]: { title: `Obsolete alias title ${index}`, album: 'Obsolete album',
+        transcriptionLocked: index === 0 } };
+      alias.transcriptions = { ...alias.transcriptions, [songName]: { status: 'transcribed', noVocalsName: companion,
+        requestedAt: 'stale', completedAt: 'stale', options: { language: 'en' } } };
+      await writeJob(database, alias);
+    }
+    const untouched = await seedJob('same-folder-unrelated', { outputDir: shared.outputDir, files: ['keep.mp3'] });
+    const beforeUntouched = await readPostgresJob(database, untouched.id);
+    const revisions = await database.prepare('SELECT user_id, revision FROM user_catalog ORDER BY user_id').all();
+    const memberships = await database.prepare('SELECT * FROM library_memberships ORDER BY user_id, playlist_id, name').all();
+    const result = await replace([{ name: 'new.mp3', data: audio({ title: 'Shared alias replacement' }) }], credentials.Admin[0], shared.id);
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.metadata.transcriptionLocked, true);
+    for (const [index, alias] of aliases.entries()) {
+      const stored = await readPostgresJob(database, alias.id);
+      assert.equal(stored.songMetadata[songName].title, 'Shared alias replacement');
+      assert.equal(stored.songMetadata[songName].album, '');
+      assert.equal(stored.songMetadata[songName].transcriptionLocked, index === 0);
+      assert.deepEqual(stored.transcriptions[songName], { noVocalsName: index ? otherNoVocals : noVocalsName });
+      const headers = credentials[index ? 'Other' : 'Owner'][0];
+      const search = await call('/api/library/tracks?search=Shared%20alias%20replacement', 'GET', headers);
+      assert.equal(search.status, 200);
+      assert.ok(search.body.files.some((file) => file.jobId === alias.id && file.name === songName));
+      assert.equal((await call(`/api/library/tracks?search=Obsolete%20alias%20title%20${index}`, 'GET', headers)).body.files.length, 0);
+      const catalog = await database.prepare('SELECT revision FROM user_catalog WHERE user_id = $1').get(alias.initiatedBy.id);
+      assert.ok(catalog.revision > revisions.find((row) => row.user_id === alias.initiatedBy.id).revision);
+      const descriptor = (await call(`/api/jobs/${alias.id}/files`, 'GET', headers)).body.files.find((file) => file.name === songName);
+      assert.equal(descriptor.streamUrl, result.body.file.streamUrl.replace(shared.id, alias.id));
+      assert.deepEqual(await fs.readFile(path.join(alias.outputDir, index ? otherNoVocals : noVocalsName)), kept);
+    }
+    assert.deepEqual(await readPostgresJob(database, untouched.id), beforeUntouched);
+    assert.deepEqual(await database.prepare('SELECT * FROM library_memberships ORDER BY user_id, playlist_id, name').all(), memberships);
+    await assertClean(shared.outputDir);
+  });
+
+  await context.test('rolls back every alias and catalog revision when an alias database update fails', async () => {
+    const before = await fs.readFile(path.join(shared.outputDir, songName));
+    const beforeJobs = await Promise.all([shared.id, 'other-owner'].map((id) => readPostgresJob(database, id)));
+    const revisions = await database.prepare('SELECT user_id, revision FROM user_catalog ORDER BY user_id').all();
+    await database.exec(`CREATE FUNCTION fail_alias_replacement() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'Injected alias replacement failure'; END $$;
+      CREATE CONSTRAINT TRIGGER fail_alias_replacement AFTER UPDATE ON songs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+      WHEN (NEW.job_id = 'other-owner' AND NEW.metadata->>'title' = 'Reject alias replacement')
+      EXECUTE FUNCTION fail_alias_replacement()`);
+    try {
+      const result = await replace([{ name: 'new.mp3', data: audio({ title: 'Reject alias replacement' }) }], credentials.Admin[0], shared.id);
+      assert.equal(result.status, 500, JSON.stringify(result.body));
+      assert.deepEqual(await fs.readFile(path.join(shared.outputDir, songName)), before);
+      assert.deepEqual(await Promise.all([shared.id, 'other-owner'].map((id) => readPostgresJob(database, id))), beforeJobs);
+      assert.deepEqual(await database.prepare('SELECT user_id, revision FROM user_catalog ORDER BY user_id').all(), revisions);
+      await assertClean(shared.outputDir);
+    } finally { await database.exec('DROP TRIGGER fail_alias_replacement ON songs; DROP FUNCTION fail_alias_replacement()'); }
   });
 
   await context.test('rolls back the file and metadata when database commit fails', async () => {

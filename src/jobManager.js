@@ -810,6 +810,12 @@ export async function replaceJobFile(id, fileName, user, receiveFile) {
   let directory;
   try {
     return await mutateJobFiles(id, async () => {
+      const affected = [];
+      for (const alias of aliases) {
+        const currentJob = await getJob(alias.id);
+        if (currentJob?.files.includes(fileName)) affected.push(currentJob);
+      }
+      if (!affected.some((alias) => alias.id === id)) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
       const outputDir = await fs.realpath(job.outputDir);
       const filePath = path.join(outputDir, fileName.startsWith('[NoVocals]/') ? '[NoVocals]' : '', path.basename(fileName));
       const realPath = await fs.realpath(filePath).catch(() => null);
@@ -825,17 +831,23 @@ export async function replaceJobFile(id, fileName, user, receiveFile) {
       const backup = path.join(directory, 'original');
       await receiveFile(staged);
       const metadata = await readSongMetadata(staged);
-      metadata.transcriptionLocked = Boolean(job.songMetadata?.[fileName]?.transcriptionLocked);
       const indexed = { ...Object.fromEntries(songMetadataFields.map((field) => [field, metadata[field]])),
-        rating: metadata.rating, transcriptionLocked: metadata.transcriptionLocked };
-      const noVocalsName = job.transcriptions?.[fileName]?.noVocalsName;
-      const transcription = noVocalsName && noVocalsName !== fileName && isValidJobFileName(noVocalsName)
-        && job.files.includes(noVocalsName) ? { noVocalsName } : null;
-      const updatedJob = { ...job, updatedAt: new Date().toISOString(),
-        songMetadata: { ...job.songMetadata, [fileName]: indexed },
-        transcriptions: { ...job.transcriptions } };
-      if (transcription) updatedJob.transcriptions[fileName] = transcription;
-      else delete updatedJob.transcriptions[fileName];
+        rating: metadata.rating };
+      const updatedAt = new Date().toISOString();
+      const updatedJobs = affected.map((alias) => {
+        const noVocalsName = alias.transcriptions?.[fileName]?.noVocalsName;
+        const transcription = noVocalsName && noVocalsName !== fileName && isValidJobFileName(noVocalsName)
+          && alias.files.includes(noVocalsName) ? { noVocalsName } : null;
+        const updated = { ...alias, updatedAt,
+          songMetadata: { ...alias.songMetadata, [fileName]: { ...indexed,
+            transcriptionLocked: Boolean(alias.songMetadata?.[fileName]?.transcriptionLocked) } },
+          transcriptions: { ...alias.transcriptions } };
+        if (transcription) updated.transcriptions[fileName] = transcription;
+        else delete updated.transcriptions[fileName];
+        return updated;
+      });
+      const updatedJob = updatedJobs.find((alias) => alias.id === id);
+      metadata.transcriptionLocked = updatedJob.songMetadata[fileName].transcriptionLocked;
       await fs.chmod(staged, original.mode & 0o777);
       const revision = new Date(Math.max(Date.now(), Math.ceil(original.mtimeMs) + 1));
       await fs.utimes(staged, revision, revision);
@@ -851,8 +863,10 @@ export async function replaceJobFile(id, fileName, user, receiveFile) {
         await fs.rename(staged, filePath);
         replaced = true;
         await withTransaction(database, async () => {
-          await updatePostgresSong(database, updatedJob, fileName, 'metadata', indexed);
-          await updatePostgresSong(database, updatedJob, fileName, 'transcription', transcription);
+          for (const alias of updatedJobs) {
+            await updatePostgresSong(database, alias, fileName, 'metadata', alias.songMetadata[fileName]);
+            await updatePostgresSong(database, alias, fileName, 'transcription', alias.transcriptions[fileName] || null);
+          }
         });
       } catch (error) {
         if (replaced) await fs.rename(backup, filePath);

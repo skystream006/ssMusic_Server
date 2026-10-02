@@ -72,7 +72,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     const padded = Buffer.concat([Buffer.alloc(4096), frames]);
     const mp3 = { name: 'Padded.mp3', path: path.join(directory, 'padded-mp3') };
     await fs.writeFile(mp3.path, padded);
-    const audioStream = { codec_type: 'audio', codec_name: 'mp3', sample_rate: '44100', channels: 2 };
+    const audioStream = { index: 0, codec_type: 'audio', codec_name: 'mp3', sample_rate: '44100', channels: 2 };
     let metadata = { format: { format_name: 'mp3' }, streams: [audioStream] };
     let probeError;
     const probe = probeContext.mock.method(childProcess, 'execFile', (executable, args, options, done) => {
@@ -90,6 +90,21 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     await imports.validateImportAudio(file);
     await assert.rejects(imports.validateImportAudio({ ...file, name: 'wrong.mp3' }), /detected WAV, expected MP3/);
     assert.equal(probe.mock.callCount(), 1);
+
+    for (const frames of [undefined, [], [{ media_type: 'audio', stream_index: 0, nb_samples: 0 }],
+      [{ media_type: 'video', stream_index: 0, nb_samples: 1024 }], [{ media_type: 'audio', stream_index: 1, nb_samples: 1024 }]]) {
+      metadata.frames = frames;
+      await assert.rejects(imports.validateImportAudio(mp3, { requireProbe: true }), /ffprobe could not confirm MP3 audio/);
+    }
+    metadata.frames = [{ media_type: 'audio', stream_index: 0, nb_samples: 1024 }];
+    assert.equal((await imports.validateImportAudio(mp3, { requireProbe: true })).size, padded.length);
+    const strictArguments = probe.mock.calls.at(-1).arguments[1];
+    assert.equal(strictArguments[strictArguments.indexOf('-read_intervals') + 1], '%+#64');
+    assert.ok(strictArguments.includes('-show_frames'));
+    assert.match(strictArguments[strictArguments.indexOf('-show_entries') + 1], /frame=media_type,stream_index,nb_samples/);
+    delete metadata.frames;
+    assert.equal((await imports.validateImportAudio(mp3)).size, padded.length);
+    assert.ok(!probe.mock.calls.at(-1).arguments[1].includes('-show_frames'));
 
     metadata.streams.push({ codec_type: 'video', disposition: { attached_pic: 1 } });
     assert.equal((await imports.validateImportAudio(mp3)).size, padded.length);

@@ -1087,7 +1087,9 @@ copy refresh after replacement, and the player reloads the new audio.
 
 Only the job owner, contributors, or an administrator can replace songs.
 Active downloads and conflicting mutations or transcriptions return `409`.
-Invalid uploads leave the original file unchanged.
+The server requires FFmpeg's `ffprobe` (configured through `FFMPEG_PATH`) to
+verify an audio stream before replacement. Invalid uploads or unavailable
+validation tools leave the original file unchanged.
 
 `POST /api/jobs/:id/files/:name/replace` accepts `multipart/form-data` with exactly
 one `file` field and no other fields. URL-encode the full server filename,

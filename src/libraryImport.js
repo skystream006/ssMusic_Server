@@ -141,7 +141,7 @@ function ffmpegExecutable(name) {
   return path.join(directory, process.platform === 'win32' ? `${name}.exe` : name);
 }
 
-async function probeImportAudio(file, extension) {
+async function probeImportAudio(file, extension, requireFrames = false) {
   const formats = { '.mp3': 'mp3', '.wav': 'wav', '.flac': 'flac', '.m4a': 'mp4',
     '.aac': 'aac', '.ogg': 'ogg', '.opus': 'ogg', '.wma': 'asf' };
   const codecs = { '.mp3': 'mp3', '.flac': 'flac', '.aac': 'aac', '.opus': 'opus' };
@@ -149,7 +149,8 @@ async function probeImportAudio(file, extension) {
     const stdout = await new Promise((resolve, reject) => {
       childProcess.execFile(ffmpegExecutable('ffprobe'), ['-v', 'error', '-protocol_whitelist', 'file,pipe',
         '-format_whitelist', 'mp3,wav,flac,mov,aac,ogg,asf', '-probesize', '1048576', '-analyzeduration', '5000000',
-        '-show_entries', 'format=format_name:stream=codec_type,codec_name,sample_rate,channels:stream_disposition=attached_pic',
+        ...(requireFrames ? ['-read_intervals', '%+#64', '-show_frames'] : []),
+        '-show_entries', `format=format_name:stream=codec_type,codec_name,sample_rate,channels${requireFrames ? ',index' : ''}:stream_disposition=attached_pic${requireFrames ? ':frame=media_type,stream_index,nb_samples' : ''}`,
         '-of', 'json', path.resolve(file.path)], { timeout: 15000, maxBuffer: 64 * 1024, windowsHide: true },
       (error, output) => error ? reject(error) : resolve(output));
     });
@@ -157,17 +158,19 @@ async function probeImportAudio(file, extension) {
     return metadata.format?.format_name?.split(',').includes(formats[extension])
       && Array.isArray(metadata.streams)
       && metadata.streams.some((stream) => stream.codec_type === 'audio' && Number(stream.sample_rate) > 0
-        && stream.channels > 0 && (!codecs[extension] || stream.codec_name === codecs[extension]))
+        && stream.channels > 0 && (!codecs[extension] || stream.codec_name === codecs[extension])
+        && (!requireFrames || (Array.isArray(metadata.frames) && metadata.frames.some((frame) => frame.media_type === 'audio'
+          && frame.stream_index === stream.index && Number(frame.nb_samples) > 0))))
       && !metadata.streams.some((stream) => stream.codec_type === 'video' && stream.disposition?.attached_pic !== 1);
   } catch (error) {
     if (error.code === 'ENOENT' || error.code === 'EACCES') {
-      throw failure(`Cannot validate audio: ${file.name}. Its signature is unrecognized and ffprobe is unavailable. Install FFmpeg or check FFMPEG_PATH.`);
+      throw failure(`Cannot validate audio: ${file.name}. ffprobe is unavailable. Install FFmpeg or check FFMPEG_PATH.`);
     }
     return false;
   }
 }
 
-export async function validateImportAudio(file, { local = false } = {}) {
+export async function validateImportAudio(file, { local = false, requireProbe = false } = {}) {
   const extension = path.extname(file.name).toLowerCase();
   if (!isSongFile(file.name)) throw failure(`Unsupported audio file: ${file.name}`);
   const { size } = await fs.stat(file.path);
@@ -175,9 +178,10 @@ export async function validateImportAudio(file, { local = false } = {}) {
   if (!local && size > maxAudioBytes) throw failure(`Audio file exceeds the 512 MB limit: ${file.name}`, 413);
   const type = await fileTypeFromFile(file.path).catch(() => null);
   const expected = { '.m4a': ['m4a', 'mp4'], '.wma': ['asf'], '.opus': ['opus', 'ogg'] }[extension] || [extension.slice(1)];
-  if (type ? !expected.includes(type.ext) : !await probeImportAudio(file, extension)) {
-    const reason = type ? `detected ${type.ext.toUpperCase()}, expected ${extension.slice(1).toUpperCase()}`
-      : `unrecognized signature; ffprobe could not confirm ${extension.slice(1).toUpperCase()} audio`;
+  const mismatched = type && !expected.includes(type.ext);
+  if (mismatched || ((!type || requireProbe) && !await probeImportAudio(file, extension, requireProbe))) {
+    const reason = mismatched ? `detected ${type.ext.toUpperCase()}, expected ${extension.slice(1).toUpperCase()}`
+      : `ffprobe could not confirm ${extension.slice(1).toUpperCase()} audio`;
     throw failure(`Invalid or mismatched audio: ${file.name} (${reason}). Re-export or convert the original file; changing its extension is not enough.`);
   }
   return { ...file, size };
