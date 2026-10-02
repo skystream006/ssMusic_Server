@@ -17,13 +17,14 @@ export function parseSyltText(value) {
   for (const [index, line] of value.split(/\r\n|\r|\n/).entries()) {
     if (!line.trim()) continue;
     if (entries.length >= 10000) throw new Error('SYLT supports at most 10,000 lines.');
-    const match = line.match(/^\[([0-9]{2,4}):([0-9]{2}):([0-9]{2})\.([0-9]+)\] ?(.*)$/);
+    const match = line.match(/^\[([0-9]{2,4}):([0-9]{2}):([0-9]{2})\.([0-9]+)\] ?(.*)$/s);
     if (!match) throw new Error(`SYLT line ${index + 1}: use [HH:MM:SS.mmm] text.`);
     const [, hours, minutes, seconds, fraction, escaped] = match;
     if (Number(minutes) > 59 || Number(seconds) > 59) {
       throw new Error(`SYLT line ${index + 1}: minutes and seconds must be 00–59.`);
     }
-    const time = Number(hours) * 3600 + Number(minutes) * 60 + Number(`${seconds}.${fraction}`);
+    const wholeSeconds = Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds);
+    const time = Number(`${wholeSeconds}.${fraction}`);
     if (time > 4294967.295) throw new Error(`SYLT line ${index + 1}: time must be between 0 and 4294967.295 seconds.`);
     const text = escaped.replace(/\\([\\nr])/g, (_, character) => ({ n: '\n', r: '\r', '\\': '\\' })[character]);
     textLength += text.length;

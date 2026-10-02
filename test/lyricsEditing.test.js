@@ -9,6 +9,7 @@ test('SYLT editor text round-trips timestamps, empty lyrics, whitespace and esca
     { time: 62.345, text: 'First\nsecond\r\nthird' },
     { time: 62.345, text: 'Literal \\n, \\r, \\unknown and \\' },
     { time: 3600.007, text: 'Tiếng Việt 🎵' },
+    { time: 3601.029, text: 'Unicode\u2028line\u2029separators' },
     { time: 4294967.295, text: 'Last supported time' }
   ];
   const text = formatSyltForEdit(lines);
@@ -18,6 +19,7 @@ test('SYLT editor text round-trips timestamps, empty lyrics, whitespace and esca
     '[00:01:02.345] First\\nsecond\\r\\nthird',
     '[00:01:02.345] Literal \\\\n, \\\\r, \\\\unknown and \\\\',
     '[01:00:00.007] Tiếng Việt 🎵',
+    '[01:00:01.029] Unicode\u2028line\u2029separators',
     '[1193:02:47.295] Last supported time'
   ].join('\n'));
   assert.deepEqual(parseSyltText(text), lines);
@@ -51,7 +53,7 @@ test('SYLT parsing rejects malformed or out-of-range timestamps with the physica
 });
 
 test('SYLT limits count decoded text and timestamped entries, not timestamp syntax or blank rows', () => {
-  const manyLines = `${'[00:00:00.000]\n\n'.repeat(10000)}`;
+  const manyLines = '[00:00:00.000]\n\n'.repeat(10000);
   assert.equal(parseSyltText(manyLines).length, 10000);
   assert.throws(() => parseSyltText(`${manyLines}[00:00:01.000]`), /at most 10,000 lines/);
   const text = '\\n'.repeat(100000);
@@ -84,4 +86,11 @@ test('all changed drafts are validated, while untouched legacy lyrics do not blo
   const metadata = { sylt: [{ time: 1, text: 'Legacy\0text' }], uslt: 'Legacy\0USLT' };
   assert.deepEqual(buildLyricsUpdate(metadata, formatSyltForEdit(metadata.sylt), 'Updated USLT'), { uslt: 'Updated USLT' });
   assert.deepEqual(buildLyricsUpdate(metadata, '', metadata.uslt), { sylt: [] });
+});
+
+test('adding ignored blank rows does not change millisecond timestamps through floating-point addition', () => {
+  const metadata = { sylt: [61.029, 120.123, 3661.029, 4294967.295].map((time) => ({ time, text: 'Unchanged' })) };
+  const text = formatSyltForEdit(metadata.sylt);
+  assert.deepEqual(parseSyltText(text), metadata.sylt);
+  assert.deepEqual(buildLyricsUpdate(metadata, `\n${text}\n`, ''), {});
 });
