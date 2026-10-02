@@ -14,6 +14,7 @@ let TranscriptionStatus;
 let SongGroups;
 let findNoVocals;
 let queueSongNext;
+let replaceSongFile;
 let formatLyricsForCopy;
 let LyricsEditor;
 let ExportLibraryDialog;
@@ -28,7 +29,7 @@ let LibraryAccessList;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, ReplaceFileDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -176,6 +177,25 @@ test('song replacement actions respect audio formats, permissions and busy state
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+});
+
+test('replacing queued audio also refreshes nested karaoke versions without losing playlist identity', () => {
+  const original = { jobId: 'job', name: 'Song.mp3', playlistId: 'playlist', playlistTitle: 'Playlist' };
+  const noVocals = { ...original, name: '[NoVocals]/Song.mp3', streamUrl: '/old', title: 'Old title',
+    transcription: { status: 'transcribed' } };
+  original.noVocalsVersion = { ...noVocals };
+  const other = { ...noVocals, jobId: 'other' };
+  const queue = [original, noVocals, other];
+  const file = { name: noVocals.name, title: 'Replacement', artist: '', streamUrl: '/new', sizeBytes: 123 };
+  const updated = replaceSongFile(queue, 'job', file.name, file);
+  assert.deepEqual(updated[1], { ...noVocals, ...file, transcription: undefined });
+  assert.deepEqual(updated[0].noVocalsVersion, updated[1]);
+  assert.equal(updated[0].name, original.name);
+  assert.equal(updated[0].playlistId, 'playlist');
+  assert.equal(updated[2], other);
+  assert.equal(queue[1].streamUrl, '/old');
+  assert.equal(queueSongNext(updated, JSON.stringify(['job', original.name]), updated[0].noVocalsVersion)[1].streamUrl, '/new');
+  assert.equal(replaceSongFile(null, 'job', file.name, file), undefined);
 });
 
 test('track search matches artist, album and other song metadata in unpaged views', () => {

@@ -550,11 +550,14 @@ export async function setJobTitle(id, title, user = null) {
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 200 || /[\x00-\x1f\x7f]/.test(title)) {
     throw Object.assign(new Error('Playlist title must be between 1 and 200 characters without control characters'), { statusCode: 400 });
   }
-  job.playlistTitle = title.trim();
-  job.playlistTitleOverride = job.playlistTitle;
-  job.updatedAt = new Date().toISOString();
-  await persistJob(job);
-  return job;
+  jobMutations.add(id);
+  try {
+    job.playlistTitle = title.trim();
+    job.playlistTitleOverride = job.playlistTitle;
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+    return job;
+  } finally { jobMutations.delete(id); }
 }
 
 export async function importJobFiles({ files, playlistId, playlistTitle, source = 'files', individual = false, playlistSongCount, downloadType = 'audio' }, user) {
@@ -634,9 +637,12 @@ export async function rerunJob(id, user = null) {
   job.output = null;
   job.updatedAt = new Date().toISOString();
 
-  await persistJob(job);
-  startJob(job);
-  return job;
+  jobMutations.add(id);
+  try {
+    await persistJob(job);
+    startJob(job);
+    return job;
+  } finally { jobMutations.delete(id); }
 }
 
 export async function deleteJob(id, user = null) {
@@ -805,7 +811,7 @@ export async function replaceJobFile(id, fileName, user, receiveFile) {
   try {
     return await mutateJobFiles(id, async () => {
       const outputDir = await fs.realpath(job.outputDir);
-      const filePath = path.join(outputDir, fileName);
+      const filePath = path.join(outputDir, fileName.startsWith('[NoVocals]/') ? '[NoVocals]' : '', path.basename(fileName));
       const realPath = await fs.realpath(filePath).catch(() => null);
       if (!realPath) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
       if (realPath !== filePath || !isFileInsideJobFolder({ outputDir }, realPath)) {
@@ -833,6 +839,11 @@ export async function replaceJobFile(id, fileName, user, receiveFile) {
       await fs.chmod(staged, original.mode & 0o777);
       const revision = new Date(Math.max(Date.now(), Math.ceil(original.mtimeMs) + 1));
       await fs.utimes(staged, revision, revision);
+      const current = await fs.lstat(filePath);
+      if (await fs.realpath(filePath) !== filePath || current.ino !== original.ino || current.dev !== original.dev
+        || current.size !== original.size || current.mtimeMs !== original.mtimeMs || current.ctimeMs !== original.ctimeMs) {
+        throw Object.assign(new Error('The original song changed during upload. Refresh and try again.'), { statusCode: 409 });
+      }
       // A hard link keeps the original available for rollback without an extra audio-sized copy.
       await fs.link(filePath, backup);
       let replaced = false;
@@ -933,16 +944,19 @@ export async function setJobContributors(id, userIds, user = null) {
     error.statusCode = 400;
     throw error;
   }
-  const available = new Map((await getAvailableContributors(id, user)).map((candidate) => [candidate.id, candidate]));
-  if (userIds.some((userId) => !available.has(userId))) {
-    const error = new Error('Contributors must be approved users other than the job owner');
-    error.statusCode = 400;
-    throw error;
-  }
-  job.contributors = [...new Set(userIds)].map((userId) => available.get(userId));
-  job.updatedAt = new Date().toISOString();
-  await persistJob(job);
-  return job;
+  jobMutations.add(id);
+  try {
+    const available = new Map((await getAvailableContributors(id, user)).map((candidate) => [candidate.id, candidate]));
+    if (userIds.some((userId) => !available.has(userId))) {
+      const error = new Error('Contributors must be approved users other than the job owner');
+      error.statusCode = 400;
+      throw error;
+    }
+    job.contributors = [...new Set(userIds)].map((userId) => available.get(userId));
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+    return job;
+  } finally { jobMutations.delete(id); }
 }
 
 export async function getJobs(userId) {

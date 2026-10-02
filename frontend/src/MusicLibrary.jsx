@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ArrowRightLeft, CalendarClock, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
-import MusicPlayer, { usePlayback } from './MusicPlayer.jsx';
+import MusicPlayer, { replaceSongFile, usePlayback } from './MusicPlayer.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
 import { getPlaylistIds, songKey } from '../../src/library.js';
@@ -932,8 +932,8 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     }} />}
     {replacingFile && <ReplaceFileDialog file={replacingFile} jobId={replacingFile.jobId} request={request} onClose={() => setReplacingFile(null)} onSaved={(result) => {
       playback.replaceFile(replacingFile.jobId, replacingFile.name, result);
-      setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(replacingFile)
-        ? { ...track, ...result.file, transcription: undefined } : track) } : current);
+      setTrackResult((current) => current ? { ...current,
+        files: replaceSongFile(current.files, replacingFile.jobId, replacingFile.name, result.file) } : current);
       setRefresh((value) => value + 1);
     }} />}
     {folderDialog && <FolderDialog folder={folderDialog.folder} parentId={folderDialog.parentId} folders={possibleFolders(folderDialog.folder?.id)} saving={saving} onSave={saveFolder} onClose={() => setFolderDialog(null)} />}

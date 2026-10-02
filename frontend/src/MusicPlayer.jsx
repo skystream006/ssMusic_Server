@@ -97,6 +97,13 @@ export function queueSongNext(songs, selected, track) {
   return queue;
 }
 
+export function replaceSongFile(tracks, jobId, name, file) {
+  const matches = (track) => track?.jobId === jobId && track.name === name;
+  const replace = (track) => ({ ...track, ...file, transcription: undefined });
+  return tracks?.map((track) => matches(track) ? replace(track)
+    : matches(track.noVocalsVersion) ? { ...track, noVocalsVersion: replace(track.noVocalsVersion) } : track);
+}
+
 export function SongGroups({ tracks, children }) {
   const originals = tracks.filter((track) => !isNoVocals(track));
   const noVocals = tracks.filter(isNoVocals);
@@ -269,8 +276,10 @@ export function PlaybackProvider({ children, request }) {
   }
 
   function replaceFile(jobId, name, result) {
-    setSongs((current) => current?.map((track) => track.jobId === jobId && track.name === name
-      ? { ...track, ...result.file } : track));
+    if (selectedRef.current === JSON.stringify([jobId, name])) {
+      autoPlayRef.current = Boolean(audioRef.current && !audioRef.current.paused);
+    }
+    setSongs((current) => replaceSongFile(current, jobId, name, result.file));
   }
 
   function removeJob(jobId) {
