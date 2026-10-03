@@ -296,7 +296,7 @@ export function ReplaceFileDialog({ file, jobId, request, onSaved, onClose }) {
   </dialog>;
 }
 
-export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
+export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnly = false }) {
   const dialogRef = useRef(null);
   const uploadRef = useRef(null);
   const headingId = useId();
@@ -360,7 +360,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
 
   async function save(event) {
     event.preventDefault();
-    if (!values || saving || readingImage) return;
+    if (readOnly || !values || saving || readingImage) return;
     setSaving(true);
     setError('');
     try {
@@ -379,25 +379,27 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose }) {
   return <dialog ref={dialogRef} className="confirmation-dialog metadata-dialog" aria-labelledby={headingId}
     onCancel={(event) => { event.preventDefault(); if (!saving && !readingImage) onClose(); }}>
     <form onSubmit={save}>
-      <div className="folder-dialog-heading"><h2 id={headingId}>Edit song metadata</h2>
-        <TranscriptionLockButton locked={transcriptionLocked} disabled={loading || saving || readingImage} onChange={setTranscriptionLocked} />
-        <button className="music-icon-button" type="button" title="Close" aria-label="Close metadata editor" disabled={saving || readingImage} onClick={onClose}><X size={18} /></button></div>
+      <div className="folder-dialog-heading"><h2 id={headingId}>{readOnly ? 'View song metadata' : 'Edit song metadata'}</h2>
+        {readOnly ? <span role="img" aria-label={transcriptionLocked ? 'Transcription locked' : 'Transcription unlocked'}>
+          {transcriptionLocked ? <Lock size={18} /> : <LockOpen size={18} />}
+        </span> : <TranscriptionLockButton locked={transcriptionLocked} disabled={loading || saving || readingImage} onChange={setTranscriptionLocked} />}
+        <button className="music-icon-button" type="button" title="Close" aria-label={readOnly ? 'Close metadata viewer' : 'Close metadata editor'} disabled={saving || readingImage} onClick={onClose}><X size={18} /></button></div>
       <p className="metadata-filename">{file.name}</p>
       {loading && <p role="status">Loading metadata...</p>}
-      {values && editableMetadata && <fieldset disabled={saving || readingImage} className="metadata-fields">
-        <SongRating value={values.rating} onChange={(rating) => setValues((current) => ({ ...current, rating }))} />
+      {values && (editableMetadata || readOnly) && <fieldset disabled={saving || readingImage} className="metadata-fields">
+        <SongRating value={values.rating} onChange={readOnly ? undefined : (rating) => setValues((current) => ({ ...current, rating }))} />
         <div className="metadata-artwork"><div className="metadata-artwork-preview">{artwork ? <img src={artwork} alt="Song artwork preview" /> : <Music2 size={40} />}</div>
-          <div><input ref={uploadRef} type="file" accept="image/jpeg,image/png,image/webp" aria-label="Artwork file" hidden onChange={chooseArtwork} />
+          {!readOnly && <div><input ref={uploadRef} type="file" accept="image/jpeg,image/png,image/webp" aria-label="Artwork file" hidden onChange={chooseArtwork} />
             <button className="secondary-button compact-button" type="button" onClick={() => uploadRef.current.click()}><ImagePlus size={17} />Choose artwork</button>
-            <button className="music-icon-button" type="button" title="Remove artwork" aria-label="Remove artwork" disabled={!artwork} onClick={() => { setArtwork(null); setArtworkChanged(true); }}><Trash2 size={17} /></button></div>
+            <button className="music-icon-button" type="button" title="Remove artwork" aria-label="Remove artwork" disabled={!artwork} onClick={() => { setArtwork(null); setArtworkChanged(true); }}><Trash2 size={17} /></button></div>}
         </div>
         <div className="metadata-inputs">{fields.map(([field, label]) => <label key={field} htmlFor={`${headingId}-${field}`}>{label}
-          <input id={`${headingId}-${field}`} value={values[field]} maxLength={500} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />
+          <input id={`${headingId}-${field}`} value={values[field]} readOnly={readOnly} maxLength={500} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />
         </label>)}</div>
       </fieldset>}
       {error && <p className="notice error" role="alert">{error}</p>}
-      <div className="dialog-actions"><button className="secondary-button" type="button" disabled={saving || readingImage} onClick={onClose}>Cancel</button>
-        <button className="primary-button" type="submit" disabled={loading || !values || saving || readingImage}>{saving ? <RefreshCw className="spin" size={17} /> : <Save size={17} />}{saving ? 'Saving...' : 'Save changes'}</button></div>
+      <div className="dialog-actions"><button className="secondary-button" type="button" disabled={saving || readingImage} onClick={onClose}>{readOnly ? 'Close' : 'Cancel'}</button>
+        {!readOnly && <button className="primary-button" type="submit" disabled={loading || !values || saving || readingImage}>{saving ? <RefreshCw className="spin" size={17} /> : <Save size={17} />}{saving ? 'Saving...' : 'Save changes'}</button>}</div>
     </form>
   </dialog>;
 }

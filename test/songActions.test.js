@@ -8,6 +8,7 @@ let server;
 let SongActions;
 let SongRating;
 let ListSongRating;
+let MetadataDialog;
 let ReplaceFileDialog;
 let ShareMediaDialog;
 let TranscriptionDialog;
@@ -31,7 +32,7 @@ let LibraryAccessList;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, SongRating, ListSongRating, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -199,23 +200,61 @@ test('Shared library grants support multiple checked users and saving states', (
   assert.equal((saving.match(/disabled=""/g) || []).length, 4);
 });
 
-test('Shared playlist rows retain playback but omit server mutation controls', () => {
+test('Shared playlist rows retain playback and metadata viewing but omit server mutation controls', () => {
   const previousWindow = globalThis.window;
   globalThis.window = { location: { search: '' } };
   try {
     const track = { jobId: 'job', playlistId: 'playlist', name: 'Song.mp3', playlistTitle: 'Playlist', downloadUrl: '/song' };
+    const names = ['Song.mp3', '[NoVocals]/Song.MP3', 'Song.flac', 'Movie.mp4'];
     const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
-      libraryView: { readOnly: true, tracks: [track], title: 'Playlist', selectedId: 'playlist',
+      libraryView: { readOnly: true, tracks: names.map((name) => ({ ...track, name })), title: 'Playlist', selectedId: 'playlist',
         songState: () => ({ canModify: false, disabled: true }) }
     })));
     assert.match(html, /aria-label="Play Song.mp3"/);
     assert.match(html, /aria-label="Download Song.mp3"/);
+    const metadataButtons = html.match(/<button[^>]*aria-label="View metadata [^"]+"[^>]*>/g) || [];
+    assert.equal(metadataButtons.length, 6);
+    for (const name of names.slice(0, -1)) {
+      assert.equal(metadataButtons.filter((button) => button.includes(`aria-label="View metadata ${name}"`)).length, 2);
+    }
+    for (const button of metadataButtons) {
+      assert.match(button, /title="View song metadata"/);
+      assert.match(button, /aria-haspopup="dialog"/);
+      assert.doesNotMatch(button, /disabled/);
+    }
+    assert.doesNotMatch(html, /aria-label="View metadata Movie.mp4"/);
     assert.doesNotMatch(html, /aria-label="(?:Drag|Move|Transcribe|Delete|Edit metadata|Replace File|Select songs)/);
     assert.doesNotMatch(html, /draggable="true"/);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+});
+
+test('metadata viewer has close controls but no save or transcription-lock actions', () => {
+  for (const transcriptionLocked of [false, true]) {
+    const html = renderToStaticMarkup(createElement(MetadataDialog, {
+      file: { name: 'Song.mp3', transcriptionLocked }, jobId: 'job', readOnly: true, request() {}, onClose() {}
+    }));
+    assert.match(html, /<h2[^>]*>View song metadata<\/h2>/);
+    assert.match(html, /aria-label="Close metadata viewer"/);
+    assert.match(html, /type="button">Close<\/button>/);
+    assert.match(html, new RegExp(`aria-label="Transcription ${transcriptionLocked ? 'locked' : 'unlocked'}"`));
+    assert.match(html, /Loading metadata/);
+    assert.doesNotMatch(html, /Save changes|Cancel|type="submit"|type="file"|type="radio"|Choose artwork|Remove artwork|(?:Unlock|Lock) transcription/);
+  }
+});
+
+test('metadata dialog remains editable by default for existing callers', () => {
+  const html = renderToStaticMarkup(createElement(MetadataDialog, {
+    file: { name: 'Song.mp3' }, jobId: 'job', request() {}, onSaved() {}, onClose() {}
+  }));
+  assert.match(html, /<h2[^>]*>Edit song metadata<\/h2>/);
+  assert.match(html, /aria-label="Close metadata editor"/);
+  assert.match(html, /aria-label="Lock transcription"/);
+  assert.match(html, /type="submit" disabled=""/);
+  assert.match(html, /Save changes/);
+  assert.match(html, /type="button">Cancel<\/button>/);
 });
 
 test('replacement dialog accepts one matching-format song and warns about overwriting linked copies', () => {

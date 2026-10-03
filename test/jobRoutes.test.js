@@ -223,6 +223,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     const ownerLibrary = await call('/api/library', 'GET', credentials.Owner[0]);
     const ownerPreferences = (await call('/api/preferences', 'GET', credentials.Owner[0])).body;
     const userPath = `/api/admin/users/${users.Reader.id}`;
+    const metadataName = encodeURIComponent(`[NoVocals]/${songName}`);
+    const metadataReadPath = `/api/jobs/music/lyrics/${metadataName}`;
+    const ownerMetadata = (await call(metadataReadPath, 'GET', credentials.Owner[0])).body;
     for (const headers of [credentials.Reader[0], mobileHeaders.Reader]) {
       const renamed = await call('/api/auth/me', 'PATCH', headers, { name: 'Shared Reader' });
       assert.equal(renamed.status, 200, renamed.text);
@@ -257,7 +260,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       assert.deepEqual(tracks.body.files.find((track) => track.jobId === 'music' && track.name === songName).transcription, sharedTranscription);
       assert.equal((await call(`/api/library?userId=${users.Admin.id}`, 'GET', headers)).status, 200);
       for (const route of [`/api/library?userId=${users.Other.id}`, `/api/library/tracks?userId=${users.Other.id}`,
-        `/api/jobs/unowned/stream/${encodeURIComponent(songName)}`, '/api/jobs/music/download-all', '/api/jobs', '/api/jobs/music',
+        `/api/jobs/unowned/stream/${encodeURIComponent(songName)}`, `/api/jobs/unowned/lyrics/${encodeURIComponent(songName)}`,
+        '/api/jobs/music/download-all', '/api/jobs', '/api/jobs/music',
         '/api/jobs/music/files', '/api/admin/users', '/api/library/export', '/api/library/export?source=latest']) {
         assert.equal((await call(route, 'GET', headers)).status, 403, route);
       }
@@ -266,6 +270,16 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
         assert.equal(result.status, 200, route);
         if (route === 'lyrics') assert.equal(result.body.canEdit, false);
       }
+      const metadata = await call(metadataReadPath, 'GET', headers);
+      assert.equal(metadata.status, 200, metadata.text);
+      assert.equal(metadata.headers['cache-control'], 'no-store');
+      assert.deepEqual(metadata.body, { ...ownerMetadata, canEdit: false });
+      assert.equal(metadata.body.title, 'A song');
+      assert.equal(metadata.body.artist, 'An artist');
+      assert.equal(metadata.body.rating, 3);
+      assert.equal((await call(`/api/jobs/music/files/${metadataName}/metadata`, 'PATCH', headers,
+        { title: 'Not allowed', rating: 5, artwork: null, transcriptionLocked: true })).status, 403);
+      assert.deepEqual(await fs.readFile(path.join(musicDir, '[NoVocals]', songName)), taggedAudio);
       const partial = await call(`/api/jobs/music/stream/${encodeURIComponent(songName)}`, 'GET', { ...headers, Range: 'bytes=0-1' });
       assert.equal(partial.status, 206);
       for (const [route, method] of [['/api/jobs', 'POST'], ['/api/jobs/music', 'DELETE'], ['/api/jobs/music/title', 'PATCH'],
@@ -282,6 +296,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     assert.equal((await call(userPath, 'PATCH', credentials.Admin[0], { sharedUserIds: [] })).status, 200);
     assert.equal((await call('/api/library', 'GET', credentials.Reader[0])).body.songCount, 0);
     assert.equal((await call(`/api/jobs/music/stream/${encodeURIComponent(songName)}`, 'GET', credentials.Reader[0])).status, 403);
+    for (const headers of [...credentials.Reader, mobileHeaders.Reader]) {
+      assert.equal((await call(metadataReadPath, 'GET', headers)).status, 403);
+    }
     assert.deepEqual((await call('/api/library', 'GET', credentials.Owner[0])).body, ownerLibrary.body);
     assert.equal((await call(userPath, 'DELETE', credentials.Admin[0])).status, 204);
   });
