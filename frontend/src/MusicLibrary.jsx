@@ -928,7 +928,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       saving: saving || tracksLoading || searchPending, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
     {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
     {sharingFile && <ShareMediaDialog file={sharingFile} jobId={sharingFile.jobId} request={request} onClose={() => setSharingFile(null)} />}
-    {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
+    {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} readOnly={readOnly} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
       metadataSaved(editingMetadata, result);
       setRefresh((value) => value + 1);
     }} />}
