@@ -15,6 +15,8 @@ let TranscriptionStatus;
 let SongGroups;
 let findNoVocals;
 let queueSongNext;
+let nextPlaybackSong;
+let nextRepeatMode;
 let replaceSongFile;
 let formatLyricsForCopy;
 let LyricsEditor;
@@ -30,7 +32,7 @@ let LibraryAccessList;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -38,6 +40,87 @@ before(async () => {
 });
 
 after(async () => { await server?.close(); });
+
+test('repeat cycles from off through queue and one song back to off', () => {
+  assert.equal(nextRepeatMode('off'), 'all');
+  assert.equal(nextRepeatMode('all'), 'one');
+  assert.equal(nextRepeatMode('one'), 'off');
+});
+
+test('playback follows queue order and only repeat-all wraps at the end', () => {
+  const songs = [{ jobId: 'job', name: 'First.mp3' }, { jobId: 'job', name: 'Last.mp3' }];
+  const key = (track) => JSON.stringify([track.jobId, track.name]);
+  for (const ended of [false, true]) {
+    assert.equal(nextPlaybackSong(songs, key(songs[0]), { ended }), songs[1]);
+    assert.equal(nextPlaybackSong(songs, key(songs[1]), { ended }), null);
+    assert.equal(nextPlaybackSong(songs, key(songs[1]), { ended, repeatMode: 'all' }), songs[0]);
+    assert.equal(nextPlaybackSong([songs[0]], key(songs[0]), { ended }), null);
+    assert.equal(nextPlaybackSong([songs[0]], key(songs[0]), { ended, repeatMode: 'all' }), songs[0]);
+  }
+});
+
+test('repeat-one takes precedence over shuffle only when a song ends', (context) => {
+  const random = context.mock.method(Math, 'random', () => 0);
+  const songs = ['First.mp3', 'Middle.mp3', 'Last.mp3'].map((name) => ({ jobId: 'job', name }));
+  const key = (track) => JSON.stringify([track.jobId, track.name]);
+  for (const shuffle of [false, true]) {
+    for (const song of songs) {
+      assert.equal(nextPlaybackSong(songs, key(song), { ended: true, shuffle, repeatMode: 'one' }), song);
+      assert.equal(nextPlaybackSong([song], key(song), { ended: true, shuffle, repeatMode: 'one' }), song);
+    }
+  }
+  assert.equal(random.mock.callCount(), 0);
+  assert.equal(nextPlaybackSong(songs, key(songs[0]), { repeatMode: 'one' }), songs[1]);
+  assert.equal(nextPlaybackSong(songs, key(songs[2]), { repeatMode: 'one' }), null);
+  assert.equal(nextPlaybackSong(songs, key(songs[2]), { shuffle: true, repeatMode: 'one' }), songs[0]);
+  assert.equal(nextPlaybackSong(songs, key(songs[1]), { ended: true, repeatMode: 'off' }), songs[2]);
+});
+
+test('shuffle selects other song identities without changing the queue or its saved order', (context) => {
+  const songs = Object.freeze([
+    Object.freeze({ jobId: 'first', name: 'Song.mp3' }),
+    Object.freeze({ jobId: 'second', name: 'Song.mp3' }),
+    Object.freeze({ jobId: 'first', name: 'Other.mp3' })
+  ]);
+  const selected = JSON.stringify(['first', 'Song.mp3']);
+  const random = context.mock.method(Math, 'random', () => 0);
+  for (const ended of [false, true]) {
+    for (const repeatMode of ['off', 'all']) {
+      assert.equal(nextPlaybackSong(songs, selected, { shuffle: true, repeatMode, ended }), songs[1]);
+    }
+  }
+  random.mock.mockImplementation(() => 0.999999);
+  assert.equal(nextPlaybackSong(songs, selected, { shuffle: true }), songs[2]);
+  assert.equal(nextPlaybackSong(songs, selected, { shuffle: false }), songs[1]);
+  assert.equal(nextPlaybackSong([songs[0], songs[0], songs[1]], selected, { shuffle: true }), songs[1]);
+  assert.equal(nextPlaybackSong([songs[0]], selected, { shuffle: true, ended: true }), null);
+});
+
+test('playback handles empty queues and missing selections without errors', () => {
+  for (const songs of [null, []]) {
+    for (const repeatMode of ['off', 'all', 'one']) {
+      assert.equal(nextPlaybackSong(songs, null, { shuffle: true, repeatMode, ended: true }), null);
+    }
+  }
+  const songs = [{ jobId: 'job', name: 'Song.mp3' }];
+  assert.equal(nextPlaybackSong(songs, null), songs[0]);
+  assert.equal(nextPlaybackSong(songs, 'removed', { ended: true, repeatMode: 'one' }), songs[0]);
+});
+
+test('playback dock exposes shuffle and repeat states with both modes initially off', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }));
+    assert.match(html, /title="Shuffle off: turn on" aria-label="Shuffle" aria-pressed="false"/);
+    assert.match(html, /aria-label="Repeat off: repeat queue" aria-pressed="false"/);
+    assert.match(html, /aria-label="Next song" disabled=""/);
+    assert.doesNotMatch(html, /lucide-repeat-1/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
 
 test('account settings label username editing and keep library access read-only', () => {
   const html = renderToStaticMarkup(createElement(UsernameForm, { user: { id: 'listener', name: 'Listener' }, request() {}, onSaved() {} }));

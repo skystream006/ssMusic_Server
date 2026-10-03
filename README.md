@@ -73,6 +73,20 @@ page and its instrumental companions. Totals use the saved media inventory.
 Requests with `entryId` retain the full playlist/folder response unless paging
 parameters are supplied.
 
+## Shuffle and repeat
+
+Use **Shuffle** in the bottom playback bar or job player to toggle random
+selection of the next track in the active queue, without changing playlist order.
+The highlighted button indicates that shuffle is on.
+
+The **Repeat** button cycles through **Off → Repeat queue → Repeat one song → Off**.
+Repeat one shows a **1** on the repeat icon and restarts the current song when it
+ends, even with shuffle enabled. **Next** and **Previous** still navigate normally;
+repeat one does not force manual skips back to the same song. Repeat queue wraps
+back to the first track at the end when shuffle is off. With shuffle on, playback
+continues choosing another track while more than one is available.
+These modes are shared between the job player and bottom bar for the current session.
+
 ## Metadata-only jobs
 
 On **Jobs**, enter a YouTube URL and check **Download metadata only**
