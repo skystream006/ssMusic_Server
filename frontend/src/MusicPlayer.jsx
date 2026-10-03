@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Repeat1, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
 import { ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory } from './navigation.js';
-import { findNoVocals, isNoVocals, songSearchText } from '../../src/library.js';
+import { findNoVocals, isNoVocals, songKey, songSearchText } from '../../src/library.js';
 import { mediaType } from '../../src/media.js';
 import { buildLyricsUpdate, formatSyltForEdit } from './lyricsEditing.js';
 import { Film, Minimize2 } from 'lucide-react';
@@ -76,6 +76,21 @@ export function LyricsEditor({ metadata, name, mode, onSave, onCancel }) {
 
 const PlaybackContext = createContext(null);
 
+export function nextRepeatMode(mode) {
+  return mode === 'off' ? 'all' : mode === 'all' ? 'one' : 'off';
+}
+
+export function nextPlaybackSong(songs, selected, { shuffle = false, repeatMode = 'off', ended = false } = {}) {
+  if (!songs?.length) return null;
+  const index = songs.findIndex((track) => songKey(track) === selected);
+  if (ended && repeatMode === 'one' && index >= 0) return songs[index];
+  if (shuffle && songs.length > 1) {
+    const others = songs.filter((track) => songKey(track) !== selected);
+    if (others.length) return others[Math.floor(Math.random() * others.length)];
+  }
+  return songs[index + 1] || (repeatMode === 'all' ? songs[0] : null);
+}
+
 export function queueSongNext(songs, selected, track) {
   const key = (item) => JSON.stringify([item.jobId, item.name]);
   if (selected === key(track)) return songs || [track];
@@ -143,14 +158,13 @@ export function PlaybackProvider({ children, request }) {
   const [muted, setMuted] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [shuffle, setShuffle] = useState(false);
-  const [repeat, setRepeat] = useState(false);
+  const [repeatMode, setRepeatMode] = useState('off');
   const [videoOpen, setVideoOpen] = useState(true);
   const audioRef = useRef(null);
   const autoPlayRef = useRef(new URLSearchParams(window.location.search).get('play') === '1');
   const volumeRef = useRef(1);
   const mutedRef = useRef(false);
   const queueScopeRef = useRef(undefined);
-  const songKey = (track) => JSON.stringify([track.jobId, track.name]);
   const index = songs?.findIndex((track) => songKey(track) === selected) ?? -1;
   const song = songs?.[index];
   const isVideo = mediaType(song?.name) === 'video';
@@ -202,14 +216,13 @@ export function PlaybackProvider({ children, request }) {
   }
 
   function nextSong(ended = false) {
-    if (!songs?.length) return;
-    if (shuffle && songs.length > 1) {
-      const others = songs.filter((track) => songKey(track) !== selected);
-      selectSong(others[Math.floor(Math.random() * others.length)]);
-    } else if (index + 1 < songs.length) selectSong(songs[index + 1]);
-    else if (repeat) {
-      if (songs.length === 1 && audioRef.current) audioRef.current.currentTime = 0;
-      selectSong(songs[0]);
+    const next = nextPlaybackSong(songs, selected, { shuffle, repeatMode, ended });
+    if (next) {
+      if (songKey(next) === selected && audioRef.current) {
+        audioRef.current.currentTime = 0;
+        setPosition(0);
+      }
+      selectSong(next);
     } else if (ended) setPlaying(false);
   }
 
@@ -277,7 +290,7 @@ export function PlaybackProvider({ children, request }) {
 
   return <PlaybackContext.Provider value={{ songs, setSongs, selected, setSelected, metadata, lyricError, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
-    shuffle, setShuffle, repeat, setRepeat, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
+    shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata, replaceFile }}>
     {children}
@@ -294,7 +307,7 @@ export function PlaybackProvider({ children, request }) {
 export default function MusicPlayer({ id, request, libraryView = null, dockOnly = false }) {
   const { songs, setSongs, selected, setSelected, metadata, lyricError, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
-    shuffle, setShuffle, repeat, setRepeat, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
+    shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, updateMetadata } = usePlayback();
   const [job, setJob] = useState(null);
@@ -316,6 +329,10 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const requestedSong = new URLSearchParams(window.location.search).get('song');
   const requestedPlay = new URLSearchParams(window.location.search).get('play') === '1';
   const libraryScope = libraryView?.queueScope ?? libraryView?.selectedId;
+  const canPlayNext = Boolean(song && (index < songs.length - 1 || repeatMode === 'all' || (shuffle && songs.length > 1)));
+  const shuffleLabel = shuffle ? 'Shuffle on: turn off' : 'Shuffle off: turn on';
+  const repeatLabel = repeatMode === 'off' ? 'Repeat off: repeat queue' : repeatMode === 'all' ? 'Repeat queue: repeat one song' : 'Repeat one song: turn off';
+  const RepeatIcon = repeatMode === 'one' ? Repeat1 : Repeat;
 
   useEffect(() => {
     if (isVideo && panel === 'lyrics') setPanel(null);
@@ -537,11 +554,11 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         <div className="dock-track"><div className={`dock-artwork ${playing && !isVideo ? 'is-playing' : ''}`}>{isVideo ? <Film size={30} /> : metadata?.artwork ? <img src={metadata.artwork} alt="Album cover" /> : <Disc3 size={30} />}</div>
           <div><strong>{metadata?.title || song?.name.split('/').at(-1).replace(/\.[^.]+$/, '') || 'Nothing playing'}</strong><small>{metadata?.artist || song?.playlistTitle || 'ssMusic Player'}</small></div><KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} /></div>
         <div className="dock-controls"><div className="dock-transport">
-          <button className="music-icon-button" type="button" title="Shuffle" aria-label="Shuffle" aria-pressed={shuffle} onClick={() => setShuffle(!shuffle)}><Shuffle size={17} /></button>
+          <button className="music-icon-button" type="button" title={shuffleLabel} aria-label="Shuffle" aria-pressed={shuffle} onClick={() => setShuffle((current) => !current)}><Shuffle size={17} /></button>
           <button className="music-icon-button" type="button" title="Previous song" aria-label="Previous song" disabled={!song} onClick={previousSong}><SkipBack size={20} /></button>
           <button className="round-play" type="button" title={playing ? 'Pause' : 'Play'} aria-label={playing ? 'Pause' : 'Play'} disabled={!song} onClick={togglePlayback}>{playing ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}</button>
-          <button className="music-icon-button" type="button" title="Next song" aria-label="Next song" disabled={!song || (!repeat && !shuffle && index === songs.length - 1)} onClick={() => nextSong()}><SkipForward size={20} /></button>
-          <button className="music-icon-button" type="button" title="Repeat queue" aria-label="Repeat queue" aria-pressed={repeat} onClick={() => setRepeat(!repeat)}><Repeat size={17} /></button>
+          <button className="music-icon-button" type="button" title="Next song" aria-label="Next song" disabled={!canPlayNext} onClick={() => nextSong()}><SkipForward size={20} /></button>
+          <button className="music-icon-button" type="button" title={repeatLabel} aria-label={repeatLabel} aria-pressed={repeatMode !== 'off'} onClick={() => setRepeatMode(nextRepeatMode)}><RepeatIcon size={17} /></button>
         </div><div className="dock-timeline"><time>{timeLabel(position)}</time><input type="range" aria-label="Seek" min="0" max={duration || 0} step="0.1" value={Math.min(position, duration)} disabled={!duration}
           onChange={(event) => { audioRef.current.currentTime = Number(event.target.value); setPosition(Number(event.target.value)); }} /><time>{timeLabel(duration)}</time></div></div>
         <div className="dock-tools">
@@ -578,9 +595,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <div className="transport-actions">
             <KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} />
             <button type="button" title="Previous song" aria-label="Previous song" onClick={previousSong}><SkipBack size={19} /></button>
-            <button type="button" title="Next song" aria-label="Next song" disabled={!repeat && !shuffle && index === songs.length - 1} onClick={() => nextSong()}><SkipForward size={19} /></button>
-            <button type="button" title="Shuffle" aria-label="Shuffle" aria-pressed={shuffle} onClick={() => setShuffle(!shuffle)}><Shuffle size={18} /></button>
-            <button type="button" title="Repeat job" aria-label="Repeat job" aria-pressed={repeat} onClick={() => setRepeat(!repeat)}><Repeat size={18} /></button>
+            <button type="button" title="Next song" aria-label="Next song" disabled={!canPlayNext} onClick={() => nextSong()}><SkipForward size={19} /></button>
+            <button type="button" title={shuffleLabel} aria-label="Shuffle" aria-pressed={shuffle} onClick={() => setShuffle((current) => !current)}><Shuffle size={18} /></button>
+            <button type="button" title={repeatLabel} aria-label={repeatLabel} aria-pressed={repeatMode !== 'off'} onClick={() => setRepeatMode(nextRepeatMode)}><RepeatIcon size={18} /></button>
           </div>
           {playError && <div className="notice error" role="alert">{playError}</div>}
         </div>
