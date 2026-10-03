@@ -45,6 +45,18 @@ Public responses request no caching, no referrer disclosure, and no indexing;
 these headers are not a substitute for keeping links private. Avoid recording
 share URLs in proxy logs or analytics.
 
+Public shared-media pages always use the midnight-blue dark palette, independently
+of account appearance settings. Administrators can open **Admin > Shared links**
+to browse all generated links, 50 per page, with the song, source playlist,
+creator, and unique link ID. Use the delete icon and confirm to revoke a link.
+This blocks subsequent metadata, streaming, and download requests for that link;
+the source file, other links, and already downloaded copies are unaffected.
+Existing public URLs cannot be recovered because only token hashes are stored.
+
+The admin-only API is `GET /api/admin/media-shares?page=1` and
+`DELETE /api/admin/media-shares/:id`, using the ID returned by the listing.
+Deletion returns HTTP 204, or 404 if the link is already gone.
+
 `GET /api/public/media/:token` returns flat song metadata plus `name`,
 `sizeBytes`, `streamUrl`, and `downloadUrl`; streaming supports HTTP ranges and
 HEAD requests. Embedded tag, artwork, and lyric reading currently supports MP3;

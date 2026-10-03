@@ -48,6 +48,7 @@ import './styles.css';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
 import PublicMedia from './PublicMedia.jsx';
+import AdminMediaShares from './AdminMediaShares.jsx';
 import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
 import { LibraryAccessList, UsernameForm } from './AccountSettings.jsx';
 import ImportMusic from './ImportMusic.jsx';
@@ -237,7 +238,13 @@ function AppShell({ children, section = 'jobs' }) {
           <button onClick={logout} type="button" aria-label="Log out" title="Log out"><LogOut size={17} /></button>
         </div>
       </header>
-      <main className={section === 'music' ? 'music-main' : undefined}>{children}</main>
+      <main className={section === 'music' ? 'music-main' : undefined}>
+        {section === 'admin' && <nav className="admin-tabs" aria-label="Administration">
+          <a href="/admin" aria-current={window.location.pathname === '/admin' ? 'page' : undefined}><Users size={17} />Users</a>
+          <a href="/admin/shared-links" aria-current={window.location.pathname === '/admin/shared-links' ? 'page' : undefined}><Share2 size={17} />Shared links</a>
+        </nav>}
+        {children}
+      </main>
       {choosingTheme && <ThemeDialog onClose={() => setChoosingTheme(false)} />}
     </div>
   );
@@ -1346,6 +1353,11 @@ function UserSettingsPage({ userId }) {
   </AppShell>;
 }
 
+function AdminSharedLinksPage() {
+  const { confirm, dialog } = useConfirmation();
+  return <AppShell section="admin"><AdminMediaShares request={request} confirm={confirm} />{dialog}</AppShell>;
+}
+
 function AdminPage() {
   const { user: currentUser } = useContext(AuthContext);
   const [users, setUsers] = useState([]);
@@ -1463,6 +1475,7 @@ function SharedSettingsPage() {
 
 function PageRoutes({ user }) {
   if (user.role === 'shared') return window.location.pathname === '/settings' ? <SharedSettingsPage /> : <MusicHomePage />;
+  if (window.location.pathname === '/admin/shared-links' && user.role === 'admin') return <AdminSharedLinksPage />;
   const userMatch = window.location.pathname.match(/^\/admin\/users\/([^/]+)\/?$/);
   if (userMatch && user.role === 'admin') return <UserSettingsPage userId={decodeURIComponent(userMatch[1])} />;
   if (window.location.pathname === '/settings') return <UserSettingsPage />;

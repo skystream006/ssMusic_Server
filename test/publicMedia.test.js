@@ -8,10 +8,12 @@ let server;
 let PublicMedia;
 let PublicMediaView;
 let seekPublicAudio;
+let AdminMediaSharesView;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ default: PublicMedia, PublicMediaView, seekPublicAudio } = await server.ssrLoadModule('/src/PublicMedia.jsx'));
+  ({ AdminMediaSharesView } = await server.ssrLoadModule('/src/AdminMediaShares.jsx'));
 });
 
 after(async () => { await server?.close(); });
@@ -159,6 +161,22 @@ test('loading, unavailable and playback failures have accessible non-authenticat
   assert.match(failed, /role="alert">Audio could not be played/);
   assert.match(failed.match(/<input\b[^>]*>/)[0], /disabled=""/);
   assert.match(failed, />Save file<\/a>/);
+});
+
+test('admin shared link list identifies creators and links, and handles loading, errors and pagination', () => {
+  const data = { shares: [{ id: 'a'.repeat(64), jobId: 'job', name: 'Evening song.mp3', creatorName: 'Owner', playlistTitle: 'Jazz' }], page: 1, totalPages: 2, total: 51 };
+  const renderAdmin = (props = {}) => renderToStaticMarkup(createElement(AdminMediaSharesView, { data, ...props }));
+  const html = renderAdmin();
+  for (const text of ['Evening song.mp3', 'Owner', 'Jazz', 'Link ID', 'Page 1 of 2', 'a'.repeat(64)]) assert.ok(html.includes(text));
+  assert.match(html, /href="\/job\/job"/);
+  assert.match(html, /aria-label="Delete shared link for Evening song.mp3"/);
+  assert.match(html, /aria-label="Previous shared links page" disabled=""/);
+  assert.doesNotMatch(html.match(/<button[^>]*aria-label="Next shared links page"[^>]*>/)[0], /disabled/);
+  assert.doesNotMatch(html, /href="\/share\//);
+  assert.match(renderAdmin({ loading: true }), /role="status">Loading shared links/);
+  assert.match(renderAdmin({ error: 'Failed to load' }), /role="alert"/);
+  assert.match(renderAdmin({ deleting: data.shares[0].id }), /disabled=""[^>]*title="Delete shared link/);
+  assert.match(renderAdmin({ data: { ...data, shares: [], total: 0, totalPages: 1 } }), /No shared links/);
 });
 
 test('seeking changes only the playback position, clamps boundaries and never starts playback', () => {

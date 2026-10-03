@@ -249,7 +249,7 @@ test('sharing explains unauthenticated read-only access before generating a link
   assert.doesNotMatch(html, /Copy link|href="\/share\//);
 });
 
-test('share media actions respect audio formats, permissions and busy states in both layouts', () => {
+test('share media dropdown actions respect audio formats, permissions and busy states', () => {
   const previousWindow = globalThis.window;
   globalThis.window = { location: { search: '' } };
   try {
@@ -261,7 +261,7 @@ test('share media actions respect audio formats, permissions and busy states in 
     const buttons = (html) => html.match(/<button[^>]*aria-label="Share Media [^"]*"[^>]*>/g) || [];
     for (const name of ['Song.mp3', '[NoVocals]/Song.mp3', 'Song.wav', 'Song.flac']) {
       const actions = buttons(render({ name }));
-      assert.equal(actions.length, 2, name);
+      assert.equal(actions.length, 1, name);
       for (const button of actions) {
         assert.doesNotMatch(button, /disabled/);
         assert.match(button, /aria-haspopup="dialog"/);
@@ -279,7 +279,7 @@ test('share media actions respect audio formats, permissions and busy states in 
   }
 });
 
-test('song replacement actions respect audio formats, permissions and busy states in both layouts', () => {
+test('song replacement dropdown actions respect audio formats, permissions and busy states', () => {
   const previousWindow = globalThis.window;
   globalThis.window = { location: { search: '' } };
   try {
@@ -291,7 +291,7 @@ test('song replacement actions respect audio formats, permissions and busy state
     const buttons = (html) => html.match(/<button[^>]*aria-label="Replace File [^"]*"[^>]*>/g) || [];
     for (const name of ['Song.mp3', '[NoVocals]/Song.mp3', 'Song.wav', 'Song.flac']) {
       const actions = buttons(render({ name }));
-      assert.equal(actions.length, 2, name);
+      assert.equal(actions.length, 1, name);
       for (const button of actions) assert.doesNotMatch(button, /disabled/);
     }
     for (const options of [{ disabled: true }, { saving: true }]) {
@@ -460,6 +460,27 @@ test('library export explains extraction layout and format compatibility honestl
   assert.match(html, /root <strong>.m3u8<\/strong> playlists beside the <strong>Music\/<\/strong> folder/);
   assert.match(html, /UTF-8 M3U8 with relative paths/);
   assert.match(html, /does not import into a universal Android system music database/);
+});
+
+test('song rows keep ratings outside the dropdown and karaoke inside it', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const track = { jobId: 'job', playlistId: 'playlist', name: 'Song.mp3', rating: 3,
+      noVocalsVersion: { jobId: 'job', name: '[NoVocals]/Song.mp3' } };
+    const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+      libraryView: { tracks: [track], title: 'Playlist', selectedId: 'playlist', songState: () => ({ canModify: true }) }
+    })));
+    const [beforeMenu, menu] = html.split('popover="auto"');
+    assert.match(beforeMenu, /aria-label="Rating for Song.mp3"/);
+    assert.doesNotMatch(beforeMenu, /aria-label="Play karaoke version/);
+    assert.match(menu, /aria-label="Play karaoke version of Song.mp3"/);
+    assert.match(menu, /<span>Play karaoke \(NoVocals\)<\/span>/);
+    assert.doesNotMatch(menu, /aria-label="Rating for Song.mp3"/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
 });
 
 test('karaoke groups NoVocals songs in a collapsed section', () => {
@@ -696,10 +717,11 @@ function renderActions(canModify = true) {
   ));
 }
 
-test('song actions retain labels, disabled states and download URLs in both layouts', () => {
+test('song actions render only in the dropdown and retain labels, disabled states and download URLs', () => {
   const html = renderActions();
-  assert.equal((html.match(/title="Edit song metadata" disabled=""/g) || []).length, 2);
-  assert.equal((html.match(/href="\/download\/song.mp3"/g) || []).length, 2);
+  assert.doesNotMatch(html, /song-actions-inline/);
+  assert.equal((html.match(/title="Edit song metadata" disabled=""/g) || []).length, 1);
+  assert.equal((html.match(/href="\/download\/song.mp3"/g) || []).length, 1);
   for (const label of ['Edit song metadata', 'Transcribe song', 'Delete song', 'Download song']) {
     assert.ok(html.includes(`<span>${label}</span>`));
   }

@@ -34,7 +34,7 @@ export function SongActions({ name, className, children }) {
   useEffect(() => {
     const menu = menuRef.current;
     const close = (event) => {
-      if (event?.target && menu.contains(event.target)) return;
+      if (event?.target instanceof Node && menu.contains(event.target)) return;
       if (menu.matches(':popover-open')) menu.hidePopover();
     };
     const observer = new ResizeObserver(close);
@@ -57,8 +57,12 @@ export function SongActions({ name, className, children }) {
     menu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - height - 8))}px`;
   }
 
-  return <div className={`${className} song-actions`}>
-    <div className="song-actions-inline">{children}</div>
+  return <div className={`${className} song-actions`} onKeyDown={(event) => {
+    if (event.key !== 'Escape' || !menuRef.current.matches(':popover-open')) return;
+    event.preventDefault();
+    menuRef.current.hidePopover();
+    triggerRef.current.focus();
+  }}>
     <button ref={triggerRef} className="music-icon-button song-actions-trigger" type="button"
       title="Song actions" aria-label={`Actions for ${name}`} aria-expanded={open} aria-controls={menuId}
       popoverTarget={menuId}><MoreVertical size={20} /></button>

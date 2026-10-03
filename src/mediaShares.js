@@ -85,6 +85,40 @@ function notFound(_req, res) {
   return res.status(404).json({ error: 'Shared song not found' });
 }
 
+export function adminMediaSharesRouter() {
+  const router = Router();
+  router.get('/', async (req, res) => {
+    const requestedPage = Number(req.query.page || 1);
+    if (!Number.isSafeInteger(requestedPage) || requestedPage < 1) {
+      return res.status(400).json({ error: 'Invalid page' });
+    }
+    const result = await openDatabase().withTransaction(async () => {
+      const database = openDatabase();
+      const { total } = await database.prepare('SELECT COUNT(*)::integer AS total FROM media_shares').get();
+      const pageSize = 50;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const page = Math.min(requestedPage, totalPages);
+      const shares = await database.prepare(`SELECT shares.token_hash AS id, shares.job_id AS "jobId", shares.name,
+        users.name AS "creatorName", shares.creator_id AS "creatorId",
+        jobs.data::jsonb->>'playlistTitle' AS "playlistTitle"
+        FROM media_shares shares
+        LEFT JOIN users ON users.id = shares.creator_id
+        LEFT JOIN jobs ON jobs.id = shares.job_id
+        ORDER BY shares.token_hash LIMIT $1 OFFSET $2`).all(pageSize, (page - 1) * pageSize);
+      return { shares, page, pageSize, total, totalPages };
+    });
+    res.json(result);
+  });
+  router.delete('/:id', async (req, res) => {
+    if (!/^[a-f0-9]{64}$/.test(req.params.id)) return res.status(404).json({ error: 'Shared link not found' });
+    const deleted = await openDatabase().prepare('DELETE FROM media_shares WHERE token_hash = $1 RETURNING token_hash')
+      .get(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Shared link not found' });
+    return res.status(204).end();
+  });
+  return router;
+}
+
 function sendError(res, error) {
   if (!error || res.destroyed) return;
   if (res.headersSent) return res.destroy();

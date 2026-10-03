@@ -20,12 +20,12 @@ import { createReplaceFileHandler } from './replaceFile.js';
 import { countMediaFiles, createMediaCountMonitor, getSystemHealth } from './health.js';
 import { isYouTubeUrl } from './utils.js';
 import { scheduleDailyMaintenance, scheduleLibraryBackups } from './scheduler.js';
-import { attachUser, registerAuthRoutes, requireAuth } from './auth.js';
+import { attachUser, registerAuthRoutes, requireAdmin, requireAuth } from './auth.js';
 import { restrictSharedAccess, sharedLibraryUsers, libraryReaderId, canReadSharedSong, sharedJobSummary } from './sharedAccess.js';
 import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
-import { createMediaShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
+import { adminMediaSharesRouter, createMediaShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
 
 const app = express();
 if (process.env.TRUST_PROXY) {
@@ -106,6 +106,7 @@ app.use(express.static(path.resolve(process.cwd(), 'public')));
 app.use(attachUser);
 app.use(restrictSharedAccess);
 registerAuthRoutes(app, authLimiters);
+app.use('/api/admin/media-shares', requireAdmin, mediaShareHeaders, adminMediaSharesRouter());
 app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
   next();
@@ -618,7 +619,7 @@ app.get('/app-login', (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
-app.get(['/admin', '/admin/users/:id', '/settings'], (_req, res) => {
+app.get(['/admin', '/admin/shared-links', '/admin/users/:id', '/settings'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 

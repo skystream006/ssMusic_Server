@@ -190,6 +190,47 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     await startServer();
     assert.equal((await call(mediaPath(ownerToken))).status, 200);
   });
+  await context.test('only admins can list and revoke shared links without deleting media or other links', async () => {
+    const token = await share();
+    const endpoint = '/api/admin/media-shares';
+    for (const headers of [{}, ...credentials.Owner, ...credentials.Contributor, ...credentials.Reader, ...credentials.Pending]) {
+      for (const [route, method] of [[endpoint, 'GET'], [`${endpoint}/${hash(token)}`, 'DELETE']]) {
+        assert.ok([401, 403].includes((await call(route, method, headers)).status));
+      }
+    }
+    const listing = await call(endpoint, 'GET', credentials.Admin[0]);
+    assert.equal(listing.status, 200, listing.text);
+    privacyHeaders(listing);
+    const row = listing.body.shares.find((item) => item.id === hash(token));
+    assert.deepEqual(row, { id: hash(token), jobId: job.id, name: songName,
+      creatorName: users.Owner.name, creatorId: users.Owner.id, playlistTitle: job.playlistTitle });
+    assert.equal(listing.body.total, (await database.prepare('SELECT * FROM media_shares').all()).length);
+    assert.ok(!listing.text.includes(token));
+    assert.equal((await call(`${endpoint}?page=0`, 'GET', credentials.Admin[0])).status, 400);
+    const deleted = await call(`${endpoint}/${hash(token)}`, 'DELETE', credentials.Admin[0]);
+    assert.equal(deleted.status, 204, deleted.text);
+    await unavailable(token);
+    assert.equal((await call(mediaPath(ownerToken))).status, 200);
+    assert.deepEqual(await fs.readFile(path.join(job.outputDir, songName)), audio);
+    assert.equal((await call(`${endpoint}/${hash(token)}`, 'DELETE', credentials.Admin[0])).status, 404);
+    assert.equal((await call(`${endpoint}/invalid`, 'DELETE', credentials.Admin[0])).status, 404);
+    assert.equal((await call('/admin/shared-links', 'GET', credentials.Admin[0])).status, 200);
+    const seededHashes = Array.from({ length: 55 }, (_, index) => hash(`pagination-${index}`));
+    for (const tokenHash of seededHashes) {
+      await database.prepare('INSERT INTO media_shares (token_hash, job_id, name, creator_id) VALUES ($1, $2, $3, $4)')
+        .run(tokenHash, job.id, songName, users.Owner.id);
+    }
+    const first = (await call(endpoint, 'GET', credentials.Admin[0])).body;
+    const last = (await call(`${endpoint}?page=999`, 'GET', credentials.Admin[0])).body;
+    assert.equal(first.shares.length, 50);
+    assert.equal(last.page, 2);
+    assert.equal(last.totalPages, 2);
+    assert.equal(new Set([...first.shares, ...last.shares].map((item) => item.id)).size, first.total);
+    for (const tokenHash of seededHashes) await database.prepare('DELETE FROM media_shares WHERE token_hash = $1').run(tokenHash);
+    const clamped = (await call(`${endpoint}?page=2`, 'GET', credentials.Admin[0])).body;
+    assert.equal(clamped.page, 1);
+    assert.equal(clamped.totalPages, 1);
+  });
   await context.test('public metadata is a flat allowlist and ignores missing, expired, malformed or shared authentication', async () => {
     await database.prepare('UPDATE sessions SET expires_at = $1 WHERE user_id = $2')
       .run('2000-01-01T00:00:00.000Z', users.Other.id);

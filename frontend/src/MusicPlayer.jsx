@@ -119,10 +119,10 @@ export function SongGroups({ tracks, children }) {
   </>;
 }
 
-function KaraokeButton({ track, tracks, onPlay }) {
+function KaraokeButton({ track, tracks, onPlay, showLabel = false }) {
   const version = track && mediaType(track.name) !== 'video' && !isNoVocals(track) && (track.noVocalsVersion || findNoVocals(track, tracks || []));
   return version ? <button className="music-icon-button karaoke-button" type="button" title="Play karaoke (NoVocals)"
-    aria-label={`Play karaoke version of ${track.title || track.name}`} onClick={() => onPlay(version)}><MicVocal size={18} /></button> : null;
+    aria-label={`Play karaoke version of ${track.title || track.name}`} onClick={() => onPlay(version)}><MicVocal size={18} />{showLabel && <span>Play karaoke (NoVocals)</span>}</button> : null;
 }
 
 function TrackPagination({ pagination, position }) {
@@ -519,12 +519,13 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 <span className="song-number">{mediaType(track.name) === 'video' ? <Film size={15} aria-label="Movie" /> : current && playing ? <Music2 size={15} /> : trackIndex + 1}</span>
                 <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><small>{track.artist || (track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original')}</small>
                   <TranscriptionStatus transcription={action.transcription} /></span>
-              </button><KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} /></div>
+              </button></div>
               <button className="song-playlist" type="button" title={track.playlistTitle} onClick={() => libraryView.onSelect(track.playlistId)}>{track.playlistTitle}</button>
               <ListSongRating file={track} jobId={track.jobId} request={request} canModify={action.canModify}
                 disabled={action.disabled || libraryView.saving}
                 onSaved={(result) => libraryView.onMetadataSaved(track, result)} onError={libraryView.onRatingError} />
               <SongActions name={track.name} className="song-order-actions">
+                <KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} showLabel />
                 {action.canModify && !libraryView.readOnly && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Share Media" aria-label={`Share Media ${track.name}`} aria-haspopup="dialog" disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onShareMedia(track)}><Share2 size={16} /></button>}
                 {action.canModify && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Edit song metadata" aria-label={`Edit metadata ${track.name}`} disabled={action.disabled} onClick={() => libraryView.onEditMetadata(track)}><Pencil size={16} /></button>}
                 {action.canModify && !libraryView.readOnly && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Replace File" aria-label={`Replace File ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onReplaceFile(track)}><Upload size={16} /></button>}
