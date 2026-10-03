@@ -33,6 +33,7 @@ import {
   RefreshCw,
   RotateCcw,
   Settings,
+  Share2,
   ShieldCheck,
   Sun,
   Trash2,
@@ -46,6 +47,7 @@ import {
 import './styles.css';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
+import PublicMedia from './PublicMedia.jsx';
 import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
 import { LibraryAccessList, UsernameForm } from './AccountSettings.jsx';
 import ImportMusic from './ImportMusic.jsx';
@@ -56,7 +58,7 @@ import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
 import { isPlayableFile } from '../../src/media.js';
-import { canManageJob, canModifyJob, canRunJobAction, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, ReplaceFileDialog, SongActions, TranscriptionDialog, transcriptionInactiveMessage, TranscriptionStatus, useTranscriptionService } from './SongActions.jsx';
+import { canManageJob, canModifyJob, canRunJobAction, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, SongActions, TranscriptionDialog, transcriptionInactiveMessage, TranscriptionStatus, useTranscriptionService } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -690,6 +692,7 @@ function JobPage({ id }) {
   const playback = usePlayback();
   const [editingMetadata, setEditingMetadata] = useState(null);
   const [replacingFile, setReplacingFile] = useState(null);
+  const [sharingFile, setSharingFile] = useState(null);
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
   const [fileRevision, setFileRevision] = useState(0);
@@ -827,6 +830,7 @@ function JobPage({ id }) {
       {dialog}
       <a className="back-link" href="/job"><ArrowLeft size={17} /> Back to jobs</a>
       {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
+      {sharingFile && <ShareMediaDialog file={sharingFile} jobId={id} request={request} onClose={() => setSharingFile(null)} />}
       {editingMetadata && <MetadataDialog file={editingMetadata} jobId={id} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
         playback.updateMetadata(id, editingMetadata.name, result);
         setFileRevision((revision) => revision + 1);
@@ -927,6 +931,7 @@ function JobPage({ id }) {
                       setFileRevision((revision) => revision + 1);
                     }} />
                   <SongActions name={file.name} className="file-row-actions">
+                    {canModify && file.isSong && <button className="icon-link" type="button" title="Share Media" aria-label={`Share Media ${file.name}`} aria-haspopup="dialog" disabled={songMutationDisabled(file.name)} onClick={() => setSharingFile(file)}><Share2 size={18} /></button>}
                     {canModify && file.isSong && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
                     {canModify && file.isSong && <button className="icon-link" type="button" title="Replace File" aria-label={`Replace File ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setReplacingFile(file)}><Upload size={18} /></button>}
                     {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" data-action-label="Transcribe song" title={transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name) || !transcriptionActive} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
@@ -1529,4 +1534,7 @@ function App() {
 }
 
 initializeTouchControls();
-createRoot(document.getElementById('root')).render(<StrictMode>{window.location.pathname === '/app-login' ? <LoginPage appLogin /> : <App />}</StrictMode>);
+const publicMediaMatch = window.location.pathname.match(/^\/share\/([^/]+)\/?$/);
+createRoot(document.getElementById('root')).render(<StrictMode>{publicMediaMatch
+  ? <PublicMedia token={publicMediaMatch[1]} request={request} />
+  : window.location.pathname === '/app-login' ? <LoginPage appLogin /> : <App />}</StrictMode>);

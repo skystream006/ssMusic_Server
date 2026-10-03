@@ -437,7 +437,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 .pat-list strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
 .pat-list small { display: block; margin-top: 5px; }
 .pat-delete { width: 40px; height: 40px; padding: 0; justify-content: center; }
-.pat-dialog textarea { width: 100%; height: 90px; resize: none; padding: 12px; margin-bottom: 20px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); font: 12px/1.6 'DM Mono', monospace; overflow-wrap: anywhere; }
+.pat-dialog textarea, .share-media-dialog textarea { width: 100%; height: 90px; resize: none; padding: 12px; margin-bottom: 20px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); font: 12px/1.6 'DM Mono', monospace; overflow-wrap: anywhere; }
 .pat-dialog .pat-name { margin-bottom: 0; color: var(--green); }
 .user-details-link { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; text-decoration: none; }
 .user-details-link:hover { color: var(--green); }

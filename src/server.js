@@ -25,6 +25,7 @@ import { restrictSharedAccess, sharedLibraryUsers, libraryReaderId, canReadShare
 import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
+import { createMediaShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
 
 const app = express();
 if (process.env.TRUST_PROXY) {
@@ -75,10 +76,6 @@ const authLimiters = {
   loginVerify: authLimiter(10 * 60_000, 20)
 };
 
-app.use('/api', apiLimiter);
-app.use('/api/jobs/:id/files/:name/metadata', express.json({ limit: '3mb' }));
-app.use(['/api/library/playlists/move', '/api/library/songs/transfer'], express.json({ limit: '3mb' }));
-app.use(express.json({ limit: '128kb' }));
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -96,6 +93,15 @@ app.use(helmet({
   },
   crossOriginEmbedderPolicy: false
 }));
+app.use(['/api/public', '/share'], mediaShareHeaders);
+app.use('/api', apiLimiter);
+app.use('/api/public', publicMediaRouter());
+app.get('/share/:token', (_req, res) => {
+  res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'), { cacheControl: false });
+});
+app.use('/api/jobs/:id/files/:name/metadata', express.json({ limit: '3mb' }));
+app.use(['/api/library/playlists/move', '/api/library/songs/transfer'], express.json({ limit: '3mb' }));
+app.use(express.json({ limit: '128kb' }));
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 app.use(attachUser);
 app.use(restrictSharedAccess);
@@ -461,6 +467,8 @@ app.patch('/api/jobs/:id/files/:name/metadata', async (req, res) => {
 });
 
 app.post('/api/jobs/:id/files/:name/replace', createReplaceFileHandler(listJobFiles));
+
+app.post('/api/jobs/:id/files/:name/share', createMediaShare);
 
 app.post('/api/jobs/:id/files/:name/transcribe', async (req, res) => {
   try {

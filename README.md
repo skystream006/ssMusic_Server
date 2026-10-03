@@ -23,6 +23,37 @@ existing job's normal rerun or details action.
 `POST /api/jobs` accepts `downloadType: "audio"` (default) or `"video"`, for example
 `{ "url": "https://www.youtube.com/watch?v=VIDEO_ID", "downloadType": "video" }`.
 
+## Public song links
+
+Open a song's **Share Media** action, review the privacy warning, then choose
+**Generate public link** and **Copy link**. Recipients can open the link without
+signing in, play the song, or choose **Save file** on the public page to download it.
+
+Approved song owners, contributors, and administrators can create a public link
+with `POST /api/jobs/:id/files/:name/share` (URL-encode the complete filename).
+It returns `{ "url": "/share/<token>" }`. Anyone with this link can listen to and
+download that one audio file without signing in, and see its embedded metadata,
+artwork, rating, and lyrics. Other songs, playlists, job details, and editing
+remain private; videos and non-audio files cannot be shared this way.
+
+Treat the link as a secret: recipients can forward it and downloaded copies
+cannot be recalled. Links persist across restarts, have no scheduled expiry,
+and only token hashes are stored in PostgreSQL. Deleting the source song/job or
+creator invalidates its links; access is also denied whenever the creator is
+not approved, becomes a shared account, or loses owner/contributor/admin access.
+Public responses request no caching, no referrer disclosure, and no indexing;
+these headers are not a substitute for keeping links private. Avoid recording
+share URLs in proxy logs or analytics.
+
+`GET /api/public/media/:token` returns flat song metadata plus `name`,
+`sizeBytes`, `streamUrl`, and `downloadUrl`; streaming supports HTTP ranges and
+HEAD requests. Embedded tag, artwork, and lyric reading currently supports MP3;
+other supported audio formats use a filename title and empty metadata defaults.
+Public MP3 metadata reads only the leading ID3 tag, capped at 16 MiB; absent,
+malformed, compressed, or oversized tags use those same defaults. At most four public metadata
+requests run concurrently (including HEAD); additional requests receive HTTP 503
+with `Retry-After: 1`. Playback support still depends on the browser's codecs.
+
 ## All Music Pagination
 
 **All music** loads 50 tracks per page. Use the page controls above or below the

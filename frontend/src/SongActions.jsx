@@ -1,5 +1,5 @@
 import { Children, cloneElement, useEffect, useId, useRef, useState } from 'react';
-import { Check, CircleAlert, Clock3, FileAudio, ImagePlus, Info, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Star, Trash2, Upload, X } from 'lucide-react';
+import { Check, CircleAlert, Clock3, Copy, ExternalLink, FileAudio, ImagePlus, Info, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Share2, Star, Trash2, Upload, X } from 'lucide-react';
 import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
 
 export const transcriptionInactiveMessage = 'Transciption service is currently inactive. Refresh the page when transcription service is available';
@@ -95,6 +95,69 @@ export function canRunJobAction(user, job, action) {
   if (action === 'delete') return canManageJob(user, job);
   if (action === 'rerun') return !job.source && canModifyJob(user, job);
   return false;
+}
+
+export function ShareMediaDialog({ file, jobId, request, onClose }) {
+  const dialogRef = useRef(null);
+  const linkRef = useRef(null);
+  const generatingRef = useRef(false);
+  const headingId = useId();
+  const [url, setUrl] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+
+  async function generate() {
+    if (generatingRef.current || url) return;
+    generatingRef.current = true;
+    setGenerating(true);
+    setError('');
+    try {
+      const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/share`, { method: 'POST' });
+      setUrl(new URL(result.url, window.location.origin).href);
+    } catch (shareError) { setError(shareError.message); }
+    finally { generatingRef.current = false; setGenerating(false); }
+  }
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setError('');
+    } catch {
+      linkRef.current?.focus();
+      linkRef.current?.select();
+      setError('Clipboard unavailable. Copy the selected public link manually.');
+    }
+  }
+
+  return <dialog ref={dialogRef} className="confirmation-dialog share-media-dialog" aria-labelledby={headingId}
+    aria-describedby={`${headingId}-help`} onCancel={(event) => { event.preventDefault(); if (!generatingRef.current) onClose(); }}>
+    <h2 id={headingId}>Share Media</h2>
+    <p className="metadata-filename">{file.title || file.name}</p>
+    <p id={`${headingId}-help`}>Anyone with this link can listen, read lyrics and metadata, and save this file without signing in. They cannot edit it. Only share content you have permission to share.</p>
+    {url && <>
+      <label className="sr-only" htmlFor={`${headingId}-link`}>Public media link</label>
+      <textarea ref={linkRef} id={`${headingId}-link`} readOnly value={url} spellCheck={false} onFocus={(event) => event.target.select()} />
+      <p><a href={url} target="_blank" rel="noopener noreferrer"><ExternalLink size={15} /> Open media page</a></p>
+    </>}
+    {error && <p className="notice error" role="alert">{error}</p>}
+    <div className="dialog-actions">
+      <button className="secondary-button" type="button" disabled={generating} onClick={onClose}>{url ? 'Done' : 'Cancel'}</button>
+      {url ? <button className="primary-button" type="button" onClick={copyLink}><Copy size={17} />{copied ? 'Copied' : 'Copy link'}</button>
+        : <button className="primary-button" type="button" disabled={generating} onClick={generate}>
+          {generating ? <RefreshCw className="spin" size={17} /> : <Share2 size={17} />}{generating ? 'Generating...' : 'Generate public link'}
+        </button>}
+    </div>
+    <span className="sr-only" role="status">{copied ? 'Public link copied to clipboard' : url ? 'Public link ready' : generating ? 'Generating public link' : ''}</span>
+  </dialog>;
 }
 
 export function formatDate(value) {
