@@ -40,7 +40,7 @@ function boundedId3TagIsSafe(buffer) {
   return true;
 }
 
-async function readBoundedId3Tags(filePath, options, stat) {
+async function readBoundedId3Tags(filePath, options) {
   const file = await fs.open(filePath, 'r');
   try {
     const header = Buffer.alloc(10);
@@ -50,7 +50,7 @@ async function readBoundedId3Tags(filePath, options, stat) {
     const tagSize = synchsafeSize(header.subarray(6));
     if (tagSize === null) return {};
     const size = tagSize + 10;
-    if (size > maxId3TagBytes || size > (stat || await file.stat()).size) return {};
+    if (size > maxId3TagBytes || size > (await file.stat()).size) return {};
     const buffer = Buffer.alloc(size);
     header.copy(buffer);
     let offset = header.length;
@@ -80,7 +80,20 @@ export async function readSongSummary(filePath, stat) {
   const signature = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
   const cached = summaryCache.get(filePath);
   if (cached?.signature === signature) return cached.summary;
-  const tags = await readBoundedId3Tags(filePath, { include: summaryFrames }, stat);
+  const file = await fs.open(filePath, 'r');
+  let tags = {};
+  try {
+    const header = Buffer.alloc(10);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    if (bytesRead === 10 && header.toString('ascii', 0, 3) === 'ID3' && header.subarray(6).every((byte) => byte < 128)) {
+      const size = header.subarray(6).reduce((total, byte) => total * 128 + byte, 0) + 10;
+      if (size <= stat.size && size <= maxId3TagBytes) {
+        const buffer = Buffer.alloc(size);
+        const result = await file.read(buffer, 0, size, 0);
+        if (result.bytesRead === size) tags = NodeID3.read(buffer, { include: summaryFrames });
+      }
+    }
+  } finally { await file.close(); }
   const summary = { rating: songRating(tags) };
   for (const field of metadataFields) if (typeof tags[field] === 'string') summary[field] = tags[field];
   if (summaryCache.size >= 1000) summaryCache.delete(summaryCache.keys().next().value);

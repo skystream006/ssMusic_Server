@@ -7,11 +7,12 @@ import https from 'node:https';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deflateSync } from 'node:zlib';
 import test from 'node:test';
 import NodeID3 from 'node-id3';
 import { openDatabase, writeJob } from '../src/database.js';
 import { readPostgresJob } from '../src/postgresCatalog.js';
-import { readSongMetadata } from '../src/music.js';
+import { readSongMetadata, readSongSummary } from '../src/music.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
 test('song shares are persistent, narrowly scoped, read-only public capabilities', { timeout: 120_000 }, async (context) => {
@@ -352,6 +353,29 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     assert.equal((await call(createPath(), 'POST', credentials.Owner[0])).status, 404);
     await fs.unlink(job.outputDir);
     await fs.rename(`${job.outputDir}.hidden`, job.outputDir);
+  });
+  await context.test('song summaries retain normal tags when excluded artwork is validly compressed', async () => {
+    const image = NodeID3.read(audio).image;
+    const imageBody = NodeID3.create({ image }).subarray(20);
+    const compressed = deflateSync(imageBody);
+    const frame = Buffer.alloc(14 + compressed.length);
+    frame.write('APIC');
+    frame.writeUInt32BE(4 + compressed.length, 4);
+    frame[9] = 0x80;
+    frame.writeUInt32BE(imageBody.length, 10);
+    compressed.copy(frame, 14);
+    const tags = NodeID3.create({ title: 'Compressed artwork', artist: 'Summary artist' });
+    const header = Buffer.from(tags.subarray(0, 10));
+    const frames = Buffer.concat([tags.subarray(10), frame]);
+    for (let index = 0; index < 4; index += 1) header[6 + index] = (frames.length >>> (21 - index * 7)) & 0x7f;
+    const filePath = path.join(directory, 'Compressed-summary.mp3');
+    await fs.writeFile(filePath, Buffer.concat([header, frames, Buffer.from('audio fixture')]));
+    assert.equal((await readSongMetadata(filePath)).artwork, `data:${image.mime};base64,${image.imageBuffer.toString('base64')}`);
+    assert.deepEqual(await readSongSummary(filePath, await fs.stat(filePath)),
+      { title: 'Compressed artwork', artist: 'Summary artist', rating: 0 });
+    const publicMetadata = await readSongMetadata(filePath, { bounded: true });
+    assert.equal(publicMetadata.title, 'Compressed-summary');
+    assert.equal(publicMetadata.artwork, null);
   });
   await context.test('public metadata reads bounded tags rather than large audio and rejects unsafe tag sizes', async (subtest) => {
     await stopServer();
