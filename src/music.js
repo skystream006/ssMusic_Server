@@ -7,6 +7,63 @@ import { songMetadataFields as metadataFields } from './library.js';
 
 const ratingBytes = [0, 1, 64, 128, 196, 255];
 const summaryCache = new Map();
+const summaryFrames = ['TIT2', 'TPE1', 'TALB', 'TPE2', 'TCON', 'TYER', 'TRCK', 'TPOS', 'POPM'];
+const publicMetadataFrames = [...summaryFrames, 'APIC', 'SYLT', 'USLT',
+  'TT2', 'TP1', 'TAL', 'TP2', 'TCO', 'TYE', 'TRK', 'TPA', 'POP', 'PIC', 'SLT', 'ULT'];
+const maxId3TagBytes = 16 * 1024 ** 2;
+
+function synchsafeSize(bytes) {
+  return bytes.length === 4 && bytes.every((byte) => byte < 128)
+    ? bytes.reduce((total, byte) => total * 128 + byte, 0) : null;
+}
+
+function boundedId3TagIsSafe(buffer) {
+  const version = buffer[3];
+  let offset = 10;
+  if (buffer[5] & 0x40) {
+    if (version === 2 || buffer.length < 14) return false;
+    const extendedSize = version === 3 ? buffer.readUInt32BE(10) + 4 : synchsafeSize(buffer.subarray(10, 14));
+    if (extendedSize === null || extendedSize < 4 || extendedSize > buffer.length - offset) return false;
+    offset += extendedSize;
+  }
+  const headerSize = version === 2 ? 6 : 10;
+  let frames = 0;
+  while (offset < buffer.length && buffer[offset] !== 0) {
+    if (buffer.length - offset < headerSize || ++frames > 10_000) return false;
+    const size = version === 2 ? buffer.readUIntBE(offset + 3, 3)
+      : version === 3 ? buffer.readUInt32BE(offset + 4) : synchsafeSize(buffer.subarray(offset + 4, offset + 8));
+    if (size === null || size > buffer.length - offset - headerSize) return false;
+    // Compressed frames can expand far beyond the on-disk tag limit.
+    if (version !== 2 && (buffer[offset + 9] & (version === 3 ? 0x80 : 0x08))) return false;
+    offset += headerSize + size;
+  }
+  return true;
+}
+
+async function readBoundedId3Tags(filePath, options, stat) {
+  const file = await fs.open(filePath, 'r');
+  try {
+    const header = Buffer.alloc(10);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    if (bytesRead !== 10 || header.toString('ascii', 0, 3) !== 'ID3'
+      || ![2, 3, 4].includes(header[3]) || header[4] !== 0) return {};
+    const tagSize = synchsafeSize(header.subarray(6));
+    if (tagSize === null) return {};
+    const size = tagSize + 10;
+    if (size > maxId3TagBytes || size > (stat || await file.stat()).size) return {};
+    const buffer = Buffer.alloc(size);
+    header.copy(buffer);
+    let offset = header.length;
+    while (offset < size) {
+      const result = await file.read(buffer, offset, size - offset, offset);
+      if (!result.bytesRead) return {};
+      offset += result.bytesRead;
+    }
+    if (!boundedId3TagIsSafe(buffer)) return {};
+    try { return NodeID3.read(buffer, { ...options, noRaw: true }); }
+    catch { return {}; }
+  } finally { await file.close(); }
+}
 
 function songRating(tags) {
   const rating = tags.popularimeter?.rating;
@@ -23,20 +80,7 @@ export async function readSongSummary(filePath, stat) {
   const signature = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
   const cached = summaryCache.get(filePath);
   if (cached?.signature === signature) return cached.summary;
-  const file = await fs.open(filePath, 'r');
-  let tags = {};
-  try {
-    const header = Buffer.alloc(10);
-    const { bytesRead } = await file.read(header, 0, header.length, 0);
-    if (bytesRead === 10 && header.toString('ascii', 0, 3) === 'ID3' && header.subarray(6).every((byte) => byte < 128)) {
-      const size = header.subarray(6).reduce((total, byte) => total * 128 + byte, 0) + 10;
-      if (size <= stat.size && size <= 16 * 1024 ** 2) {
-        const buffer = Buffer.alloc(size);
-        const result = await file.read(buffer, 0, size, 0);
-        if (result.bytesRead === size) tags = NodeID3.read(buffer, { include: ['TIT2', 'TPE1', 'TALB', 'TPE2', 'TCON', 'TYER', 'TRCK', 'TPOS', 'POPM'] });
-      }
-    }
-  } finally { await file.close(); }
+  const tags = await readBoundedId3Tags(filePath, { include: summaryFrames }, stat);
   const summary = { rating: songRating(tags) };
   for (const field of metadataFields) if (typeof tags[field] === 'string') summary[field] = tags[field];
   if (summaryCache.size >= 1000) summaryCache.delete(summaryCache.keys().next().value);
@@ -114,9 +158,12 @@ export async function updateSongMetadata(filePath, value) {
   return readSongMetadata(filePath);
 }
 
-export async function readSongMetadata(filePath) {
+export async function readSongMetadata(filePath, { bounded = false } = {}) {
   const tags = path.extname(filePath).toLowerCase() === '.mp3'
-    ? await NodeID3.Promise.read(filePath) : {};
+    ? bounded
+      ? await readBoundedId3Tags(filePath, { include: publicMetadataFrames })
+      : await NodeID3.Promise.read(filePath)
+    : {};
   const frame = tags.synchronisedLyrics?.find((lyrics) => lyrics.timeStampFormat === 2 && lyrics.contentType === 1);
   const sylt = (frame?.synchronisedText || [])
     .filter((line) => Number.isFinite(line.timeStamp) && line.timeStamp >= 0 && typeof line.text === 'string')

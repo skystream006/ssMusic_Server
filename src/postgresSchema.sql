@@ -59,6 +59,14 @@ CREATE INDEX IF NOT EXISTS songs_search ON songs USING gin (search_text gin_trgm
 CREATE INDEX IF NOT EXISTS songs_transcription_status ON songs(job_id, (transcription->>'status')) WHERE transcription IS NOT NULL;
 ALTER TABLE songs ADD COLUMN IF NOT EXISTS karaoke_stem TEXT;
 CREATE INDEX IF NOT EXISTS songs_karaoke ON songs(job_id, karaoke_stem) WHERE karaoke_stem IS NOT NULL;
+CREATE TABLE IF NOT EXISTS media_shares (
+  token_hash TEXT PRIMARY KEY CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  job_id TEXT NOT NULL, name TEXT NOT NULL,
+  creator_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (job_id, name) REFERENCES songs(job_id, name) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS media_shares_song ON media_shares(job_id, name);
+CREATE INDEX IF NOT EXISTS media_shares_creator ON media_shares(creator_id);
 CREATE TABLE IF NOT EXISTS library_entries (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, id TEXT NOT NULL,
   parent_id TEXT, entry_type TEXT NOT NULL, position INTEGER NOT NULL, data JSONB NOT NULL,
