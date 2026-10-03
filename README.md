@@ -546,7 +546,7 @@ Administrators can approve or revoke access and assign User, Admin, or Shared ro
 For a Shared account, open **Admin > All users > User details**, select the library
 owners under **Shared libraries**, and choose **Save access**. Multiple approved
 User or Admin accounts can be selected. Shared users can switch between these
-libraries, browse playlists, play media, read lyrics, and download individual songs.
+libraries, browse playlists, play media, read lyrics, view song metadata, and download individual songs.
 Shared users can see their granted library owners under **User settings > Library access**.
 They cannot access health metrics or run health polling. They can change their own
 username, color theme, and light/dark appearance. They cannot change
@@ -1086,6 +1086,10 @@ The existing rating owner and play count are retained. Ratings are read from the
 song file, not the separate iTunes XML database. Job details, process output, and
 files are stacked full-width; song files also show artist and album metadata.
 Other audio formats offer the transcription lock control, but not MP3 tag editing.
+
+Shared users can choose **View song metadata** (the info icon) on songs in their
+granted libraries. The dialog shows metadata, artwork, rating, and transcription
+lock status read-only, with no save, artwork, rating, or lock editing controls.
 
 Edits update the source MP3, including for personally moved songs, and therefore
 are visible to everyone using that source. Filenames, audio data, embedded lyrics,
