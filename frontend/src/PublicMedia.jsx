@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { Download, Headphones, Music2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Download, Headphones, Maximize2, Music2, X } from 'lucide-react';
+import LyricTimeline from './LyricTimeline.jsx';
 import './publicMedia.css';
 
 const metadataFields = [
@@ -35,6 +36,87 @@ export function seekPublicAudio(audio, seconds) {
   return position;
 }
 
+export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onSeek }) {
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState('sylt');
+  const dialogRef = useRef(null);
+  const fullscreenRef = useRef(null);
+  const fullscreenButtonRef = useRef(null);
+  const hasLyrics = lines.length > 0 || Boolean(plainLyrics.trim());
+
+  useEffect(() => {
+    if (!open) return;
+    const dialog = dialogRef.current;
+    const content = fullscreenRef.current;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialog.querySelector('[aria-label="Close lyrics"]')?.focus();
+    let enteredFullscreen = document.fullscreenElement === content;
+    const fullscreenChanged = () => {
+      if (document.fullscreenElement === content) enteredFullscreen = true;
+      else if (enteredFullscreen) dialog.close();
+    };
+    document.addEventListener('fullscreenchange', fullscreenChanged);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener('fullscreenchange', fullscreenChanged);
+      if (document.fullscreenElement === content) document.exitFullscreen().catch(() => {});
+    };
+  }, [open]);
+
+  function showFullscreen() {
+    setMode(lines.length ? 'sylt' : 'uslt');
+    dialogRef.current.showModal();
+    setOpen(true);
+    // Keep the viewport overlay available if native fullscreen is unsupported or denied.
+    fullscreenRef.current.requestFullscreen?.().catch(() => {});
+  }
+
+  async function closeLyrics() {
+    if (document.fullscreenElement === fullscreenRef.current) await document.exitFullscreen().catch(() => {});
+    dialogRef.current?.close();
+  }
+
+  return <section className="public-media-panel public-media-lyrics" aria-labelledby="public-media-lyrics">
+    <div className="public-media-section-heading">
+      <h2 id="public-media-lyrics">Lyrics</h2>
+      {hasLyrics && <button ref={fullscreenButtonRef} className="secondary-button compact-button" type="button" aria-haspopup="dialog"
+        onClick={showFullscreen}><Maximize2 size={17} aria-hidden="true" />Fullscreen lyrics</button>}
+    </div>
+    {lines.length > 0 && <section aria-labelledby="public-media-timed-heading">
+      <h3 id="public-media-timed-heading">Synchronized lyrics</h3>
+      <p className="public-media-help">Choose a line to seek to that moment in the track.</p>
+      <LyricTimeline lines={lines} position={position} disabled={!canSeek} onSeek={onSeek} formatTime={formatTime} />
+    </section>}
+    {plainLyrics.trim() && <section className="public-media-plain-section" aria-labelledby="public-media-plain-heading">
+      <h3 id="public-media-plain-heading">Plain text lyrics</h3>
+      <p className="public-media-plain-lyrics">{plainLyrics}</p>
+    </section>}
+    {!hasLyrics && <p className="public-media-empty">No lyrics are available for this track.</p>}
+    <dialog ref={dialogRef} className="lyrics-overlay public-lyrics-overlay" aria-label="Fullscreen lyrics"
+      onCancel={(event) => { event.preventDefault(); closeLyrics(); }}
+      onClose={() => { setOpen(false); fullscreenButtonRef.current?.focus(); }}>
+      <div ref={fullscreenRef} className="lyrics-overlay-content">
+        {open && <section className="music-lyrics" aria-label="Lyrics">
+          <div className="section-title">
+            <div><h2>Lyrics — {title}</h2></div>
+            <div className="lyrics-actions">
+              <div className="lyrics-tabs" role="group" aria-label="Lyrics type">
+                <button type="button" aria-pressed={mode === 'sylt'} onClick={() => setMode('sylt')}>SYLT</button>
+                <button type="button" aria-pressed={mode === 'uslt'} onClick={() => setMode('uslt')}>USLT</button>
+              </div>
+              <button className="music-icon-button" type="button" title="Close lyrics" aria-label="Close lyrics"
+                onClick={closeLyrics}><X size={20} /></button>
+            </div>
+          </div>
+          <LyricTimeline lines={lines} position={position} mode={mode} uslt={plainLyrics}
+            disabled={!canSeek} onSeek={onSeek} formatTime={formatTime} />
+        </section>}
+      </div>
+    </dialog>
+  </section>;
+}
+
 export function PublicMediaView({
   media, loading = false, error = '', playbackError = '', elapsed = 0, duration = 0,
   audioRef, onProgress, onPlaybackError, onPlaybackReady, onSeek, onRetry
@@ -43,11 +125,9 @@ export function PublicMediaView({
   const knownDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   const position = Math.min(knownDuration, Math.max(0, Number.isFinite(elapsed) ? elapsed : 0));
   const canSeek = Boolean(media?.streamUrl && knownDuration && !playbackError);
-  const lines = (Array.isArray(media?.sylt) ? media.sylt : [])
+  const lines = useMemo(() => (Array.isArray(media?.sylt) ? media.sylt : [])
     .filter((line) => Number.isFinite(line?.time) && line.time >= 0 && typeof line.text === 'string')
-    .slice().sort((a, b) => a.time - b.time);
-  let activeLine = -1;
-  for (let index = 0; index < lines.length && lines[index].time <= position; index++) activeLine = index;
+    .sort((a, b) => a.time - b.time), [media?.sylt]);
   const plainLyrics = typeof media?.uslt === 'string' ? media.uslt : '';
   const rating = Number(media?.rating);
 
@@ -109,28 +189,8 @@ export function PublicMediaView({
           </dl>
         </section>
 
-        <section className="public-media-panel public-media-lyrics" aria-labelledby="public-media-lyrics">
-          <div className="public-media-section-heading"><h2 id="public-media-lyrics">Lyrics</h2></div>
-          {lines.length > 0 && <section aria-labelledby="public-media-timed-heading">
-            <h3 id="public-media-timed-heading">Synchronized lyrics</h3>
-            <p className="public-media-help">Choose a line to seek to that moment in the track.</p>
-            <ol className="public-media-timed-lyrics">
-              {lines.map((line, index) => <li key={`${line.time}-${index}`}>
-                <button type="button" disabled={!canSeek} onClick={() => onSeek?.(line.time)}
-                  aria-current={index === activeLine ? 'true' : undefined}
-                  aria-label={`Seek to ${formatTime(line.time)}: ${line.text.trim() || 'Instrumental'}`}>
-                  <span className="public-media-lyric-time" aria-hidden="true">{formatTime(line.time)}</span>
-                  <span>{line.text.trim() ? line.text : '♪'}</span>
-                </button>
-              </li>)}
-            </ol>
-          </section>}
-          {plainLyrics.trim() && <section className="public-media-plain-section" aria-labelledby="public-media-plain-heading">
-            <h3 id="public-media-plain-heading">Plain text lyrics</h3>
-            <p className="public-media-plain-lyrics">{plainLyrics}</p>
-          </section>}
-          {!lines.length && !plainLyrics.trim() && <p className="public-media-empty">No lyrics are available for this track.</p>}
-        </section>
+        <PublicLyrics lines={lines} plainLyrics={plainLyrics} title={title} position={position}
+          canSeek={canSeek} onSeek={onSeek} />
       </div>
     </>}
     <footer className="public-media-footer">Shared for listening. No account needed.</footer>

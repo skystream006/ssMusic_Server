@@ -28,6 +28,11 @@ existing job's normal rerun or details action.
 Open a song's **Share Media** action, review the privacy warning, then choose
 **Generate public link** and **Copy link**. Recipients can open the link without
 signing in, play the song, or choose **Save file** on the public page to download it.
+Synchronized (SYLT) lyrics use the music player's highlighting and autoscroll;
+select a lyric line to seek. Choose **Fullscreen lyrics** to expand the lyrics
+without interrupting playback, switch between SYLT and plain-text USLT, and
+return using the close button or Escape. A full-page overlay is available when
+the browser does not support native fullscreen.
 
 Approved song owners, contributors, and administrators can create a public link
 with `POST /api/jobs/:id/files/:name/share` (URL-encode the complete filename).
