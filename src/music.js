@@ -101,6 +101,16 @@ export async function readSongSummary(filePath, stat) {
   return summary;
 }
 
+export async function readSongArtwork(filePath) {
+  if (path.extname(filePath).toLowerCase() !== '.mp3') return null;
+  const { image } = await readBoundedId3Tags(filePath, { include: ['APIC', 'PIC'] });
+  if (!image || !['image/jpeg', 'image/png', 'image/webp'].includes(image.mime)
+    || !Buffer.isBuffer(image.imageBuffer) || !image.imageBuffer.length
+    || image.imageBuffer.length > 2 * 1024 * 1024) return null;
+  const type = await fileTypeFromBuffer(image.imageBuffer).catch(() => null);
+  return type?.mime === image.mime ? image : null;
+}
+
 export async function updateSongMetadata(filePath, value) {
   const invalid = (message) => { throw Object.assign(new Error(message), { statusCode: 400 }); };
   if (path.extname(filePath).toLowerCase() !== '.mp3') invalid('Metadata editing is supported for MP3 files');

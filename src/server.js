@@ -12,6 +12,8 @@ import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFileP
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
+import { readSongThumbnail } from './artworkThumbnails.js';
+import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
 import { findNoVocals, individualPlaylistId, orderFiles, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
@@ -58,6 +60,12 @@ const apiLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false
 });
+const artworkLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 600,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false
+});
 
 function authLimiter(windowMs, limit) {
   return rateLimit({
@@ -94,7 +102,10 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 app.use(['/api/public', '/share'], mediaShareHeaders);
-app.use('/api', apiLimiter);
+app.use('/api', (req, res, next) => {
+  const artwork = ['GET', 'HEAD'].includes(req.method) && /^\/jobs\/[^/]+\/artwork\/[^/]+\/?$/i.test(req.path);
+  return (artwork ? artworkLimiter : apiLimiter)(req, res, next);
+});
 app.use('/api/public', publicMediaRouter());
 app.get('/share/:token', (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'), { cacheControl: false });
@@ -112,6 +123,26 @@ app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, r
   next();
 });
 app.use('/api/health', requireAuth);
+
+const thumbnailMaintenance = createThumbnailMaintenance({
+  songs: () => thumbnailSongs(openDatabase()),
+  async resolveFile(song) {
+    if (!song.output_dir || !isValidJobFileName(song.name)) throw new Error('Invalid thumbnail source');
+    const outputDir = await fs.realpath(song.output_dir);
+    const filePath = await fs.realpath(path.join(outputDir, song.name));
+    if (!isFileInsideJobFolder({ outputDir }, filePath)) throw new Error('Invalid thumbnail source');
+    return filePath;
+  }
+});
+app.use('/api/admin/artwork-thumbnails', requireAdmin, (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+app.get('/api/admin/artwork-thumbnails', (_req, res) => res.json(thumbnailMaintenance.status()));
+app.post('/api/admin/artwork-thumbnails', (_req, res) => {
+  try { return res.status(202).json(thumbnailMaintenance.start()); }
+  catch (error) { return res.status(error.statusCode || 500).json({ error: error.message }); }
+});
 
 app.get('/api/preferences', async (req, res) => {
   res.json((await getPreferences(req.user.id)));
@@ -384,6 +415,7 @@ async function listJobFiles(job, order, names) {
         noVocalsName: job.transcriptions?.[fileName]?.noVocalsName,
         sizeBytes: stat.size,
         downloadUrl: `/api/jobs/${job.id}/download/${encodeURIComponent(fileName)}`,
+        artworkUrl: /\.mp3$/i.test(fileName) ? `/api/jobs/${job.id}/artwork/${encodeURIComponent(fileName)}?v=${stat.mtimeMs}` : null,
         isSong: isSongFile(fileName),
         isPlayable: isPlayableFile(fileName),
         mediaType: mediaType(fileName),
@@ -437,6 +469,18 @@ app.get('/api/jobs/:id/stream/:name', async (req, res) => {
     res.set('Cache-Control', 'private, no-cache');
     if (/\.m4v$/i.test(filePath)) res.type('video/mp4');
     return res.sendFile(filePath);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
+  res.set('Cache-Control', 'private, no-cache');
+  try {
+    const filePath = await resolveRequestedFile(req, isSongFile);
+    const artwork = await readSongThumbnail(filePath);
+    if (!artwork) return res.status(404).end();
+    return res.type('image/webp').send(artwork);
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }

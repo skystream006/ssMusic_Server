@@ -7,7 +7,7 @@ export function restrictSharedAccess(req, res, next) {
   const authentication = req.method === 'POST' && ['/api/auth/logout', '/api/auth/login/options', '/api/auth/login/verify', '/api/auth/app/token'].includes(pathname);
   const reading = ['GET', 'HEAD'].includes(req.method) && (
     ['/api/auth/me', '/api/auth/pats', '/api/auth/passkeys', '/api/preferences', '/api/library', '/api/library/tracks', '/api/library/shared-users'].includes(pathname)
-    || /^\/api\/jobs\/[^/]+\/(stream|download|lyrics)\/[^/]+$/.test(pathname));
+    || /^\/api\/jobs\/[^/]+\/(stream|download|lyrics|artwork)\/[^/]+$/.test(pathname));
   const themePreferences = req.method === 'PUT' && pathname === '/api/preferences';
   const ownUsername = req.method === 'PATCH' && pathname === '/api/auth/me';
   if (authentication || reading || themePreferences || ownUsername) return next();

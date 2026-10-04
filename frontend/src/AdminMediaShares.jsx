@@ -78,3 +78,104 @@ export default function AdminMediaShares({ request, confirm }) {
   return <AdminMediaSharesView data={data} loading={loading} error={error} deleting={deleting}
     onRefresh={() => setRevision((value) => value + 1)} onPage={setPage} onDelete={remove} />;
 }
+
+export function AdminArtworkThumbnailsView({ status, starting = false, error = '', onRegenerate }) {
+  const busy = starting || Boolean(status?.running);
+  const message = starting ? 'Starting thumbnail regeneration...'
+    : !status ? (error ? 'Thumbnail status unavailable. Retrying automatically...' : 'Loading thumbnail status...')
+      : status.running ? 'Regenerating thumbnails...'
+        : status.error ? 'Thumbnail regeneration failed.'
+          : status.completedAt ? (status.failed ? 'Thumbnail regeneration completed with failures.' : 'Thumbnail regeneration completed.')
+            : 'Ready to regenerate all thumbnails.';
+  return <section className="users-section admin-artwork-thumbnails" aria-labelledby="admin-artwork-title">
+    <div className="section-title"><div><span>03</span><h2 id="admin-artwork-title">Album artwork thumbnails</h2></div></div>
+    <p>Regenerate all cached 96px WebP images on disk. Original album artwork and media files remain unchanged.</p>
+    <button className="primary-button compact-button" type="button" disabled={!status || busy} onClick={onRegenerate}>
+      <RefreshCw size={16} className={busy ? 'spin' : undefined} />Regenerate all thumbnails
+    </button>
+    <div role="status" aria-live="polite" aria-atomic="true">
+      <p>{message}</p>
+      {status && <dl>
+        <div><dt>Processed</dt><dd>{status.processed}</dd></div>
+        <div><dt>Generated</dt><dd>{status.generated}</dd></div>
+        <div><dt>Missing artwork</dt><dd>{status.missing}</dd></div>
+        <div><dt>Failed</dt><dd>{status.failed}</dd></div>
+      </dl>}
+    </div>
+    {status?.startedAt && <p>Started: <time dateTime={status.startedAt}>{new Date(status.startedAt).toLocaleString()}</time></p>}
+    {status?.completedAt && <p>Completed: <time dateTime={status.completedAt}>{new Date(status.completedAt).toLocaleString()}</time></p>}
+    {error && <p className="notice error" role="alert"><CircleAlert size={16} />{error}</p>}
+    {status?.error && <p className="notice error" role="alert"><CircleAlert size={16} />{status.error}</p>}
+  </section>;
+}
+
+export function watchArtworkThumbnails(request, onChange) {
+  const endpoint = '/api/admin/artwork-thumbnails';
+  let active = true;
+  let revision = 0;
+  let timer;
+  let pendingRequest;
+  let startError = '';
+  let state = { status: null, starting: false, error: '' };
+  const update = (changes) => { state = { ...state, ...changes }; onChange(state); };
+  const schedule = () => { timer = setTimeout(poll, 2000); };
+
+  async function poll() {
+    const version = revision;
+    pendingRequest = new AbortController();
+    try {
+      const status = await request(endpoint, { signal: pendingRequest.signal });
+      if (active && version === revision) update({ status, error: startError });
+    } catch (error) {
+      if (active && version === revision) update({ status: null, error: error.message || 'Unable to load thumbnail status.' });
+    } finally {
+      if (active && version === revision) schedule();
+    }
+  }
+
+  update({});
+  void poll();
+  return {
+    async start() {
+      if (!active || state.starting || !state.status || state.status.running) return;
+      // Ignore a pre-start poll even if its response arrives after the POST.
+      revision++;
+      clearTimeout(timer);
+      pendingRequest?.abort();
+      pendingRequest = new AbortController();
+      startError = '';
+      update({ starting: true, error: '' });
+      try {
+        const status = await request(endpoint, { method: 'POST', signal: pendingRequest.signal });
+        if (active) update({ status });
+      } catch (error) {
+        if (active) {
+          startError = error.status === 409 ? '' : (error.message || 'Unable to start thumbnail regeneration.');
+          update({ status: null, error: startError });
+        }
+      } finally {
+        if (active) {
+          update({ starting: false });
+          if (state.status) schedule();
+          else void poll();
+        }
+      }
+    },
+    stop() {
+      active = false;
+      clearTimeout(timer);
+      pendingRequest?.abort();
+    }
+  };
+}
+
+export function AdminArtworkThumbnails({ request }) {
+  const [state, setState] = useState({ status: null, starting: false, error: '' });
+  const monitor = useRef(null);
+  useEffect(() => {
+    const watcher = watchArtworkThumbnails(request, setState);
+    monitor.current = watcher;
+    return () => { monitor.current = null; watcher.stop(); };
+  }, [request]);
+  return <AdminArtworkThumbnailsView {...state} onRegenerate={() => monitor.current?.start()} />;
+}
