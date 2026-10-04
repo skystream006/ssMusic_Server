@@ -1194,6 +1194,24 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.deepEqual(Object.keys(progress.result.jobs[0]).sort(), ['id', 'playlistTitle']);
   await context.test('uploads pre-generate thumbnail files and administrators can rebuild all indexed songs', async () => {
     if (thumbnailBuffer) {
+      const cacheRoot = path.join(directory, 'data', 'artwork-thumbnails');
+      const beforeCache = (await fs.readdir(cacheRoot, { recursive: true })).sort();
+      const database = openDatabase();
+      await database.exec(`CREATE FUNCTION fail_thumbnail_import() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'Injected import database failure'; END $$;
+        CREATE CONSTRAINT TRIGGER fail_thumbnail_import AFTER INSERT ON jobs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+        WHEN (NEW.data->>'playlistTitle' = 'Reject thumbnail import') EXECUTE FUNCTION fail_thumbnail_import()`);
+      try {
+        const rejected = await upload({ ...importOptions, playlistTitle: 'Reject thumbnail import' },
+          [{ ...uploadFile, name: 'Cover.mp3', data: NodeID3.update({
+            image: { mime: 'image/png', type: { id: 3 }, imageBuffer: artworkBuffer }
+          }, importedAudio.buffer) }]);
+        assert.equal(rejected.status, 500);
+        assert.deepEqual((await fs.readdir(cacheRoot, { recursive: true })).sort(), beforeCache,
+          'failed imports do not leave thumbnail caches behind');
+      } finally {
+        await database.exec('DROP TRIGGER fail_thumbnail_import ON jobs; DROP FUNCTION fail_thumbnail_import()');
+      }
       const uploaded = await upload({ ...importOptions, playlistTitle: 'Thumbnail upload' },
         [{ ...uploadFile, name: 'Cover.mp3', data: NodeID3.update({
           image: { mime: 'image/png', type: { id: 3 }, imageBuffer: artworkBuffer }

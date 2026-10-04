@@ -106,7 +106,16 @@ async function refreshSongMetadata(job, names = job.files || []) {
       job.songMetadata ||= {};
       job.songMetadata[name] = { ...job.songMetadata[name], ...summary };
     }
-    await refreshSongThumbnail(filePath);
+  }
+}
+
+async function refreshJobThumbnails(job, names = job.files || []) {
+  const outputDir = job.outputDir && await fs.realpath(job.outputDir).catch(() => null);
+  if (!outputDir) return;
+  for (const name of names) {
+    if (!isValidJobFileName(name) || !/\.mp3$/i.test(name)) continue;
+    const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
+    if (filePath && isFileInsideJobFolder({ outputDir }, filePath)) await refreshSongThumbnail(filePath);
   }
 }
 
@@ -466,6 +475,7 @@ async function executeJob(job) {
       await refreshSongMetadata(job);
       job.updatedAt = new Date().toISOString();
       await persistJob({ ...job, status: completedStatus || job.status });
+      await refreshJobThumbnails(job);
       if (completedStatus) job.status = completedStatus;
     } finally {
       runningJobsCount = Math.max(0, runningJobsCount - 1);
@@ -618,6 +628,7 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
     job.playlistSongCount = linkedPlaylist ? playlistSongCount : job.files.filter(isPlayableFile).length;
     job.updatedAt = new Date().toISOString();
     await persistJob(job);
+    await refreshJobThumbnails(job, added);
     return job;
   } catch (error) {
     await Promise.all(added.map((name) => fs.rm(path.join(job.outputDir, name), { force: true })));
