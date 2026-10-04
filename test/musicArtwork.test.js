@@ -142,6 +142,75 @@ test('thumbnail generation limits concurrent encoders to two', async (context) =
   assert.equal(maximum, 2);
 });
 
+test('cached reads bypass busy encoders and survive a concurrent failed rebuild', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-thumbnails-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const files = ['playing.mp3', 'cached.mp3', 'uncached.mp3'].map((name) => path.join(directory, name));
+  await Promise.all(files.map((file) => fs.writeFile(file, 'audio')));
+  const thumbnail = Buffer.from('RIFF0000WEBPthumbnail');
+  let block = false;
+  let entered = 0;
+  let release;
+  let started;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const busy = new Promise((resolve) => { started = resolve; });
+  const cache = createThumbnailCache({ root: path.join(directory, 'cache'),
+    readArtwork: async () => ({}), async encode() {
+      if (block) {
+        if (++entered === 2) started();
+        await gate;
+        throw new Error('Encoder unavailable');
+      }
+      return thumbnail;
+    } });
+  await cache.read(files[0]);
+  await cache.read(files[1]);
+  block = true;
+  const rebuild = cache.read(files[0], { force: true }).catch((error) => error);
+  const other = cache.read(files[2]).catch((error) => error);
+  await busy;
+  let timeout;
+  try {
+    const result = await Promise.race([
+      Promise.all([cache.read(files[0]), cache.read(files[1])]),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Cached reads waited for encoding')), 500); })
+    ]);
+    assert.deepEqual(result, [thumbnail, thumbnail]);
+  } finally { clearTimeout(timeout); release(); }
+  assert.match((await rebuild).message, /Encoder unavailable/);
+  assert.match((await other).message, /Encoder unavailable/);
+  assert.deepEqual(await cache.read(files[0]), thumbnail);
+});
+
+test('cache removal after source deletion waits for any outstanding thumbnail publication', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-thumbnails-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'Song.mp3');
+  const root = path.join(directory, 'cache');
+  await fs.writeFile(filePath, 'audio');
+  let release;
+  let publicationReady;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ready = new Promise((resolve) => { publicationReady = resolve; });
+  const rename = fs.rename;
+  context.mock.method(fs, 'rename', async (...args) => {
+    publicationReady();
+    await gate;
+    return rename(...args);
+  });
+  const cache = createThumbnailCache({ root, readArtwork: async () => ({}),
+    encode: async () => Buffer.from('RIFF0000WEBPthumbnail') });
+  const generating = cache.read(filePath);
+  await ready;
+  await fs.unlink(filePath);
+  const removing = cache.remove(filePath);
+  release();
+  await generating;
+  await removing;
+  assert.deepEqual(await fs.readdir(root), []);
+  await assert.rejects(cache.read(filePath), { code: 'ENOENT' });
+});
+
 test('FFmpeg encodes bounded 96px WebP thumbnails without modifying original artwork', async (context) => {
   const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
   const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;

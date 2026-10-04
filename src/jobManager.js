@@ -369,10 +369,15 @@ async function removeJobOutput(job) {
 
   const relative = path.relative(outputRoot, job.outputDir);
   if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    const thumbnailFiles = [];
+    const outputDir = await fs.realpath(job.outputDir).catch(() => null);
     for (const name of job.files || []) {
-      if (isValidJobFileName(name) && /\.mp3$/i.test(name)) await removeSongThumbnail(getFilePath(job, name));
+      if (!outputDir || !isValidJobFileName(name) || !/\.mp3$/i.test(name)) continue;
+      const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
+      if (filePath && isFileInsideJobFolder({ outputDir }, filePath)) thumbnailFiles.push(filePath);
     }
     await fs.rm(job.outputDir, { recursive: true, force: true });
+    for (const filePath of thumbnailFiles) await removeSongThumbnail(filePath);
   }
 }
 
@@ -932,10 +937,11 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
         throw Object.assign(new Error('This song has other playlist links. Remove it from a playlist first.'), { statusCode: 409 });
       }
       unlock = lockLibraryFile(job, fileName, allJobs);
-      await removeSongThumbnail(filePath);
+      const thumbnailPath = await fs.realpath(filePath).catch(() => filePath);
       await fs.unlink(filePath).catch((error) => {
         if (error.code !== 'ENOENT') throw error;
       });
+      await removeSongThumbnail(thumbnailPath);
       const currentJob = transcriptionQueues.get(id)?.job || (await getJob(id));
       currentJob.files = currentJob.files.filter((name) => name !== fileName);
       if (currentJob.transcriptions) delete currentJob.transcriptions[fileName];

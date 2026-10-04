@@ -42,6 +42,14 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
   const waiting = [];
   let running = 0;
 
+  async function readCached(target) {
+    const cached = await fs.readFile(target).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+      return null;
+    });
+    return cached && (!cached.length || isWebp(cached)) ? cached : null;
+  }
+
   async function generate(filePath, force) {
     if (running >= 2) await new Promise((resolve) => waiting.push(resolve));
     else running += 1;
@@ -53,11 +61,8 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
         const revision = signature(stat);
         const target = path.join(directory, `${revision}.webp`);
         if (!force) {
-          const cached = await fs.readFile(target).catch((error) => {
-            if (error.code !== 'ENOENT') throw error;
-            return null;
-          });
-          if (cached && (!cached.length || isWebp(cached))) return cached.length ? cached : null;
+          const cached = await readCached(target);
+          if (cached) return cached.length ? cached : null;
         }
         const image = await readArtwork(filePath);
         const thumbnail = image ? await encode(image) : Buffer.alloc(0);
@@ -85,6 +90,11 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
   async function read(filePath, { force = false } = {}) {
     if (!/\.mp3$/i.test(filePath)) return null;
     const realPath = await fs.realpath(filePath);
+    if (!force) {
+      const revision = signature(await fs.stat(realPath));
+      const cached = await readCached(path.join(root, hash(realPath), `${revision}.webp`));
+      if (cached) return cached.length ? cached : null;
+    }
     const existing = pending.get(realPath);
     if (existing) {
       await existing;

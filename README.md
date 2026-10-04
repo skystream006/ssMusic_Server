@@ -937,7 +937,7 @@ songs without a cache are generated on their first artwork request. A thumbnail
 generation failure does not roll back a song upload or edit; check FFmpeg and retry.
 Artwork requests still require authentication and granted-library access.
 
-On **Admin → Users**, use **Regenerate thumbnails** in the album artwork section to
+On **Admin → Users**, use **Regenerate all thumbnails** in the album artwork section to
 rebuild thumbnails for all indexed MP3 songs, across all users. Regeneration runs in
 the background in bounded batches, with processed, generated, missing, and failed
 counts. Only administrators may start or view this operation, and only one rebuild
