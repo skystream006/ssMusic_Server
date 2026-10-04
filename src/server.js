@@ -58,6 +58,12 @@ const apiLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false
 });
+const artworkLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 600,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false
+});
 
 function authLimiter(windowMs, limit) {
   return rateLimit({
@@ -94,7 +100,10 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 app.use(['/api/public', '/share'], mediaShareHeaders);
-app.use('/api', apiLimiter);
+app.use('/api', (req, res, next) => {
+  const artwork = ['GET', 'HEAD'].includes(req.method) && /^\/jobs\/[^/]+\/artwork\/[^/]+\/?$/i.test(req.path);
+  return (artwork ? artworkLimiter : apiLimiter)(req, res, next);
+});
 app.use('/api/public', publicMediaRouter());
 app.get('/share/:token', (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'), { cacheControl: false });

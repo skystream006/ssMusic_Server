@@ -1171,4 +1171,20 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(progress.result.importedFiles, 1);
   assert.equal(progress.result.jobs[0].playlistTitle, 'iTunes favorites');
   assert.deepEqual(Object.keys(progress.result.jobs[0]).sort(), ['id', 'playlistTitle']);
+  await context.test('artwork requests have a separate limit and cannot exhaust playback or library access', async () => {
+    const exited = once(server, 'exit');
+    server.kill();
+    await exited;
+    await startServer();
+    const missingCover = '/api/jobs/missing/artwork/missing.mp3';
+    for (let index = 0; index < 600; index++) {
+      assert.equal((await call(missingCover, 'GET', credentials.Owner[0])).status, 404);
+    }
+    assert.equal((await call(missingCover, 'GET', credentials.Owner[0])).status, 429);
+    assert.equal((await call(missingCover, 'HEAD', credentials.Owner[0])).status, 429);
+    assert.equal((await call('/api/library', 'GET', credentials.Owner[0])).status, 200);
+    const stream = await call(`/api/jobs/${localImport.body.jobs[0].id}/stream/Uploaded.mp3`, 'GET',
+      { ...credentials.Owner[0], Range: 'bytes=0-1' });
+    assert.equal(stream.status, 206);
+  });
 });
