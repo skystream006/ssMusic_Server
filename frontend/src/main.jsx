@@ -48,7 +48,7 @@ import './styles.css';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
 import PublicMedia from './PublicMedia.jsx';
-import AdminMediaShares from './AdminMediaShares.jsx';
+import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
 import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
 import { LibraryAccessList, UsernameForm } from './AccountSettings.jsx';
 import ImportMusic from './ImportMusic.jsx';
@@ -1446,6 +1446,7 @@ function AdminPage() {
         </div>
       </article>)}</div>
     </section>
+    <AdminArtworkThumbnails request={request} />
     {dialog}
   </AppShell>;
 }

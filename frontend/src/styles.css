@@ -403,6 +403,11 @@ code { font: 400 11px 'DM Mono', monospace; }
 .pending-count span { margin-top: 3px; color: var(--muted); font-size: 9px; text-transform: uppercase; }
 .users-section + .users-section { margin-top: 48px; }
 .users-section .section-title > strong { font: 500 12px 'DM Mono', monospace; }
+.admin-artwork-thumbnails > p, .admin-artwork-thumbnails [role="status"] > p { margin: 14px 0; font-size: 13px; }
+.admin-artwork-thumbnails dl { display: flex; flex-wrap: wrap; gap: 16px 32px; margin: 16px 0; }
+.admin-artwork-thumbnails dt { color: var(--muted); font-size: 12px; }
+.admin-artwork-thumbnails dd { margin: 4px 0 0; font: 500 18px 'DM Mono', monospace; }
+.admin-artwork-thumbnails .notice { overflow-wrap: anywhere; }
 .empty-state.compact { padding: 38px 20px; }
 .user-list { border-top: 1px solid var(--ink); }
 .user-row { min-height: 76px; display: grid; grid-template-columns: minmax(190px, 1fr) 130px 160px; align-items: center; gap: 18px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }

@@ -923,9 +923,29 @@ It lists only jobs you initiated or contribute to, using their **Playlist Title*
 This personal-library rule also applies to administrators. The Jobs dashboard keeps
 its existing broader access rules. Select a playlist on the left to browse its songs
 on the right. Search playlists or songs independently.
-Song rows show embedded MP3 album artwork, loaded as you browse, with a music-note
-placeholder when no supported cover is available. Covers refresh after metadata
-edits or file replacement.
+Song rows lazy-load **96 × 96 WebP thumbnails** of embedded MP3 album artwork,
+with a music-note placeholder when no supported cover is available. Uploads,
+downloads, metadata edits, file replacement, and transcription refresh the
+thumbnails using the existing FFmpeg runtime. Original artwork and audio are
+unchanged.
+
+Thumbnails are cached on disk under `data/artwork-thumbnails` (the existing Docker
+data volume), not in PostgreSQL. Unchanged songs are served from this cache without
+reading their ID3 tags again. Source-file revisions invalidate stale thumbnails,
+including when artwork is removed; older cached revisions are discarded. Existing
+songs without a cache are generated on their first artwork request. A thumbnail
+generation failure does not roll back a song upload or edit; check FFmpeg and retry.
+Artwork requests still require authentication and granted-library access.
+
+On **Admin → Users**, use **Regenerate thumbnails** in the album artwork section to
+rebuild thumbnails for all indexed MP3 songs, across all users. Regeneration runs in
+the background in bounded batches, with processed, generated, missing, and failed
+counts. Only administrators may start or view this operation, and only one rebuild
+runs at a time. Individual failures do not stop the remaining songs. Progress is
+in memory and resets on server restart; cached images persist. Restart regeneration
+after a restart or after correcting FFmpeg errors. The original images remain
+available in song metadata and downloads.
+
 The playback dock supports play/pause, previous/next, shuffle, repeat, seeking,
 volume, a playback queue, embedded artwork, and synchronized or plain-text lyrics.
 Lyrics open over a darkened page while the playback dock remains visible and

@@ -11,7 +11,9 @@ import { parseArgs } from 'node:util';
 import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
-import { readSongArtwork, readSongMetadata, readSongSummary } from './music.js';
+import { readSongMetadata, readSongSummary } from './music.js';
+import { readSongThumbnail } from './artworkThumbnails.js';
+import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
 import { findNoVocals, individualPlaylistId, orderFiles, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
@@ -121,6 +123,26 @@ app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, r
   next();
 });
 app.use('/api/health', requireAuth);
+
+const thumbnailMaintenance = createThumbnailMaintenance({
+  songs: () => thumbnailSongs(openDatabase()),
+  async resolveFile(song) {
+    if (!song.output_dir || !isValidJobFileName(song.name)) throw new Error('Invalid thumbnail source');
+    const outputDir = await fs.realpath(song.output_dir);
+    const filePath = await fs.realpath(path.join(outputDir, song.name));
+    if (!isFileInsideJobFolder({ outputDir }, filePath)) throw new Error('Invalid thumbnail source');
+    return filePath;
+  }
+});
+app.use('/api/admin/artwork-thumbnails', requireAdmin, (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+app.get('/api/admin/artwork-thumbnails', (_req, res) => res.json(thumbnailMaintenance.status()));
+app.post('/api/admin/artwork-thumbnails', (_req, res) => {
+  try { return res.status(202).json(thumbnailMaintenance.start()); }
+  catch (error) { return res.status(error.statusCode || 500).json({ error: error.message }); }
+});
 
 app.get('/api/preferences', async (req, res) => {
   res.json((await getPreferences(req.user.id)));
@@ -456,9 +478,9 @@ app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
   res.set('Cache-Control', 'private, no-cache');
   try {
     const filePath = await resolveRequestedFile(req, isSongFile);
-    const artwork = await readSongArtwork(filePath);
+    const artwork = await readSongThumbnail(filePath);
     if (!artwork) return res.status(404).end();
-    return res.type(artwork.mime).send(artwork.imageBuffer);
+    return res.type('image/webp').send(artwork);
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }

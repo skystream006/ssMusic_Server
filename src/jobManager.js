@@ -9,6 +9,7 @@ import { deletePostgresJob, indexPostgresSongMetadata, readPostgresJob, readPost
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
 import { isPlayableFile } from './media.js';
 import { readSongMetadata, readSongSummary, updateSongMetadata } from './music.js';
+import { refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
 import { songMetadataFields } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
 
@@ -105,6 +106,7 @@ async function refreshSongMetadata(job, names = job.files || []) {
       job.songMetadata ||= {};
       job.songMetadata[name] = { ...job.songMetadata[name], ...summary };
     }
+    await refreshSongThumbnail(filePath);
   }
 }
 
@@ -367,6 +369,9 @@ async function removeJobOutput(job) {
 
   const relative = path.relative(outputRoot, job.outputDir);
   if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    for (const name of job.files || []) {
+      if (isValidJobFileName(name) && /\.mp3$/i.test(name)) await removeSongThumbnail(getFilePath(job, name));
+    }
     await fs.rm(job.outputDir, { recursive: true, force: true });
   }
 }
@@ -740,6 +745,9 @@ async function executeTranscription(job, fileName, options, transcription) {
       if (!noVocals) await updatePostgresSong(database, updatedJob, fileName, 'transcription', updatedJob.transcriptions[fileName]);
       else await persistJob(updatedJob);
     }));
+    for (const result of replacements) {
+      await refreshSongThumbnail(getFilePath(job, result.original ? fileName : `[NoVocals]/${result.name}`));
+    }
     return job;
   } catch (error) {
     job.updatedAt = new Date().toISOString();
@@ -788,6 +796,7 @@ export async function setSongMetadata(id, fileName, value, user = null) {
         transcriptionLocked: metadata.transcriptionLocked } };
       job.updatedAt = new Date().toISOString();
       await updatePostgresSong(database, job, fileName, 'metadata', job.songMetadata[fileName]);
+      await refreshSongThumbnail(realPath);
       return metadata;
     });
   } finally { jobMutations.delete(id); }
@@ -872,6 +881,7 @@ export async function replaceJobFile(id, fileName, user, receiveFile) {
         if (replaced) await fs.rename(backup, filePath);
         throw error;
       }
+      await refreshSongThumbnail(filePath);
       return { job: updatedJob, metadata };
     });
   } finally {
@@ -922,6 +932,7 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
         throw Object.assign(new Error('This song has other playlist links. Remove it from a playlist first.'), { statusCode: 409 });
       }
       unlock = lockLibraryFile(job, fileName, allJobs);
+      await removeSongThumbnail(filePath);
       await fs.unlink(filePath).catch((error) => {
         if (error.code !== 'ENOENT') throw error;
       });

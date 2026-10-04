@@ -146,6 +146,8 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
   const probePath = path.join(probeDirectory, probeName);
   await fs.mkdir(probeDirectory);
   await fs.symlink(path.join(ffmpegDirectory, probeName), probePath);
+  const encoderName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  await fs.symlink(path.join(ffmpegDirectory, encoderName), path.join(probeDirectory, encoderName));
   server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
     '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
     cwd: directory, env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath, FFMPEG_PATH: probeDirectory,
@@ -319,7 +321,7 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
       { jobId: job.id, name: songName, playlistId: 'extra-playlist' }] }, jobs);
     const memberships = await database.prepare('SELECT * FROM library_memberships WHERE user_id = $1 ORDER BY playlist_id, name').all(users.Owner.id);
     const before = (await call(`/api/jobs/${job.id}/files`)).body.files.find((file) => file.name === songName);
-    const imageBuffer = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489', 'hex');
+    const imageBuffer = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
     const replacement = audio({ title: 'Brand new replacement', artist: 'Replacement artist',
       image: { mime: 'image/png', type: { id: 3, name: 'front cover' }, imageBuffer },
       synchronisedLyrics: [{ language: 'eng', timeStampFormat: 2, contentType: 1,
@@ -341,6 +343,14 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
     assert.equal(result.body.metadata.uslt, 'New plain lyrics');
     assert.deepEqual(result.body.metadata.sylt, [{ time: 1, text: 'New timed line' }]);
     assert.equal(result.body.metadata.artwork, `data:image/png;base64,${imageBuffer.toString('base64')}`);
+    const cacheFiles = await fs.readdir(path.join(directory, 'data', 'artwork-thumbnails'), { recursive: true });
+    const cachedCovers = await Promise.all(cacheFiles.filter((file) => file.endsWith('.webp'))
+      .map((file) => fs.readFile(path.join(directory, 'data', 'artwork-thumbnails', file))));
+    assert.ok(cachedCovers.some((cover) => cover.toString('ascii', 8, 12) === 'WEBP'),
+      'replacement generates a thumbnail before artwork is requested');
+    const cover = await call(result.body.file.artworkUrl);
+    assert.equal(cover.status, 200);
+    assert.equal(cover.headers['content-type'], 'image/webp');
     assert.deepEqual((await call(result.body.file.streamUrl)).buffer, replacement);
     const ranged = await call(result.body.file.streamUrl, 'GET', { ...credentials.Owner[0], Range: 'bytes=0-15' });
     assert.equal(ranged.status, 206);
@@ -376,6 +386,7 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
       assert.equal(stored.songMetadata[songName][field], value, field);
     }
     assert.equal(result.body.metadata.artwork, null);
+    assert.equal((await call(result.body.file.artworkUrl)).status, 404);
     assert.equal(result.body.metadata.uslt, '');
     assert.deepEqual(result.body.metadata.sylt, []);
     assert.deepEqual(stored.transcriptions[songName], { noVocalsName });

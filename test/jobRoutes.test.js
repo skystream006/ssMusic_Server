@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import https from 'node:https';
@@ -16,6 +17,7 @@ import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 import { readPostgresJob } from '../src/postgresCatalog.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 import { readSongMetadata, readSongSummary, updateSongMetadata } from '../src/music.js';
+import { encodeThumbnail } from '../src/artworkThumbnails.js';
 
 test('MP3 ratings round-trip all stars and refresh cached file metadata', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-ratings-'));
@@ -176,6 +178,12 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const ffmpegPath = /^ffmpeg(?:\.exe)?$/i.test(path.basename(ffmpegLocation)) ? ffmpegLocation
     : path.join(ffmpegLocation, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
   const canConvertWav = await fs.access(ffmpegPath).then(() => true, () => false);
+  const thumbnailBuffer = canConvertWav ? await encodeThumbnail({ mime: 'image/png', imageBuffer: artworkBuffer }) : null;
+  async function cachedThumbnails(filePath) {
+    const key = createHash('sha256').update(await fs.realpath(filePath)).digest('hex');
+    const cache = path.join(directory, 'data', 'artwork-thumbnails', key);
+    return Promise.all((await fs.readdir(cache)).map((name) => fs.readFile(path.join(cache, name))));
+  }
   async function startServer() {
     server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
       '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
@@ -282,8 +290,11 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       assert.equal(metadata.body.artist, 'An artist');
       assert.equal(metadata.body.rating, 3);
       const cover = await call(`/api/jobs/music/artwork/${metadataName}`, 'GET', headers);
-      assert.equal(cover.status, 200);
-      assert.deepEqual(cover.buffer, artworkBuffer);
+      assert.equal(cover.status, thumbnailBuffer ? 200 : 500);
+      if (thumbnailBuffer) assert.deepEqual(cover.buffer, thumbnailBuffer);
+      for (const method of ['GET', 'POST']) {
+        assert.equal((await call('/api/admin/artwork-thumbnails', method, headers)).status, 403);
+      }
       assert.equal((await call(`/api/jobs/music/files/${metadataName}/metadata`, 'PATCH', headers,
         { title: 'Not allowed', rating: 5, artwork: null, transcriptionLocked: true })).status, 403);
       assert.deepEqual(await fs.readFile(path.join(musicDir, '[NoVocals]', songName)), taggedAudio);
@@ -493,14 +504,19 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await call(streamRoute)).status, 401);
   assert.equal((await call(lyricsRoute)).status, 401);
   assert.equal((await call(artworkRoute)).status, 401);
+  for (const method of ['GET', 'POST']) {
+    assert.equal((await call('/api/admin/artwork-thumbnails', method)).status, 401);
+    assert.equal((await call('/api/admin/artwork-thumbnails', method, credentials.Owner[0])).status, 403);
+  }
   const artworkTrack = allTracks.files.find((file) => file.name === `[NoVocals]/${songName}`);
   assert.equal(artworkTrack.artworkUrl, `${artworkRoute}?v=${(await fs.stat(path.join(musicDir, '[NoVocals]', songName))).mtimeMs}`);
   assert.equal(artworkTrack.artwork, undefined);
   for (const headers of [...credentials.Owner, mobileHeaders.Owner]) {
     const cover = await call(artworkTrack.artworkUrl, 'GET', headers);
-    assert.equal(cover.status, 200);
-    assert.deepEqual(cover.buffer, artworkBuffer);
-    assert.equal(cover.headers['content-type'], 'image/png');
+    assert.equal(cover.status, thumbnailBuffer ? 200 : 500);
+    if (!thumbnailBuffer) continue;
+    assert.deepEqual(cover.buffer, thumbnailBuffer);
+    assert.equal(cover.headers['content-type'], 'image/webp');
     assert.equal(cover.headers['cache-control'], 'private, no-cache');
     assert.equal(cover.headers['x-content-type-options'], 'nosniff');
     assert.equal((await call(artworkTrack.artworkUrl, 'GET', { ...headers, 'If-None-Match': cover.headers.etag })).status, 304);
@@ -540,6 +556,10 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(edited.body.rating, 5);
   assert.deepEqual(edited.body.sylt, lyrics.body.sylt);
   assert.equal(edited.body.uslt, lyrics.body.uslt);
+  if (thumbnailBuffer) {
+    assert.deepEqual(await cachedThumbnails(path.join(musicDir, '[NoVocals]', songName)), [thumbnailBuffer],
+      'metadata edits generate the thumbnail before any artwork GET');
+  }
   assert.equal((await call(lyricsRoute, 'GET', credentials.Owner[0])).body.performerInfo, 'Album artist');
   const changedFile = await fs.readFile(path.join(musicDir, '[NoVocals]', songName));
   assert.deepEqual(NodeID3.removeTagsFromBuffer(changedFile), NodeID3.removeTagsFromBuffer(taggedAudio));
@@ -549,7 +569,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await call('/api/library/tracks', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`).rating, 5);
   const updatedArtworkTrack = (await call('/api/library/tracks', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`);
   assert.notEqual(updatedArtworkTrack.artworkUrl, artworkTrack.artworkUrl);
-  assert.deepEqual((await call(updatedArtworkTrack.artworkUrl, 'GET', credentials.Owner[0])).buffer, artworkBuffer);
+  if (thumbnailBuffer) assert.deepEqual((await call(updatedArtworkTrack.artworkUrl, 'GET', credentials.Owner[0])).buffer, thumbnailBuffer);
   assert.equal((await call('/api/jobs/music/files', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`).title, 'Edited song');
   const retainedArtwork = await call(metadataRoute, 'PATCH', credentials.Admin[1], { artist: '' });
   assert.equal(retainedArtwork.body.artist, '');
@@ -561,6 +581,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.deepEqual(clearedRating.body.sylt, lyrics.body.sylt);
   assert.equal(NodeID3.read(await fs.readFile(path.join(musicDir, '[NoVocals]', songName))).popularimeter.rating, 0);
   assert.equal((await call(metadataRoute, 'PATCH', credentials.Owner[1], { artwork: null })).body.artwork, null);
+  assert.deepEqual(await cachedThumbnails(path.join(musicDir, '[NoVocals]', songName)), [Buffer.alloc(0)]);
   assert.equal((await call(updatedArtworkTrack.artworkUrl, 'GET', credentials.Owner[0])).status, 404);
   assert.equal((await call('/api/jobs/music/files/..%2Foutside.mp3/metadata', 'PATCH', credentials.Owner[0], { title: 'Bad' })).status, 400);
   assert.equal((await call('/api/jobs/music/files/missing.mp3/metadata', 'PATCH', credentials.Owner[0], { title: 'Missing' })).status, 404);
@@ -1171,6 +1192,37 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(progress.result.importedFiles, 1);
   assert.equal(progress.result.jobs[0].playlistTitle, 'iTunes favorites');
   assert.deepEqual(Object.keys(progress.result.jobs[0]).sort(), ['id', 'playlistTitle']);
+  await context.test('uploads pre-generate thumbnail files and administrators can rebuild all indexed songs', async () => {
+    if (thumbnailBuffer) {
+      const uploaded = await upload({ ...importOptions, playlistTitle: 'Thumbnail upload' },
+        [{ ...uploadFile, name: 'Cover.mp3', data: NodeID3.update({
+          image: { mime: 'image/png', type: { id: 3 }, imageBuffer: artworkBuffer }
+        }, importedAudio.buffer) }]);
+      assert.equal(uploaded.status, 201, uploaded.text);
+      const uploadedJob = (await call(`/api/jobs/${uploaded.body.jobs[0].id}`, 'GET', credentials.Owner[0])).body;
+      assert.deepEqual(await cachedThumbnails(path.join(uploadedJob.outputDir, 'Cover.mp3')), [thumbnailBuffer]);
+    }
+    await fs.rm(path.join(directory, 'data', 'artwork-thumbnails'), { recursive: true, force: true });
+    const initial = await call('/api/admin/artwork-thumbnails', 'GET', credentials.Admin[0]);
+    assert.equal(initial.status, 200);
+    assert.equal(initial.headers['cache-control'], 'no-store');
+    assert.equal(initial.body.running, false);
+    const started = await call('/api/admin/artwork-thumbnails', 'POST', credentials.Admin[1]);
+    assert.equal(started.status, 202);
+    let state = started.body;
+    while (state.running) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const status = await call('/api/admin/artwork-thumbnails', 'GET', credentials.Admin[1]);
+      assert.equal(status.status, 200);
+      state = status.body;
+    }
+    assert.ok(state.processed > 0);
+    assert.equal(state.processed, state.generated + state.missing + state.failed);
+    assert.equal(state.failed, 0);
+    assert.ok(state.completedAt);
+    if (thumbnailBuffer) assert.ok(state.generated > 0);
+    assert.ok((await fs.readdir(path.join(directory, 'data', 'artwork-thumbnails'))).length > 0);
+  });
   await context.test('artwork requests have a separate limit and cannot exhaust playback or library access', async () => {
     const exited = once(server, 'exit');
     server.kill();
