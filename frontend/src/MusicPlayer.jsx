@@ -126,6 +126,17 @@ function KaraokeButton({ track, tracks, onPlay, showLabel = false }) {
     aria-label={`Play karaoke version of ${track.title || track.name}`} onClick={() => onPlay(version)}><MicVocal size={18} />{showLabel && <span>Play karaoke (NoVocals)</span>}</button> : null;
 }
 
+export function SongArtwork({ track }) {
+  const [failedUrl, setFailedUrl] = useState(null);
+  const isVideo = mediaType(track.name) === 'video';
+  return <span className="song-artwork" aria-hidden="true">
+    {!isVideo && track.artworkUrl && track.artworkUrl !== failedUrl
+      ? <img key={track.artworkUrl} src={track.artworkUrl} alt="" loading="lazy" decoding="async"
+        onError={() => setFailedUrl(track.artworkUrl)} />
+      : isVideo ? <Film size={20} /> : <Music2 size={20} />}
+  </span>;
+}
+
 function TrackPagination({ pagination, position }) {
   const { page, pageSize, total, totalPages, loading, onChange } = pagination;
   return <nav className="track-pagination" aria-label={`Track pages ${position}`}>
@@ -504,6 +515,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               <div className="song-title-actions"><button className="song-select" type="button" title={track.name} aria-label={`Play ${track.name}`} aria-current={current ? 'true' : undefined}
                 onClick={() => selectSong(track, tracks, libraryScope)}>
                 <span className="song-number">{mediaType(track.name) === 'video' ? <Film size={15} aria-label="Movie" /> : current && playing ? <Music2 size={15} /> : trackIndex + 1}</span>
+                <SongArtwork track={track} />
                 <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><small>{track.artist || (track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original')}</small>
                   <TranscriptionStatus transcription={action.transcription} /></span>
               </button></div>

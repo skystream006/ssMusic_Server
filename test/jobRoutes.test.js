@@ -148,7 +148,10 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   }
   const musicDir = path.join(outputRoot, 'music');
   await fs.mkdir(path.join(musicDir, '[NoVocals]'));
+  const artwork = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+  const artworkBuffer = Buffer.from(artwork.split(',')[1], 'base64');
   const taggedAudio = NodeID3.write({ title: 'A song', artist: 'An artist',
+    image: { mime: 'image/png', type: { id: 3 }, imageBuffer: artworkBuffer },
     popularimeter: { email: 'listener@example.com', rating: 128, counter: 12 },
     unsynchronisedLyrics: { language: 'eng', text: 'First line\nSecond line' },
     synchronisedLyrics: [{ language: 'eng', timeStampFormat: 2, contentType: 1,
@@ -261,6 +264,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       assert.equal((await call(`/api/library?userId=${users.Admin.id}`, 'GET', headers)).status, 200);
       for (const route of [`/api/library?userId=${users.Other.id}`, `/api/library/tracks?userId=${users.Other.id}`,
         `/api/jobs/unowned/stream/${encodeURIComponent(songName)}`, `/api/jobs/unowned/lyrics/${encodeURIComponent(songName)}`,
+        `/api/jobs/unowned/artwork/${encodeURIComponent(songName)}`,
         '/api/jobs/music/download-all', '/api/jobs', '/api/jobs/music',
         '/api/jobs/music/files', '/api/admin/users', '/api/library/export', '/api/library/export?source=latest']) {
         assert.equal((await call(route, 'GET', headers)).status, 403, route);
@@ -277,6 +281,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       assert.equal(metadata.body.title, 'A song');
       assert.equal(metadata.body.artist, 'An artist');
       assert.equal(metadata.body.rating, 3);
+      const cover = await call(`/api/jobs/music/artwork/${metadataName}`, 'GET', headers);
+      assert.equal(cover.status, 200);
+      assert.deepEqual(cover.buffer, artworkBuffer);
       assert.equal((await call(`/api/jobs/music/files/${metadataName}/metadata`, 'PATCH', headers,
         { title: 'Not allowed', rating: 5, artwork: null, transcriptionLocked: true })).status, 403);
       assert.deepEqual(await fs.readFile(path.join(musicDir, '[NoVocals]', songName)), taggedAudio);
@@ -298,6 +305,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     assert.equal((await call(`/api/jobs/music/stream/${encodeURIComponent(songName)}`, 'GET', credentials.Reader[0])).status, 403);
     for (const headers of [...credentials.Reader, mobileHeaders.Reader]) {
       assert.equal((await call(metadataReadPath, 'GET', headers)).status, 403);
+      assert.equal((await call(`/api/jobs/music/artwork/${metadataName}`, 'GET', headers)).status, 403);
     }
     assert.deepEqual((await call('/api/library', 'GET', credentials.Owner[0])).body, ownerLibrary.body);
     assert.equal((await call(userPath, 'DELETE', credentials.Admin[0])).status, 204);
@@ -481,8 +489,29 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const encodedSong = encodeURIComponent(`[NoVocals]/${songName}`);
   const streamRoute = `/api/jobs/music/stream/${encodedSong}`;
   const lyricsRoute = `/api/jobs/music/lyrics/${encodedSong}`;
+  const artworkRoute = `/api/jobs/music/artwork/${encodedSong}`;
   assert.equal((await call(streamRoute)).status, 401);
   assert.equal((await call(lyricsRoute)).status, 401);
+  assert.equal((await call(artworkRoute)).status, 401);
+  const artworkTrack = allTracks.files.find((file) => file.name === `[NoVocals]/${songName}`);
+  assert.equal(artworkTrack.artworkUrl, `${artworkRoute}?v=${(await fs.stat(path.join(musicDir, '[NoVocals]', songName))).mtimeMs}`);
+  assert.equal(artworkTrack.artwork, undefined);
+  for (const headers of [...credentials.Owner, mobileHeaders.Owner]) {
+    const cover = await call(artworkTrack.artworkUrl, 'GET', headers);
+    assert.equal(cover.status, 200);
+    assert.deepEqual(cover.buffer, artworkBuffer);
+    assert.equal(cover.headers['content-type'], 'image/png');
+    assert.equal(cover.headers['cache-control'], 'private, no-cache');
+    assert.equal(cover.headers['x-content-type-options'], 'nosniff');
+    assert.equal((await call(artworkTrack.artworkUrl, 'GET', { ...headers, 'If-None-Match': cover.headers.etag })).status, 304);
+    const head = await call(artworkTrack.artworkUrl, 'HEAD', headers);
+    assert.equal(head.status, 200);
+    assert.equal(head.buffer.length, 0);
+  }
+  assert.equal((await call('/api/jobs/music/artwork/keep.mp3', 'GET', credentials.Owner[0])).status, 404);
+  assert.equal((await call('/api/jobs/music/artwork/missing.mp3', 'GET', credentials.Owner[0])).status, 404);
+  assert.equal((await call('/api/jobs/music/artwork/..%2Foutside.mp3', 'GET', credentials.Owner[0])).status, 400);
+  assert.equal((await call('/api/jobs/music/artwork/.download-archive.txt', 'GET', credentials.Owner[0])).status, 400);
   const streamed = await call(streamRoute, 'GET', { ...credentials.Other[0], Range: 'bytes=0-2' });
   assert.equal(streamed.status, 206);
   assert.equal(streamed.text, 'ID3');
@@ -494,7 +523,6 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(lyrics.body.uslt, 'First line\nSecond line');
   assert.deepEqual(lyrics.body.sylt, [{ time: 1, text: 'First line' }, { time: 2.5, text: 'Second line' }]);
   const metadataRoute = `/api/jobs/music/files/${encodedSong}/metadata`;
-  const artwork = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
   assert.equal((await call(metadataRoute, 'PATCH', {}, { title: 'Denied' })).status, 401);
   assert.equal((await call(metadataRoute, 'PATCH', credentials.Other[0], { title: 'Denied' })).status, 403);
   for (const body of [{ title: 7 }, { artist: 'bad\u0000tag' }, { unknown: 'field' }, { artwork: 'https://example.com/image.png' },
@@ -519,6 +547,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.deepEqual(NodeID3.read(changedFile).popularimeter, { email: 'listener@example.com', rating: 255, counter: 12 });
   assert.equal((await call('/api/jobs/music/files', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`).rating, 5);
   assert.equal((await call('/api/library/tracks', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`).rating, 5);
+  const updatedArtworkTrack = (await call('/api/library/tracks', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`);
+  assert.notEqual(updatedArtworkTrack.artworkUrl, artworkTrack.artworkUrl);
+  assert.deepEqual((await call(updatedArtworkTrack.artworkUrl, 'GET', credentials.Owner[0])).buffer, artworkBuffer);
   assert.equal((await call('/api/jobs/music/files', 'GET', credentials.Owner[0])).body.files.find((file) => file.name === `[NoVocals]/${songName}`).title, 'Edited song');
   const retainedArtwork = await call(metadataRoute, 'PATCH', credentials.Admin[1], { artist: '' });
   assert.equal(retainedArtwork.body.artist, '');
@@ -530,6 +561,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.deepEqual(clearedRating.body.sylt, lyrics.body.sylt);
   assert.equal(NodeID3.read(await fs.readFile(path.join(musicDir, '[NoVocals]', songName))).popularimeter.rating, 0);
   assert.equal((await call(metadataRoute, 'PATCH', credentials.Owner[1], { artwork: null })).body.artwork, null);
+  assert.equal((await call(updatedArtworkTrack.artworkUrl, 'GET', credentials.Owner[0])).status, 404);
   assert.equal((await call('/api/jobs/music/files/..%2Foutside.mp3/metadata', 'PATCH', credentials.Owner[0], { title: 'Bad' })).status, 400);
   assert.equal((await call('/api/jobs/music/files/missing.mp3/metadata', 'PATCH', credentials.Owner[0], { title: 'Missing' })).status, 404);
   assert.equal((await call('/api/jobs/music/stream/..%2Foutside.mp3', 'GET', credentials.Owner[0])).status, 400);

@@ -11,7 +11,7 @@ import { parseArgs } from 'node:util';
 import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
-import { readSongMetadata, readSongSummary } from './music.js';
+import { readSongArtwork, readSongMetadata, readSongSummary } from './music.js';
 import { findNoVocals, individualPlaylistId, orderFiles, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
@@ -384,6 +384,7 @@ async function listJobFiles(job, order, names) {
         noVocalsName: job.transcriptions?.[fileName]?.noVocalsName,
         sizeBytes: stat.size,
         downloadUrl: `/api/jobs/${job.id}/download/${encodeURIComponent(fileName)}`,
+        artworkUrl: /\.mp3$/i.test(fileName) ? `/api/jobs/${job.id}/artwork/${encodeURIComponent(fileName)}?v=${stat.mtimeMs}` : null,
         isSong: isSongFile(fileName),
         isPlayable: isPlayableFile(fileName),
         mediaType: mediaType(fileName),
@@ -437,6 +438,18 @@ app.get('/api/jobs/:id/stream/:name', async (req, res) => {
     res.set('Cache-Control', 'private, no-cache');
     if (/\.m4v$/i.test(filePath)) res.type('video/mp4');
     return res.sendFile(filePath);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
+  res.set('Cache-Control', 'private, no-cache');
+  try {
+    const filePath = await resolveRequestedFile(req, isSongFile);
+    const artwork = await readSongArtwork(filePath);
+    if (!artwork) return res.status(404).end();
+    return res.type(artwork.mime).send(artwork.imageBuffer);
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }

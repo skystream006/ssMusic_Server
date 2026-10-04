@@ -14,6 +14,7 @@ let ShareMediaDialog;
 let TranscriptionDialog;
 let TranscriptionStatus;
 let SongGroups;
+let SongArtwork;
 let findNoVocals;
 let queueSongNext;
 let nextPlaybackSong;
@@ -33,7 +34,7 @@ let LibraryAccessList;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, PlaybackProvider, SongGroups, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, PlaybackProvider, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -229,6 +230,41 @@ test('Shared playlist rows retain playback and metadata viewing but omit server 
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+});
+
+test('music-page song rows show lazy artwork without changing playback or track numbering', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const track = { jobId: 'job', playlistId: 'playlist', name: 'Song.mp3', title: 'Song',
+      artworkUrl: '/api/jobs/job/artwork/Song.mp3?v=1', downloadUrl: '/song' };
+    for (const readOnly of [false, true]) {
+      const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+        libraryView: { readOnly, tracks: [track], title: 'Playlist', selectedId: 'playlist',
+          songState: () => ({ canModify: false, disabled: true }) }
+      })));
+      assert.match(html, /aria-label="Play Song.mp3"/);
+      assert.match(html, /class="song-number">1<\/span>/);
+      assert.match(html, /class="song-artwork" aria-hidden="true"><img[^>]*src="\/api\/jobs\/job\/artwork\/Song.mp3\?v=1"[^>]*alt=""[^>]*loading="lazy"[^>]*decoding="async"/);
+      assert.match(html, /<strong>Song<\/strong>/);
+      assert.match(html, /aria-label="Download Song.mp3"/);
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test('song artwork has music and movie placeholders when no cover is available', () => {
+  for (const name of ['Song.mp3', 'Song.flac', 'Movie.mp4']) {
+    const html = renderToStaticMarkup(createElement(SongArtwork, { track: { name } }));
+    assert.doesNotMatch(html, /<img/);
+    assert.match(html, name.endsWith('.mp4') ? /lucide-film/ : /lucide-music-2/);
+  }
+  const movie = renderToStaticMarkup(createElement(SongArtwork, {
+    track: { name: 'Movie.mp4', artworkUrl: '/not-an-audio-cover' }
+  }));
+  assert.doesNotMatch(movie, /<img/);
 });
 
 test('metadata viewer has close controls but no save or transcription-lock actions', () => {

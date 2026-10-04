@@ -923,6 +923,9 @@ It lists only jobs you initiated or contribute to, using their **Playlist Title*
 This personal-library rule also applies to administrators. The Jobs dashboard keeps
 its existing broader access rules. Select a playlist on the left to browse its songs
 on the right. Search playlists or songs independently.
+Song rows show embedded MP3 album artwork, loaded as you browse, with a music-note
+placeholder when no supported cover is available. Covers refresh after metadata
+edits or file replacement.
 The playback dock supports play/pause, previous/next, shuffle, repeat, seeking,
 volume, a playback queue, embedded artwork, and synchronized or plain-text lyrics.
 Lyrics open over a darkened page while the playback dock remains visible and
