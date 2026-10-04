@@ -41,6 +41,7 @@ export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onS
   const [mode, setMode] = useState('sylt');
   const dialogRef = useRef(null);
   const fullscreenRef = useRef(null);
+  const fullscreenButtonRef = useRef(null);
   const hasLyrics = lines.length > 0 || Boolean(plainLyrics.trim());
 
   useEffect(() => {
@@ -71,10 +72,15 @@ export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onS
     fullscreenRef.current.requestFullscreen?.().catch(() => {});
   }
 
+  async function closeLyrics() {
+    if (document.fullscreenElement === fullscreenRef.current) await document.exitFullscreen().catch(() => {});
+    dialogRef.current?.close();
+  }
+
   return <section className="public-media-panel public-media-lyrics" aria-labelledby="public-media-lyrics">
     <div className="public-media-section-heading">
       <h2 id="public-media-lyrics">Lyrics</h2>
-      {hasLyrics && <button className="secondary-button compact-button" type="button" aria-haspopup="dialog"
+      {hasLyrics && <button ref={fullscreenButtonRef} className="secondary-button compact-button" type="button" aria-haspopup="dialog"
         onClick={showFullscreen}><Maximize2 size={17} aria-hidden="true" />Fullscreen lyrics</button>}
     </div>
     {lines.length > 0 && <section aria-labelledby="public-media-timed-heading">
@@ -88,7 +94,8 @@ export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onS
     </section>}
     {!hasLyrics && <p className="public-media-empty">No lyrics are available for this track.</p>}
     <dialog ref={dialogRef} className="lyrics-overlay public-lyrics-overlay" aria-label="Fullscreen lyrics"
-      onClose={() => setOpen(false)}>
+      onCancel={(event) => { event.preventDefault(); closeLyrics(); }}
+      onClose={() => { setOpen(false); fullscreenButtonRef.current?.focus(); }}>
       <div ref={fullscreenRef} className="lyrics-overlay-content">
         {open && <section className="music-lyrics" aria-label="Lyrics">
           <div className="section-title">
@@ -99,7 +106,7 @@ export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onS
                 <button type="button" aria-pressed={mode === 'uslt'} onClick={() => setMode('uslt')}>USLT</button>
               </div>
               <button className="music-icon-button" type="button" title="Close lyrics" aria-label="Close lyrics"
-                onClick={() => dialogRef.current.close()}><X size={20} /></button>
+                onClick={closeLyrics}><X size={20} /></button>
             </div>
           </div>
           <LyricTimeline lines={lines} position={position} mode={mode} uslt={plainLyrics}

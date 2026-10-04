@@ -173,15 +173,27 @@ test('lyric autoscrolling centers only the lyric container and respects reduced 
     querySelector(selector) { assert.equal(selector, '[aria-current="true"]'); return active; },
     scrollTo(options) { calls.push(options); }
   };
-  scrollToActiveLyric(container, false);
+  scrollToActiveLyric(container);
   assert.deepEqual(calls.pop(), { top: 640, behavior: 'smooth' });
   container.clientHeight = 600;
-  scrollToActiveLyric(container, true);
+  scrollToActiveLyric(container, { reducedMotion: true });
   assert.deepEqual(calls.pop(), { top: 540, behavior: 'instant' });
   active = null;
-  scrollToActiveLyric(container, false);
+  scrollToActiveLyric(container);
   assert.deepEqual(calls.pop(), { top: 0, behavior: 'smooth' });
-  scrollToActiveLyric(null, false);
+  scrollToActiveLyric(null);
+});
+
+test('plain lyrics retain manual scroll positions when playback crosses synchronized timestamps', () => {
+  for (const active of [null, { offsetTop: 800, clientHeight: 80 }]) {
+    const container = {
+      clientHeight: 400,
+      querySelector() { return active; },
+      scrollTo() { assert.fail('USLT must not autoscroll'); }
+    };
+    scrollToActiveLyric(container, { mode: 'uslt' });
+    scrollToActiveLyric(container, { mode: 'uslt', reducedMotion: true });
+  }
 });
 
 test('metadata, filenames and both lyric formats are escaped React text', () => {

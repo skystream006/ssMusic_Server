@@ -5,8 +5,8 @@ function timeLabel(seconds) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-export function scrollToActiveLyric(container, reducedMotion) {
-  if (!container) return;
+export function scrollToActiveLyric(container, { reducedMotion = false, mode = 'sylt' } = {}) {
+  if (!container || mode !== 'sylt') return;
   const line = container.querySelector('[aria-current="true"]');
   container.scrollTo({
     top: line ? line.offsetTop - container.clientHeight / 2 + line.clientHeight / 2 : 0,
@@ -23,8 +23,9 @@ export default function LyricTimeline({
 
   useEffect(() => {
     const container = lyricRef.current;
-    const centerActiveLine = () => scrollToActiveLyric(container,
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const centerActiveLine = () => scrollToActiveLyric(container, {
+      reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, mode
+    });
     centerActiveLine();
     const observer = new ResizeObserver(centerActiveLine);
     observer.observe(container);
