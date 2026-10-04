@@ -58,11 +58,17 @@ test('playback and saving use only the public URLs, without autoplay', () => {
   assert.match(html, />Save file<\/a>/);
 });
 
+test('shared playback retains native controls without a duplicate position slider', () => {
+  const html = render({ duration: 180, elapsed: 15 });
+  assert.equal((html.match(/<audio\b/g) || []).length, 1);
+  assert.match(html, /<audio[^>]*controls=""/);
+  assert.doesNotMatch(html, /Playback position|public-media-seek|public-media-times|type="range"/);
+});
+
 test('public media exposes no editing, rating, account or other mutation controls', () => {
   const html = render();
   const inputs = html.match(/<input\b[^>]*>/g) || [];
-  assert.equal(inputs.length, 1);
-  assert.match(inputs[0], /type="range"/);
+  assert.equal(inputs.length, 0);
   const buttons = html.match(/<button\b[^>]*>/g) || [];
   assert.equal(buttons.length, 2);
   for (const button of buttons) assert.match(button, /aria-label="Seek to/);
@@ -70,34 +76,33 @@ test('public media exposes no editing, rating, account or other mutation control
   assert.doesNotMatch(html, /Edit metadata|Save metadata|Rate |Clear rating|Delete|Replace File|Transcribe|Log in|Sign in|\/api\/auth/);
 });
 
-test('the seek slider and timed lines expose accessible positions and the active line', () => {
+test('timed lines expose accessible positions and the active line', () => {
   const html = render({ duration: 180, elapsed: 15 });
-  const slider = html.match(/<input\b[^>]*>/)[0];
-  assert.match(html, /<label for="public-media-seek">Playback position<\/label>/);
-  assert.match(slider, /id="public-media-seek"/);
-  assert.match(slider, /type="range" min="0" max="180" step="0.1"/);
-  assert.match(slider, /aria-label="Seek audio"/);
-  assert.match(slider, /aria-valuetext="0:15 of 3:00"/);
-  assert.match(slider, /value="15"/);
-  assert.doesNotMatch(slider, /disabled/);
-  assert.match(html, /aria-label="Elapsed time">0:15/);
-  assert.match(html, /aria-label="Duration">3:00/);
+  assert.doesNotMatch(html, /<button[^>]*disabled/);
   assert.match(html, /<button[^>]*aria-current="true"[^>]*aria-label="Seek to 0:12: Second line"/);
   assert.equal((html.match(/aria-current="true"/g) || []).length, 1);
   assert.doesNotMatch(html.match(/<button[^>]*aria-label="Seek to 0:00: First line"[^>]*>/)[0], /aria-current/);
 });
 
-test('unknown durations disable seeking, and elapsed times are bounded and hour-aware', () => {
+test('unknown durations disable lyric seeking', () => {
   for (const duration of [0, NaN, Infinity, -3]) {
     const html = render({ duration, elapsed: 15 });
-    assert.match(html.match(/<input\b[^>]*>/)[0], /disabled=""/);
-    assert.match(html, /aria-valuetext="0:00 of unknown duration"/);
     assert.equal((html.match(/<button[^>]*disabled=""/g) || []).length, 2);
+    assert.match(html, /aria-current="true" aria-label="Seek to 0:00: First line"/);
     assert.doesNotMatch(html, /NaN|Infinity/);
   }
-  assert.match(render({ duration: 3700, elapsed: 3661 }), /aria-valuetext="1:01:01 of 1:01:40"/);
-  assert.match(render({ duration: 180, elapsed: 999 }), /aria-valuetext="3:00 of 3:00"/);
-  assert.match(render({ duration: 180, elapsed: -1 }), /aria-valuetext="0:00 of 3:00"/);
+});
+
+test('lyric timestamps are hour-aware and playback positions are bounded', () => {
+  const props = { duration: 3700, media: { ...media, sylt: [
+    { time: 0, text: 'Start' }, { time: 3661, text: 'Later' }, { time: 3701, text: 'Beyond duration' }
+  ] } };
+  for (const elapsed of [3661, 9999]) {
+    assert.match(render({ ...props, elapsed }), /aria-current="true" aria-label="Seek to 1:01:01: Later"/);
+  }
+  for (const elapsed of [-1, NaN, Infinity]) {
+    assert.match(render({ ...props, elapsed }), /aria-current="true" aria-label="Seek to 0:00: Start"/);
+  }
 });
 
 test('missing metadata, artwork and lyrics have readable fallbacks, retaining save and playback', () => {
@@ -159,7 +164,7 @@ test('loading, unavailable and playback failures have accessible non-authenticat
 
   const failed = render({ duration: 180, playbackError: 'Audio could not be played. Save the file to listen locally.' });
   assert.match(failed, /role="alert">Audio could not be played/);
-  assert.match(failed.match(/<input\b[^>]*>/)[0], /disabled=""/);
+  assert.equal((failed.match(/<button[^>]*disabled=""/g) || []).length, 2);
   assert.match(failed, />Save file<\/a>/);
 });
 
