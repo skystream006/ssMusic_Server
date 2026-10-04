@@ -6,6 +6,7 @@ import { navigationHistory } from './navigation.js';
 import { findNoVocals, isNoVocals, songKey, songSearchText } from '../../src/library.js';
 import { mediaType } from '../../src/media.js';
 import { buildLyricsUpdate, formatSyltForEdit } from './lyricsEditing.js';
+import LyricTimeline from './LyricTimeline.jsx';
 import { Film, Minimize2 } from 'lucide-react';
 export { findNoVocals, isNoVocals } from '../../src/library.js';
 
@@ -320,12 +321,10 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     updatePanel(next);
     if (dockOnly) navigationHistory().setLyricsOpen(next === 'lyrics');
   }
-  const lyricRef = useRef(null);
   const dockRef = useRef(null);
   const lyricsOverlayRef = useRef(null);
   const lyricsButtonRef = useRef(null);
   const lines = metadata?.sylt || [];
-  const activeLine = lines.findLastIndex((line) => line.time <= position);
   const requestedSong = new URLSearchParams(window.location.search).get('song');
   const requestedPlay = new URLSearchParams(window.location.search).get('play') === '1';
   const libraryScope = libraryView?.queueScope ?? libraryView?.selectedId;
@@ -384,13 +383,6 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   }, [libraryView?.removedSong]);
 
   useEffect(() => {
-    const container = lyricRef.current;
-    const line = container?.querySelector('[aria-current="true"]');
-    if (line) container.scrollTo({ top: line.offsetTop - container.clientHeight / 2 + line.clientHeight / 2,
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
-  }, [activeLine, mode, panel]);
-
-  useEffect(() => {
     if (!dockOnly) return;
     const resize = () => document.documentElement.style.setProperty('--dock-height', `${dockRef.current.getBoundingClientRect().height}px`);
     resize();
@@ -442,16 +434,11 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates)
         });
         updateMetadata(target.jobId, target.name, result);
-      }} /> : <div ref={lyricRef} className="lyric-timeline" tabIndex={0} aria-label={mode === 'sylt' ? 'Synchronized lyrics' : 'Unsynchronized lyrics'}>
-      {lyricError ? <p className="notice error" role="alert">{lyricError}</p> : !metadata ? <p className="music-empty" role="status">{song ? 'Loading lyrics...' : 'No song selected.'}</p>
-        : mode === 'uslt' ? (metadata.uslt ? <p className="plain-lyrics">{metadata.uslt}</p> : <p className="music-empty">No USLT lyrics embedded.</p>)
-          : lines.length > 0 ? <ol>{lines.map((line, lineIndex) => <li key={lineIndex}><button type="button"
-            aria-current={activeLine === lineIndex ? 'true' : undefined}
-            aria-label={`${timeLabel(line.time)} ${line.text}`}
-            onClick={() => { if (audioRef.current) audioRef.current.currentTime = line.time; }}>
-            <time>{timeLabel(line.time)}</time><span>{line.text}</span>
-          </button></li>)}</ol> : <p className="music-empty">No SYLT lyrics embedded.</p>}
-    </div>}
+      }} /> : <LyricTimeline lines={lines} position={position} mode={mode} uslt={metadata?.uslt}
+        onSeek={(time) => { if (audioRef.current) audioRef.current.currentTime = time; }}>
+        {lyricError ? <p className="notice error" role="alert">{lyricError}</p>
+          : !metadata ? <p className="music-empty" role="status">{song ? 'Loading lyrics...' : 'No song selected.'}</p> : null}
+      </LyricTimeline>}
   </section>;
 
   if (libraryView || dockOnly) {

@@ -9,11 +9,14 @@ let PublicMedia;
 let PublicMediaView;
 let seekPublicAudio;
 let AdminMediaSharesView;
+let LyricTimeline;
+let scrollToActiveLyric;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ default: PublicMedia, PublicMediaView, seekPublicAudio } = await server.ssrLoadModule('/src/PublicMedia.jsx'));
   ({ AdminMediaSharesView } = await server.ssrLoadModule('/src/AdminMediaShares.jsx'));
+  ({ default: LyricTimeline, scrollToActiveLyric } = await server.ssrLoadModule('/src/LyricTimeline.jsx'));
 });
 
 after(async () => { await server?.close(); });
@@ -64,8 +67,9 @@ test('public media exposes no editing, rating, account or other mutation control
   assert.equal(inputs.length, 1);
   assert.match(inputs[0], /type="range"/);
   const buttons = html.match(/<button\b[^>]*>/g) || [];
-  assert.equal(buttons.length, 2);
-  for (const button of buttons) assert.match(button, /aria-label="Seek to/);
+  assert.equal(buttons.length, 3);
+  assert.match(buttons[0], /aria-haspopup="dialog"/);
+  for (const button of buttons.slice(1)) assert.match(button, /aria-label="Seek to/);
   assert.doesNotMatch(html, /<form\b|<textarea\b|<select\b|contentEditable|type="radio"|type="file"|aria-pressed/);
   assert.doesNotMatch(html, /Edit metadata|Save metadata|Rate |Clear rating|Delete|Replace File|Transcribe|Log in|Sign in|\/api\/auth/);
 });
@@ -125,8 +129,59 @@ test('timed and plain lyrics render independently and reject malformed timed ent
   assert.doesNotMatch(timedOnly, /Plain text lyrics|No lyrics|Negative|Invalid|\[object Object\]/);
   const plainOnly = render({ media: { ...media, sylt: [] } });
   assert.match(plainOnly, /Plain text lyrics/);
-  assert.doesNotMatch(plainOnly, /Synchronized lyrics|<button\b/);
+  assert.doesNotMatch(plainOnly, /Synchronized lyrics|aria-label="Seek to/);
+  assert.match(plainOnly, />Fullscreen lyrics<\/button>/);
   assert.match(render({ media: { ...media, sylt: null, uslt: '   ' } }), /No lyrics are available/);
+});
+
+test('shared lyrics reuse the music timeline and offer a closed fullscreen dialog', () => {
+  const html = render({ duration: 180, elapsed: 15 });
+  const timeline = renderToStaticMarkup(createElement(LyricTimeline, { lines: media.sylt, position: 15 }));
+  assert.ok(html.includes(timeline), 'shared lyrics must use the same timeline markup as the music player');
+  assert.match(html, /<button[^>]*aria-haspopup="dialog"[^>]*>.*Fullscreen lyrics<\/button>/);
+  const dialog = html.match(/<dialog\b[^>]*>/)?.[0];
+  assert.match(dialog, /class="lyrics-overlay public-lyrics-overlay"/);
+  assert.match(dialog, /aria-label="Fullscreen lyrics"/);
+  assert.doesNotMatch(dialog, /\bopen=/);
+  assert.equal((html.match(/<audio\b/g) || []).length, 1);
+});
+
+test('the shared timeline follows forward and backward seeks, including equal timestamps and the intro', () => {
+  const lines = [{ time: 2, text: 'First' }, { time: 12, text: 'Second' }, { time: 12, text: 'Same timestamp' }];
+  for (const [position, activeText] of [[0, null], [2, 'First'], [20, 'Same timestamp'], [5, 'First']]) {
+    const html = renderToStaticMarkup(createElement(LyricTimeline, { lines, position }));
+    const active = html.match(/<button[^>]*aria-current="true"[^>]*>/g) || [];
+    assert.equal(active.length, activeText ? 1 : 0);
+    if (activeText) assert.ok(active[0].includes(activeText));
+  }
+  const plain = renderToStaticMarkup(createElement(LyricTimeline, { lines, mode: 'uslt', uslt: media.uslt }));
+  assert.match(plain, /aria-label="Unsynchronized lyrics"/);
+  assert.match(plain, /class="plain-lyrics">First line\nSecond line\n\nLast verse/);
+  assert.doesNotMatch(plain, /aria-current|<button/);
+  const empty = renderToStaticMarkup(createElement(LyricTimeline));
+  assert.match(empty, /No SYLT lyrics embedded/);
+  const loading = renderToStaticMarkup(createElement(LyricTimeline, { lines }, createElement('p', { role: 'status' }, 'Loading lyrics...')));
+  assert.match(loading, /role="status">Loading lyrics/);
+  assert.doesNotMatch(loading, /<button/);
+});
+
+test('lyric autoscrolling centers only the lyric container and respects reduced motion', () => {
+  let active = { offsetTop: 800, clientHeight: 80 };
+  const calls = [];
+  const container = {
+    clientHeight: 400,
+    querySelector(selector) { assert.equal(selector, '[aria-current="true"]'); return active; },
+    scrollTo(options) { calls.push(options); }
+  };
+  scrollToActiveLyric(container, false);
+  assert.deepEqual(calls.pop(), { top: 640, behavior: 'smooth' });
+  container.clientHeight = 600;
+  scrollToActiveLyric(container, true);
+  assert.deepEqual(calls.pop(), { top: 540, behavior: 'instant' });
+  active = null;
+  scrollToActiveLyric(container, false);
+  assert.deepEqual(calls.pop(), { top: 0, behavior: 'smooth' });
+  scrollToActiveLyric(null, false);
 });
 
 test('metadata, filenames and both lyric formats are escaped React text', () => {
