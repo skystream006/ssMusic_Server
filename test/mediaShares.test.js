@@ -71,7 +71,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     return job;
   }
   const job = await seedJob('shared-song', users.Owner,
-    [songName, nestedName, 'Other.mp3', 'Track.flac', 'metadata.json', 'movie.mp4', 'missing.mp3', 'directory.mp3'],
+    [songName, nestedName, 'Other.mp3', 'Track.flac', 'Layer II.MP2', 'metadata.json', 'movie.mp4', 'missing.mp3', 'directory.mp3'],
     [{ id: users.Contributor.id, name: users.Contributor.name }]);
   await fs.unlink(path.join(job.outputDir, 'missing.mp3'));
   await fs.unlink(path.join(job.outputDir, 'directory.mp3'));
@@ -253,12 +253,20 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
       assert.match(page.text, /Share test shell/);
       privacyHeaders(page);
     }
-    const flacToken = await share(credentials.Owner[0], job.id, 'Track.flac');
-    const flac = (await call(mediaPath(flacToken))).body;
-    assert.equal(flac.title, 'Track');
-    assert.equal(flac.artist, '');
-    assert.deepEqual(flac.sylt, []);
-    assert.equal(flac.artwork, null);
+    for (const name of ['Track.flac', 'Layer II.MP2']) {
+      const token = await share(credentials.Owner[0], job.id, name);
+      const metadata = (await call(mediaPath(token))).body;
+      assert.equal(metadata.title, path.parse(name).name);
+      assert.equal(metadata.artist, '');
+      assert.deepEqual(metadata.sylt, []);
+      assert.equal(metadata.artwork, null);
+      for (const suffix of ['/stream', '/download']) {
+        const response = await call(`${mediaPath(token)}${suffix}`);
+        assert.equal(response.status, 200);
+        assert.equal(response.text, 'non-mp3 fixture');
+        if (name.endsWith('.MP2')) assert.match(response.headers['content-type'], /^audio\/mpeg/);
+      }
+    }
   });
   await context.test('streaming, ranges, HEAD and attachment downloads work for nested song names', async () => {
     const token = await share(credentials.Owner[0], job.id, nestedName);

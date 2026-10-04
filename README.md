@@ -144,7 +144,7 @@ in your library. From a selected playlist, that playlist is preselected.
 
 - **Files:** select an existing playlist from your personal library, or check
     **Create New Playlist** and enter its name. Select audio or movie files and choose
-    **Import**. MP3, WAV, FLAC, M4A, AAC, OGG, Opus, WMA, MP4, M4V, WebM, MOV
+    **Import**. MP3, MP2, WAV, FLAC, M4A, AAC, OGG, Opus, WMA, MP4, M4V, WebM, MOV
     and OGV are accepted; playback
     depends on your browser's codec support. Existing files are never overwritten.
 - **iTunes library:** choose **Upload files** for an exported iTunes/Music library
@@ -179,6 +179,10 @@ are preserved without transcoding. Conversion requires FFmpeg (included in Docke
 
 New imports appear as completed jobs and in your music library; imported jobs
 cannot be rerun. Imports into existing playlists require owner or contributor access.
+
+MP2 (MPEG Layer II) audio is preserved for imports, downloads,
+and public sharing; browsers without MP2 decoding support must save the file
+and play it in a compatible player. Embedded metadata editing remains MP3-only.
 
 Audio validation checks file contents, not just extensions. If the signature is
 unrecognized (for example, an MP3 with leading padding), the importer uses

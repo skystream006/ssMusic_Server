@@ -5,14 +5,14 @@ import AdmZip from 'adm-zip';
 import { fileTypeFromBuffer } from 'file-type';
 import { Agent } from 'undici';
 import { transcriptionLanguages } from './transcriptionLanguages.js';
+import { mediaType } from './media.js';
 
 const maxResponseBytes = 512 * 1024 * 1024;
 const transcriptionTimeout = 60 * 60_000;
 const transcriptionAgent = new Agent({ headersTimeout: transcriptionTimeout, bodyTimeout: transcriptionTimeout });
-const audioExtensions = new Set(['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.opus', '.wma']);
 
 export function isSongFile(name) {
-  return audioExtensions.has(path.extname(name).toLowerCase());
+  return mediaType(name) === 'audio';
 }
 
 function failure(message, statusCode = 502) {

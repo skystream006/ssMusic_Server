@@ -10,7 +10,8 @@ import { promisify } from 'node:util';
 import AdmZip from 'adm-zip';
 import * as plist from 'plist';
 import { fileTypeFromFile } from 'file-type';
-import { isPlayableFile, mediaType, videoExtensions } from '../src/media.js';
+import { audioExtensions, isPlayableFile, mediaAccept, mediaType, videoExtensions } from '../src/media.js';
+import { isSongFile } from '../src/transcription.js';
 import { getPlaylistTracks, songKey } from '../src/library.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
@@ -19,9 +20,18 @@ test('playable media distinguishes movies from audio and non-media filenames', (
     assert.equal(mediaType(`Movies/Clip${extension.toUpperCase()}`), 'video');
     assert.equal(isPlayableFile(`Clip${extension}`), true);
   }
-  assert.equal(mediaType('Music/Song.mp3'), 'audio');
-  for (const name of ['mp4', '.mp4', 'movie.mp4.txt', 'playlist.xml', 'movie.avi', undefined]) {
+  assert.ok(audioExtensions.includes('.mp2'));
+  assert.ok(mediaAccept.split(',').includes('.mp2'));
+  for (const extension of audioExtensions) {
+    for (const name of [`Music/Song${extension}`, `[NoVocals]/Song${extension.toUpperCase()}`]) {
+      assert.equal(mediaType(name), 'audio');
+      assert.equal(isPlayableFile(name), true);
+      assert.equal(isSongFile(name), true);
+    }
+  }
+  for (const name of ['mp4', '.mp4', '.mp2', 'song.mp2.txt', 'movie.mp4.txt', 'playlist.xml', 'movie.avi', undefined]) {
     assert.equal(isPlayableFile(name), false);
+    assert.equal(isSongFile(name), false);
   }
 });
 
@@ -147,7 +157,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   const singles = await imports.importUploadedFiles([file], { createNew: 'false', playlistId: 'individual-songs' }, owner);
   assert.ok((await getLibrary(owner.id, (await manager.getJobs()))).singleJobIds.includes(singles.jobs[0].id));
 
-  await context.test('real FFmpeg preserves MP3s and converts detected WAVs in iTunes imports', async (probeContext) => {
+  await context.test('real FFmpeg preserves MP2 and MP3 audio and converts detected WAVs in iTunes imports', async (probeContext) => {
     const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
     const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
     const suffix = process.platform === 'win32' ? '.exe' : '';
@@ -163,6 +173,31 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     const mp3Path = path.join(directory, 'generated.mp3');
     await promisify(childProcess.execFile)(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
       '-t', '0.2', '-c:a', 'libmp3lame', '-id3v2_version', '0', '-write_xing', '0', mp3Path], { timeout: 15000 });
+    const mp2Path = path.join(directory, 'generated.mp2');
+    await promisify(childProcess.execFile)(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
+      '-t', '0.2', '-c:a', 'mp2', '-b:a', '192k', mp2Path], { timeout: 15000 });
+    const mp2Bytes = await fs.readFile(mp2Path);
+    const mp2File = { name: 'Layer II.MP2', path: mp2Path };
+    assert.equal((await imports.validateImportAudio(mp2File)).size, mp2Bytes.length);
+    assert.equal((await imports.validateImportAudio(mp2File, { requireProbe: true })).size, mp2Bytes.length);
+    await assert.rejects(imports.validateImportAudio({ name: 'Renamed.mp2', path: mp3Path }), /expected MP2/);
+    await assert.rejects(imports.validateImportAudio({ name: 'Renamed.mp3', path: mp2Path }), /expected MP3/);
+    const mp2Upload = await imports.importUploadedFiles([mp2File], { createNew: 'true', playlistTitle: 'MPEG Layer II' }, owner);
+    assert.deepEqual(mp2Upload.jobs[0].files, ['Layer II.mp2']);
+    assert.equal(mp2Upload.jobs[0].playlistSongCount, 1);
+    assert.deepEqual(await fs.readFile(path.join(mp2Upload.jobs[0].outputDir, 'Layer II.mp2')), mp2Bytes);
+    const paddedMp2 = Buffer.concat([Buffer.alloc(4096), mp2Bytes]);
+    await fs.writeFile(mp2Path, paddedMp2);
+    assert.equal((await imports.validateImportAudio(mp2File, { requireProbe: true })).size, paddedMp2.length);
+    const mp2Zip = new AdmZip();
+    mp2Zip.addFile('Music/Layer II.mp2', paddedMp2);
+    const mp2ZipPath = path.join(directory, 'mp2.zip');
+    await fs.writeFile(mp2ZipPath, mp2Zip.toBuffer());
+    const mp2Media = await imports.extractImportMedia(mp2ZipPath, directory);
+    const mp2Xml = plist.build({ Tracks: { 1: { 'Track ID': 1, Location: 'file:///Music/Layer%20II.mp2' } } });
+    const mp2Itunes = await imports.importItunesLibrary(mp2Xml, mp2Media, owner);
+    assert.equal(mp2Itunes.importedFiles, 1);
+    assert.deepEqual(await fs.readFile(path.join(mp2Itunes.jobs[0].outputDir, mp2Itunes.jobs[0].files[0])), paddedMp2);
     const padded = Buffer.concat([Buffer.alloc(4096), await fs.readFile(mp3Path)]);
     await fs.writeFile(mp3Path, padded);
     assert.equal(await fileTypeFromFile(mp3Path), undefined);

@@ -142,9 +142,9 @@ function ffmpegExecutable(name) {
 }
 
 async function probeImportAudio(file, extension, requireFrames = false) {
-  const formats = { '.mp3': 'mp3', '.wav': 'wav', '.flac': 'flac', '.m4a': 'mp4',
+  const formats = { '.mp3': 'mp3', '.mp2': 'mp3', '.wav': 'wav', '.flac': 'flac', '.m4a': 'mp4',
     '.aac': 'aac', '.ogg': 'ogg', '.opus': 'ogg', '.wma': 'asf' };
-  const codecs = { '.mp3': 'mp3', '.flac': 'flac', '.aac': 'aac', '.opus': 'opus' };
+  const codecs = { '.mp3': 'mp3', '.mp2': 'mp2', '.flac': 'flac', '.aac': 'aac', '.opus': 'opus' };
   try {
     const stdout = await new Promise((resolve, reject) => {
       childProcess.execFile(ffmpegExecutable('ffprobe'), ['-v', 'error', '-protocol_whitelist', 'file,pipe',
