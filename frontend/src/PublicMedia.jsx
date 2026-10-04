@@ -95,18 +95,6 @@ export function PublicMediaView({
           onCanPlay={onPlaybackReady} onPlaying={onPlaybackReady}>
           Your browser does not support audio playback. Use Save file to listen locally.
         </audio> : <p className="public-media-error" role="alert">Audio playback is unavailable. You can still save the file.</p>}
-        <div className="public-media-seek-heading">
-          <label htmlFor="public-media-seek">Playback position</label>
-          <span id="public-media-times">
-            <span aria-label="Elapsed time">{formatTime(position)}</span>
-            <span aria-hidden="true"> / </span>
-            <span aria-label="Duration">{knownDuration ? formatTime(knownDuration) : '—:—'}</span>
-          </span>
-        </div>
-        <input id="public-media-seek" className="public-media-seek" type="range" min="0" max={knownDuration || 1}
-          step="0.1" value={position} disabled={!canSeek} aria-label="Seek audio" aria-describedby="public-media-times"
-          aria-valuetext={`${formatTime(position)} of ${knownDuration ? formatTime(knownDuration) : 'unknown duration'}`}
-          onChange={(event) => onSeek?.(Number(event.target.value))} />
         {playbackError && <p className="public-media-error" role="alert">{playbackError}</p>}
       </section>
 
