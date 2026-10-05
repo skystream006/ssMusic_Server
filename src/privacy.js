@@ -46,19 +46,30 @@ export async function attachPrivacyAliases(database, jobs) {
   const ids = new Set(jobs.map((job) => job.id));
   const directories = new Set(jobs.filter((job) => job.outputDir).map((job) => path.resolve(job.outputDir)));
   const relevant = protectedJobs.filter((job) => ids.has(job.id) || job.outputDir && directories.has(path.resolve(job.outputDir)));
+  const byId = new Map(relevant.map((job) => [job.id, job]));
+  const byDirectory = new Map();
+  for (const job of relevant) {
+    if (!job.outputDir) continue;
+    const directory = path.resolve(job.outputDir);
+    if (!byDirectory.has(directory)) byDirectory.set(directory, []);
+    byDirectory.get(directory).push(job);
+  }
   if (relevant.length) {
     const rows = await database.prepare(`SELECT job_id, name, transcription FROM songs
       WHERE job_id IN (SELECT jsonb_array_elements_text($1::jsonb)) AND transcription IS NOT NULL`)
       .all(JSON.stringify(relevant.map((job) => job.id)));
     for (const row of rows) {
-      const job = relevant.find((candidate) => candidate.id === row.job_id);
-      job.transcriptions = { ...job.transcriptions, [row.name]: JSON.parse(row.transcription) };
+      const job = byId.get(row.job_id);
+      job.transcriptions ||= {};
+      Object.defineProperty(job.transcriptions, row.name, {
+        configurable: true, enumerable: true, writable: true, value: JSON.parse(row.transcription)
+      });
     }
   }
   for (const job of jobs) {
-    Object.defineProperty(job, aliases, { configurable: true, value: relevant.filter((source) => (
-      source.id === job.id || source.outputDir && job.outputDir && path.resolve(source.outputDir) === path.resolve(job.outputDir)
-    )) });
+    const sources = new Set(job.outputDir ? byDirectory.get(path.resolve(job.outputDir)) : []);
+    if (byId.has(job.id)) sources.add(byId.get(job.id));
+    Object.defineProperty(job, aliases, { configurable: true, value: [...sources] });
   }
   return jobs;
 }
@@ -112,15 +123,15 @@ export function fileVisibilitySql(job = 'jobs', name = 'songs.name', viewer = '$
       AND rtrim(privacy_job.data->>'outputDir', '/') = rtrim(${job}.data->>'outputDir', '/')))
     AND (${viewer}::text IS NULL OR NULLIF(privacy_job.data->'initiatedBy'->>'id', '') IS NULL
       OR privacy_job.data->'initiatedBy'->>'id' <> ${viewer})
-    AND (privacy_job.data->'private' = 'true'::jsonb OR EXISTS (
-      SELECT 1 FROM jsonb_array_elements_text(COALESCE(privacy_job.data->'privateFiles', '[]'::jsonb)) private_file(name)
-      WHERE private_file.name = ${name} OR (lower(${name}) LIKE '[novocals]/%' AND (
-        ${stemSql('private_file.name')} = ${stemSql(name)}
-        OR EXISTS (SELECT 1 FROM songs privacy_song WHERE privacy_song.job_id = privacy_job.id
-          AND privacy_song.name = private_file.name AND privacy_song.transcription->>'noVocalsName' = ${name})
-        OR privacy_job.data->'transcriptions'->private_file.name->>'noVocalsName' = ${name}
-      )))
-    ))`;
+    AND (privacy_job.data->'private' = 'true'::jsonb
+      OR COALESCE(privacy_job.data->'privateFiles', '[]'::jsonb) ? ${name}
+      OR (lower(${name}) LIKE '[novocals]/%' AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(COALESCE(privacy_job.data->'privateFiles', '[]'::jsonb)) private_file(name)
+        LEFT JOIN songs privacy_song ON privacy_song.job_id = privacy_job.id AND privacy_song.name = private_file.name
+        WHERE ${stemSql('private_file.name')} = ${stemSql(name)}
+          OR privacy_song.transcription->>'noVocalsName' = ${name}
+          OR privacy_job.data->'transcriptions'->private_file.name->>'noVocalsName' = ${name}
+      ))))`;
 }
 
 export function songVisibilitySql(viewer = '$1', job = 'jobs', song = 'songs') {

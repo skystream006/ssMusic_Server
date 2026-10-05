@@ -6,7 +6,7 @@ import express from 'express';
 import NodeID3 from 'node-id3';
 import { writeJob, writeUser } from '../src/database.js';
 import { createPostgresDatabase } from '../src/postgres.js';
-import { pagePostgresTracks, postgresPageJobs, readPostgresJob, readPostgresLibrary, readPostgresJobs } from '../src/postgresCatalog.js';
+import { pagePostgresTracks, postgresPageJobs, readPostgresJob, readPostgresLibrary, readPostgresJobs, rebuildPostgresLibrary } from '../src/postgresCatalog.js';
 import { canReadAllFiles, canReadFile, canReadJob, fileVisibilitySql, visibleJob } from '../src/privacy.js';
 import { addLibraryJobFiles, getLibrary, linkLibraryJob, moveLibrarySong, mutateLibraryEntry, removeLibrarySongLink, setLibrary, setLibraryPlaylistPrivacy } from '../src/libraryStore.js';
 import { songKey } from '../src/library.js';
@@ -41,6 +41,71 @@ test('privacy defaults public and permits only the owning user, never an adminis
   const clone = visibleJob(job, { id: 'owner' });
   clone.songMetadata['Secret.mp3'].title = 'Changed';
   assert.equal(job.songMetadata['Secret.mp3'].title, 'Secret');
+});
+
+test('large catalogs keep privacy lookups indexed and reflect alias changes immediately', { timeout: 120_000 }, async (context) => {
+  const { database } = await createTestDatabase(context);
+  const now = new Date().toISOString();
+  await writeUser(database, { id: 'owner', name: 'Owner', userHandle: 'owner', role: 'user', status: 'approved',
+    credentials: [], createdAt: now, updatedAt: now });
+  await database.exec(`INSERT INTO jobs (id, url, status, created_at, song_count, data)
+    SELECT 'source-' || sequence, 'import:' || sequence, 'completed', '', 100,
+      jsonb_build_object('id', 'source-' || sequence, 'files', '[]'::jsonb, 'isPlaylist', true,
+        'initiatedBy', jsonb_build_object('id', 'owner'), 'outputDir', '/music/' || sequence)
+    FROM generate_series(1, 100) sequence;
+    INSERT INTO job_users (job_id, user_id) SELECT id, 'owner' FROM jobs;
+    INSERT INTO songs (job_id, name, file_order, media_type, search_text)
+    SELECT jobs.id, 'Track ' || sequence || '.mp3', sequence, 'audio', 'track ' || sequence
+    FROM jobs CROSS JOIN generate_series(1, 100) sequence;
+    UPDATE songs SET transcription = '{"status":"sent"}'
+      WHERE job_id IN ('source-1', 'source-100') AND name = 'Track 1.mp3';
+    INSERT INTO jobs (id, url, status, created_at, data)
+    SELECT 'restriction-' || sequence, 'import:restriction-' || sequence, 'completed', '',
+      jsonb_build_object('id', 'restriction-' || sequence, 'private', true,
+        'initiatedBy', jsonb_build_object('id', 'other'), 'outputDir', '/music/' || sequence)
+    FROM generate_series(100, 1100) sequence`);
+  await rebuildPostgresLibrary(database, 'owner');
+  await database.exec('ANALYZE jobs; ANALYZE songs; ANALYZE library_entries; ANALYZE library_memberships; ANALYZE user_songs');
+  const plan = await database.prepare(`EXPLAIN (FORMAT JSON) SELECT count(*) FROM songs
+    JOIN jobs ON jobs.id = songs.job_id WHERE ${fileVisibilitySql('jobs', 'songs.name', '$1')}`).get('owner');
+  const nodes = [JSON.parse(plan['QUERY PLAN'])[0].Plan];
+  for (const node of nodes) nodes.push(...(node.Plans || []));
+  for (const index of ['jobs_private_id', 'jobs_private_output_directory']) {
+    assert.ok(nodes.some((node) => node['Index Name'] === index), `Privacy lookup must use ${index}`);
+  }
+  assert.ok(!nodes.some((node) => node.Alias === 'privacy_job' && node['Node Type'] === 'Seq Scan'));
+
+  const started = performance.now();
+  const library = await readPostgresLibrary(database, 'owner');
+  const libraryMs = performance.now() - started;
+  assert.equal(library.songCount, 9900);
+  assert.equal(library.playlists.find((playlist) => playlist.id === 'source-100').songCount, 0);
+  assert.equal(library.jobs.find((job) => job.id === 'source-100').transcriptionPending, false);
+  assert.equal(library.jobs.find((job) => job.id === 'source-1').transcriptionPending, true);
+  const pageStarted = performance.now();
+  const page = await pagePostgresTracks(database, 'owner');
+  context.diagnostic(JSON.stringify({ songs: 10000, libraryMs: Math.round(libraryMs),
+    firstPageMs: Math.round(performance.now() - pageStarted) }));
+  assert.equal(page.total, 9900);
+  assert.equal(page.files.length, 50);
+  assert.ok(page.files.every((file) => file.jobId !== 'source-100'));
+  assert.equal((await pagePostgresTracks(database, 'owner', { entryId: 'source-100' })).total, 0);
+
+  await database.exec(`UPDATE jobs SET data = jsonb_set(data, '{private}', 'false') WHERE id = 'restriction-100'`);
+  const publicLibrary = await readPostgresLibrary(database, 'owner');
+  assert.equal(publicLibrary.songCount, 10000);
+  assert.equal(publicLibrary.jobs.find((job) => job.id === 'source-100').transcriptionPending, true);
+  assert.equal((await pagePostgresTracks(database, 'owner', { entryId: 'source-100' })).total, 100);
+  await database.exec(`UPDATE jobs SET data = jsonb_set(data, '{privateFiles}', '["Track 1.mp3"]') WHERE id = 'restriction-100'`);
+  const privateFileLibrary = await readPostgresLibrary(database, 'owner');
+  assert.equal(privateFileLibrary.songCount, 9999);
+  assert.equal(privateFileLibrary.jobs.find((job) => job.id === 'source-100').transcriptionPending, false);
+  const privateFilePage = await pagePostgresTracks(database, 'owner', { entryId: 'source-100', pageSize: 1 });
+  assert.equal(privateFilePage.total, 99);
+  assert.equal(privateFilePage.files[0].name, 'Track 2.mp3');
+  assert.equal((await pagePostgresTracks(database, 'owner', { viewerId: null, entryId: 'source-100', search: 'track 1' })).total, 11);
+  await database.exec(`UPDATE jobs SET data = jsonb_set(data, '{private}', 'true') WHERE id = 'restriction-100'`);
+  assert.equal((await pagePostgresTracks(database, 'owner', { entryId: 'source-100' })).total, 0);
 });
 
 test('catalog viewers cannot see public songs linked only into a private playlist', async (context) => {
