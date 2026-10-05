@@ -45,7 +45,7 @@ export async function searchSongs(req, res) {
   const pageSize = Number(req.query.pageSize || 50);
   const database = openDatabase();
   const from = `FROM songs JOIN jobs ON jobs.id = songs.job_id
-    WHERE songs.media_type = 'audio' AND ${songVisibilitySql('NULL')}
+    WHERE songs.media_type IN ('audio', 'video') AND ${songVisibilitySql('NULL')}
       AND songs.search_text LIKE $1 ESCAPE '\\'`;
   const { total } = await database.prepare(`SELECT count(*) AS total ${from}`).get(`%${search}%`);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));

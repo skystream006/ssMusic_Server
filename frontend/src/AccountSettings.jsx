@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from 'react';
 import { Link2, RefreshCw, Save, Settings, Unlink, UserCheck, UserPlus, Users, X } from 'lucide-react';
 import { SharedLibraryAccess } from './SharedLibraries.jsx';
+import { sortSelectOptions } from './selectOptions.js';
 
 export function OrganizerControl({ user, users, onChange, confirm, disabled = false }) {
   if (user.role !== 'shared') return null;
@@ -16,8 +17,8 @@ export function OrganizerControl({ user, users, onChange, confirm, disabled = fa
           message: `Change the organizer for "${user.name}" to "${name}"? Current library access will be cleared and must be selected again.`,
           label: 'Change organizer' })) onChange(organizerId);
       }}>
-      <option value="">Administrator managed</option>
-      {organizers.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+      {sortSelectOptions([{ id: '', name: 'Administrator managed' }, ...organizers], (account) => account.name)
+        .map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
     </select>
   </label>;
 }
@@ -50,7 +51,7 @@ export function SharedRegistrationFields({ account, onChange, request, disabled 
       <select id={`${inputId}-organizer`} className="account-user-select" required value={account.organizerId || ''} disabled={disabled || !users?.length}
         onChange={(event) => onChange({ role: 'shared', organizerId: event.target.value || null })}>
         <option value="">Select an organizer</option>
-        {users?.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+        {sortSelectOptions(users, (user) => user.name).map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
       </select>
       {!users && !error && <p role="status">Loading available users...</p>}
       {users?.length === 0 && <p role="status">No approved organizers are available.</p>}
@@ -168,7 +169,7 @@ export function LinkedUsers({ request, confirm }) {
         <div><label htmlFor={selectId}>User</label><select id={selectId} className="account-user-select" value={available.some((user) => user.id === selectedId) ? selectedId : ''}
           required disabled={busy || !available.length} onChange={(event) => setSelectedId(event.target.value)}>
           <option value="">{available.length ? 'Select a user' : 'No available users'}</option>
-          {available.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+          {sortSelectOptions(available, (user) => user.name).map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
         </select></div>
         <button className="primary-button" type="submit" disabled={busy || !available.some((user) => user.id === selectedId)}><UserPlus size={17} />Send link request</button>
       </form>
@@ -242,7 +243,7 @@ export function OrganizedSharedUsers({ request, confirm }) {
         <select id={selectId} value={selected.id} disabled={saving || loading} onChange={async (event) => {
           const nextId = event.target.value;
           if (await discardChanges()) { setSelectedId(nextId); setDraft(null); setSaved(false); setError(''); }
-        }}>{data.users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select>
+        }}>{sortSelectOptions(data.users, (user) => user.name).map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select>
       </label>
       <p className="account-sharing-status"><span>Organizer</span><span>{selected.status === 'pending' ? 'Pending approval' : selected.status === 'revoked' ? 'Access revoked' : 'Approved'}</span></p>
       <SharedLibraryAccess users={data.libraries} selectedIds={selectedIds} onChange={(ids) => { setDraft({ userId: selected.id, ids }); setSaved(false); }}

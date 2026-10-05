@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Check, FileAudio, FileArchive, FileCode, HardDrive, RefreshCw, Upload, X } from 'lucide-react';
 import { formatBytes } from './SongActions.jsx';
 import { mediaAccept } from '../../src/media.js';
+import { sortSelectOptions } from './selectOptions.js';
 
 export default function ImportMusic({ user, request, onClose, onImported, initialPlaylistId = '' }) {
   const dialogRef = useRef(null);
@@ -243,7 +244,7 @@ export default function ImportMusic({ user, request, onClose, onImported, initia
               setError('');
             }}>
               <option value="">{owners === null ? 'Loading users...' : owners.length ? 'Select a library owner' : 'No eligible users'}</option>
-              {owners?.map((owner) => <option key={owner.id} value={owner.id}>{owner.name}{owner.id === user.id ? ' (you)' : ''}</option>)}
+              {sortSelectOptions(owners, (owner) => owner.name).map((owner) => <option key={owner.id} value={owner.id}>{owner.name}{owner.id === user.id ? ' (you)' : ''}</option>)}
             </select>
           </label>
           {ownerError && <div className="notice error" role="alert">{ownerError}
@@ -262,7 +263,7 @@ export default function ImportMusic({ user, request, onClose, onImported, initia
           </label> : <label className="import-field">Playlist
             <select required value={playlistId} disabled={playlists === null} onChange={(event) => setPlaylistId(event.target.value)}>
               <option value="">{playlists === null ? 'Loading playlists...' : playlists.length ? 'Select playlist' : 'No existing playlists'}</option>
-              {playlists?.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.playlistTitle}</option>)}
+              {sortSelectOptions(playlists, (playlist) => playlist.playlistTitle).map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.playlistTitle}</option>)}
             </select>
           </label>}
           <label className="import-field import-upload"><span><FileAudio size={18} />Audio and movie files</span>
@@ -283,13 +284,13 @@ export default function ImportMusic({ user, request, onClose, onImported, initia
             <label className="import-field"><span><FileCode size={18} />Local XML file</span>
               <select required disabled={localLoading || !localFiles?.xmlFiles.length} value={localXml} onChange={(event) => setLocalXml(event.target.value)}>
                 <option value="">{localFiles && !localFiles.xmlFiles.length ? 'No XML files available' : 'Select XML file'}</option>
-                {localFiles?.xmlFiles.map((file) => <option key={file.name} value={file.name}>{file.name} ({formatBytes(file.size)})</option>)}
+                {sortSelectOptions(localFiles?.xmlFiles, (file) => file.name).map((file) => <option key={file.name} value={file.name}>{file.name} ({formatBytes(file.size)})</option>)}
               </select>
             </label>
             <label className="import-field"><span><FileArchive size={18} />Local ZIP file</span>
               <select required disabled={localLoading || !localFiles?.zipFiles.length} value={localZip} onChange={(event) => setLocalZip(event.target.value)}>
                 <option value="">{localFiles && !localFiles.zipFiles.length ? 'No ZIP files available' : 'Select ZIP file'}</option>
-                {localFiles?.zipFiles.map((file) => <option key={file.name} value={file.name}>{file.name} ({formatBytes(file.size)})</option>)}
+                {sortSelectOptions(localFiles?.zipFiles, (file) => file.name).map((file) => <option key={file.name} value={file.name}>{file.name} ({formatBytes(file.size)})</option>)}
               </select>
             </label>
           </> : <><label className="import-field import-upload"><span><FileCode size={18} />1. iTunes library XML</span>

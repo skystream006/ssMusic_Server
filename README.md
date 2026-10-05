@@ -77,11 +77,11 @@ Leaving the setting empty disables key access. Docker Compose passes the
 setting to the app. Send it over HTTPS in the `X-API-Key` header on **every**
 request; keys in query strings, cookies, or `X-PAT` are not accepted.
 
-`GET /api/songs/search?q=artist&page=1&pageSize=50` searches audio across all
-libraries/source jobs, excluding private playlists and files. Search is
+`GET /api/songs/search?q=artist&page=1&pageSize=50` searches audio and video
+across all libraries/source jobs, excluding private playlists and files. Search is
 case-insensitive literal substring matching over indexed filename, playlist
 title, title, artist, album, performer, genre, year, and track/disc metadata.
-`q` is optional (empty lists accessible songs), with a maximum of 200 characters.
+`q` is optional (empty lists accessible media), with a maximum of 200 characters.
 Pages start at 1; `pageSize` defaults to 50 and is limited to 100.
 
 The response is `{ "files": [...], "page": 1, "pageSize": 50, "total": 42,

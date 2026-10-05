@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ListPlus, RefreshCw, X } from 'lucide-react';
+import { sortSelectOptions } from './selectOptions.js';
 
 export default function JobPlaylistDialog({ job, request, onClose, onAdded }) {
   const dialogRef = useRef(null);
@@ -63,7 +64,8 @@ export default function JobPlaylistDialog({ job, request, onClose, onAdded }) {
       <label htmlFor={destinationId}>Playlist</label>
       <select id={destinationId} value={destination} required disabled={loading || saving || !playlists.length} onChange={(event) => setDestination(event.target.value)}>
         {loading ? <option value="">Loading playlists...</option> : !playlists.length && <option value="">No other playlists</option>}
-        {!loading && playlists.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.playlistTitle || playlist.id}</option>)}
+        {!loading && sortSelectOptions(playlists, (playlist) => playlist.playlistTitle || playlist.id)
+          .map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.playlistTitle || playlist.id}</option>)}
       </select>
       {loading && <p className="sr-only" role="status">Loading playlists</p>}
       {error && <p className="notice error" role="alert">{error}</p>}

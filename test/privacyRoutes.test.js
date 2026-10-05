@@ -110,7 +110,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     }
     const result = await call('/api/songs/search?pageSize=1&page=2', keyHeaders);
     assert.equal(result.status, 200, result.text);
-    assert.equal(result.body.total, 4);
+    assert.equal(result.body.total, 5);
     assert.equal(result.body.files.length, 1);
     assert.equal(result.body.page, 2);
     const literal = await call('/api/songs/search?q=100%25', keyHeaders);
@@ -121,6 +121,34 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal((await call('/api/jobs/playlist/stream/clip.mp4', keyHeaders)).status, 200);
     assert.equal((await call('/api/jobs/playlist/lyrics/open.mp3', keyHeaders)).body.canEdit, false);
     assert.equal((await call('/api/jobs/playlist/stream/open.mp3', { ...keyHeaders, Range: 'bytes=0-4' })).status, 206);
+  });
+
+  await context.test('search includes videos with media URLs and pagination while respecting file privacy', async () => {
+    const search = await call('/api/songs/search?q=clip', keyHeaders);
+    assert.equal(search.status, 200, search.text);
+    assert.equal(search.body.total, 1);
+    assert.deepEqual(search.body.files.map((file) => file.name), ['clip.mp4']);
+    const [video] = search.body.files;
+    assert.equal(video.jobId, 'playlist');
+    assert.equal(video.readOnly, true);
+    assert.equal(video.streamUrl, '/api/jobs/playlist/stream/clip.mp4');
+    assert.equal(video.downloadUrl, '/api/jobs/playlist/download/clip.mp4');
+    assert.equal(video.artworkUrl, null);
+    assert.equal((await call(video.streamUrl, keyHeaders)).status, 200);
+    assert.equal((await call(video.downloadUrl, keyHeaders)).status, 200);
+    const paginated = await call('/api/songs/search?pageSize=1&page=5', keyHeaders);
+    assert.equal(paginated.status, 200, paginated.text);
+    assert.equal(paginated.body.total, 5);
+    assert.equal(paginated.body.totalPages, 5);
+    assert.equal(paginated.body.page, 5);
+    assert.deepEqual(paginated.body.files.map((file) => file.name), ['clip.mp4']);
+    assert.equal((await call('/api/jobs/playlist/files/clip.mp4/privacy', headers.Owner, 'PATCH', { private: true })).status, 200);
+    const hidden = await call('/api/songs/search?q=clip', keyHeaders);
+    assert.equal(hidden.status, 200, hidden.text);
+    assert.equal(hidden.body.total, 0);
+    assert.deepEqual(hidden.body.files, []);
+    assert.equal((await call('/api/jobs/playlist/files/clip.mp4/privacy', headers.Owner, 'PATCH', { private: false })).status, 200);
+    assert.deepEqual((await call('/api/songs/search?q=clip', keyHeaders)).body.files.map((file) => file.name), ['clip.mp4']);
   });
 
   let share;
@@ -155,7 +183,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       assert.ok(!result.text.includes('secret-file.mp3'), result.text);
     }
     const search = await call('/api/songs/search', keyHeaders);
-    assert.equal(search.body.total, 2);
+    assert.equal(search.body.total, 3);
     assert.ok(!search.text.includes('secret-file.mp3'), search.text);
     const own = await call('/api/library/tracks', headers.Contributor);
     assert.ok(!own.text.includes('secret-file.mp3'), own.text);
@@ -191,9 +219,9 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal((await call('/api/jobs/playlist')).body.private, true);
     assert.equal((await call('/api/jobs/playlist/stream/open.mp3', keyHeaders)).status, 404);
     assert.equal((await call('/api/jobs/playlist/privacy', headers.Owner, 'PATCH', { private: false })).status, 200);
-    assert.equal((await call('/api/songs/search', keyHeaders)).body.total, 2);
+    assert.equal((await call('/api/songs/search', keyHeaders)).body.total, 3);
     assert.equal((await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: false })).status, 200);
-    assert.equal((await call('/api/songs/search', keyHeaders)).body.total, 4);
+    assert.equal((await call('/api/songs/search', keyHeaders)).body.total, 5);
   });
 
   await context.test('retained companions stay private after deleting their original and owners can make them public', async () => {

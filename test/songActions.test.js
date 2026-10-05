@@ -3,6 +3,7 @@ import { after, before, test } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { sortSelectOptions } from '../frontend/src/selectOptions.js';
 
 let server;
 let SongActions;
@@ -53,6 +54,48 @@ before(async () => {
 
 after(async () => { await server?.close(); });
 
+test('dropdown options sort labels naturally without mutating inputs or changing values', () => {
+  const options = Object.freeze([
+    Object.freeze({ value: 'last', label: 'Zulu' }),
+    Object.freeze({ value: 'ten', label: 'Folder 10' }),
+    Object.freeze({ value: 'first', label: 'alpha' }),
+    Object.freeze({ value: 'two', label: 'folder 2' })
+  ]);
+  const sorted = sortSelectOptions(options);
+  assert.deepEqual(sorted.map((option) => option.value), ['first', 'two', 'ten', 'last']);
+  assert.deepEqual(options.map((option) => option.value), ['last', 'ten', 'first', 'two']);
+  assert.equal(sorted[0], options[2]);
+  assert.deepEqual(sortSelectOptions(null), []);
+  assert.deepEqual(sortSelectOptions(undefined), []);
+  assert.deepEqual(sortSelectOptions([{ name: 'Zulu' }, { name: 'Alpha' }], (option) => option.name), [{ name: 'Alpha' }, { name: 'Zulu' }]);
+});
+
+test('language and export dropdowns are alphabetical while retaining their defaults', () => {
+  const languages = renderToStaticMarkup(createElement(TranscriptionDialog, { file: { name: 'Song.mp3' }, serviceActive: true }));
+  const options = [...languages.matchAll(/<option[^>]*>([^<]*)<\/option>/g)].map((match) => match[1]);
+  assert.deepEqual(options.slice(0, 7), ['Afrikaans', 'Albanian', 'Amharic', 'Arabic', 'Armenian', 'Auto-detect', 'Azerbaijani']);
+  assert.deepEqual(options, sortSelectOptions(options, (label) => label));
+  assert.match(languages, /<option value="" selected="">Auto-detect<\/option>/);
+  const exports = renderToStaticMarkup(createElement(ExportLibraryDialog, {}));
+  const formats = exports.match(/<select[^>]*name="format"[^>]*>([\s\S]*?)<\/select>/)[1];
+  assert.deepEqual([...formats.matchAll(/<option[^>]*>([^<]*)<\/option>/g)].map((match) => match[1]),
+    ['Android M3U8 (compatible players)', 'iTunes XML']);
+  assert.match(formats, /<option value="itunes" selected="">iTunes XML<\/option>/);
+});
+
+test('song action dropdowns alphabetize visible labels while preserving links and disabled actions', () => {
+  const children = [
+    createElement('button', { key: 'transcribe', type: 'button', title: 'Transcribe song', disabled: true }, 'Transcribe'),
+    createElement('button', { key: 'edit', type: 'button', title: 'Edit metadata' }, 'Edit'),
+    createElement('a', { key: 'download', title: 'Save file', 'data-action-label': 'Download', href: '/song' }, 'Save')
+  ];
+  const html = renderToStaticMarkup(createElement(SongActions, { name: 'Song.mp3' }, children));
+  assert.deepEqual([...html.matchAll(/<span>([^<]*)<\/span>/g)].map((match) => match[1]), ['Download', 'Edit metadata', 'Transcribe song']);
+  assert.match(html, /href="\/song"/);
+  assert.match(html, /title="Transcribe song" disabled=""/);
+  assert.deepEqual(children.map((child) => child.key), ['transcribe', 'edit', 'download']);
+});
+
 test('playlist editing groups name, privacy, location, job details and public sharing', () => {
   const props = { playlist: { id: 'mix', playlistTitle: 'My mix', private: false }, parentId: 'folder',
     folders: [{ id: 'folder', path: 'Collection' }], canRename: true, canChangePrivacy: true, canShare: true };
@@ -84,6 +127,21 @@ test('folder editing includes location and deletion, but new folders cannot be d
   assert.doesNotMatch(renderToStaticMarkup(createElement(FolderDialog, { ...props, folder: null })), />Delete folder</);
 });
 
+test('playlist and folder locations alphabetize paths and Library without changing the selected folder', () => {
+  const folders = Object.freeze([
+    { id: 'z', path: 'Zulu' }, { id: 'ten', path: 'Albums / Volume 10' }, { id: 'two', path: 'Albums / Volume 2' }
+  ]);
+  for (const component of [EditPlaylistDialog, FolderDialog]) {
+    const html = renderToStaticMarkup(createElement(component, {
+      playlist: { id: 'playlist', playlistTitle: 'Playlist' }, folder: { id: 'folder', name: 'Folder' }, parentId: 'z', folders
+    }));
+    assert.deepEqual([...html.matchAll(/<option[^>]*>([^<]*)<\/option>/g)].map((match) => match[1]),
+      ['Albums / Volume 2', 'Albums / Volume 10', 'Library', 'Zulu']);
+    assert.match(html, /<option value="z" selected="">Zulu<\/option>/);
+  }
+  assert.deepEqual(folders.map((folder) => folder.id), ['z', 'ten', 'two']);
+});
+
 test('playlist sharing reuses the public-link dialog without treating the playlist as a song', () => {
   const html = renderToStaticMarkup(createElement(ShareMediaDialog, { playlist: { id: 'mix', playlistTitle: 'My mix' } }));
   assert.match(html, />Share Playlist</);
@@ -107,6 +165,7 @@ test('admin organizer control lists only eligible users and preserves selection 
   assert.match(html, /<option value="owner" selected="">Owner<\/option>/);
   assert.match(html, /<option value="admin">Admin<\/option>/);
   assert.match(html, /<option value="">Administrator managed<\/option>/);
+  assert.deepEqual([...html.matchAll(/<option[^>]*>([^<]*)<\/option>/g)].map((match) => match[1]), ['Admin', 'Administrator managed', 'Owner']);
   assert.doesNotMatch(html, /value="(?:car|pending|revoked|shared)"/);
   assert.match(renderToStaticMarkup(createElement(OrganizerControl, { ...props, disabled: true })), /<select[^>]*disabled=""/);
   assert.match(renderToStaticMarkup(createElement(OrganizerControl, { ...props, user: { ...user, organizerId: null } })), /<option value="" selected="">Administrator managed/);

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Save } from 'lucide-react';
 import MusicLibrary from './MusicLibrary.jsx';
 import { navigationHistory, replaceURL } from './navigation.js';
+import { sortSelectOptions } from './selectOptions.js';
 
 export default function SharedLibraries({ user, request, confirm }) {
   const [owners, setOwners] = useState(null);
@@ -31,7 +32,7 @@ export default function SharedLibraries({ user, request, confirm }) {
         setOwnerId(event.target.value);
         replaceURL(event.target.value === user.id && user.role !== 'shared' ? '/' : `/?${new URLSearchParams({ userId: event.target.value })}`);
       }}>{!owner && <option value="" disabled>Select a library</option>}
-        {available.map((item) => <option key={item.id} value={item.id}>{item.name}{item.id === user.id ? ' (your library)' : ''}</option>)}
+        {sortSelectOptions(available, (item) => item.name).map((item) => <option key={item.id} value={item.id}>{item.name}{item.id === user.id ? ' (your library)' : ''}</option>)}
       </select></label>}
     {owner && <MusicLibrary key={owner.id} user={user} request={request} confirm={confirm} owner={owner.id === user.id ? null : owner} />}
   </>;

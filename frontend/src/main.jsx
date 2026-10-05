@@ -57,6 +57,7 @@ import ImportMusic from './ImportMusic.jsx';
 import JobPlaylistDialog from './JobPlaylistDialog.jsx';
 import { submitJobUrl } from './jobSubmission.js';
 import { jobSortColumns, sortJobs } from './jobSorting.js';
+import { sortSelectOptions } from './selectOptions.js';
 import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
@@ -441,7 +442,13 @@ function JobsPage() {
     const id = job.initiatedBy?.id || 'unknown';
     if (!initiators.has(id)) initiators.set(id, job.initiatedBy?.name || 'Unknown');
   }
-  const userOptions = [...initiators].sort((left, right) => left[1].localeCompare(right[1]));
+  const userOptions = sortSelectOptions([
+    { value: 'mine', label: 'My jobs (owned and contributing)' },
+    { value: 'all', label: 'All users' },
+    ...[...initiators].map(([id, name]) => ({ value: id, label: `Initiated by ${name}` })),
+    ...(!['all', 'mine'].includes(userFilter) && !initiators.has(userFilter)
+      ? [{ value: userFilter, label: 'Selected user (no jobs)' }] : [])
+  ]);
   const filteredJobs = (jobs || []).filter((job) => (
     userFilter === 'all' || (userFilter === 'mine'
       ? job.initiatedBy?.id === user.id || isContributor(user, job)
@@ -530,16 +537,13 @@ function JobsPage() {
           <div className="job-filter-control">
           <label htmlFor="job-user-filter"><Users size={16} />Jobs</label>
           <select id="job-user-filter" value={userFilter} disabled={Boolean(jobAction)} onChange={(event) => { setUserFilter(event.target.value); setSelectedJobIds(new Set()); }}>
-            <option value="mine">My jobs (owned and contributing)</option>
-            <option value="all">All users</option>
-            {userOptions.map(([id, name]) => <option key={id} value={id}>Initiated by {name}</option>)}
-            {!['all', 'mine'].includes(userFilter) && !initiators.has(userFilter) && <option value={userFilter}>Selected user (no jobs)</option>}
+            {userOptions.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
           </select>
           </div>
           <div className="job-sort-controls">
             <label htmlFor="job-sort">Sort by</label>
             <select id="job-sort" value={jobSort.key} onChange={(event) => changeSort(event.target.value)}>
-              {jobSortColumns.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+              {sortSelectOptions(jobSortColumns).map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
             </select>
             <button className="job-sort-direction" type="button" onClick={() => changeSort(jobSort.key)}
               aria-label={`Sort ${jobSort.direction === 'asc' ? 'descending' : 'ascending'}`}
@@ -1358,7 +1362,7 @@ function UserSettingsPage({ userId }) {
           if (updated.id === currentUser.id) setUser(updated);
         }} />
         {userId && <label className="role-control"><span>Role</span><select aria-label="User role" value={details.role} disabled={Boolean(busy) || userId === currentUser.id}
-          onChange={(event) => saveAccess({ role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option><option value="shared">Shared</option></select></label>}
+          onChange={(event) => saveAccess({ role: event.target.value })}><option value="admin">Admin</option><option value="shared">Shared</option><option value="user">User</option></select></label>}
         {userId && <OrganizerControl user={details} users={organizerUsers} disabled={Boolean(busy)} confirm={confirm}
           onChange={(organizerId) => saveAccess({ organizerId })} />}
       </section>
@@ -1506,7 +1510,7 @@ function AdminPage() {
           <div><dt>Storage</dt><dd title={user.mediaUsage ? `${user.mediaUsage.totalBytes.toLocaleString()} bytes in ${user.mediaUsage.totalFiles.toLocaleString()} audio and video files` : 'No completed scan'}>{formatBytes(user.mediaUsage?.totalBytes)}</dd></div>
         </dl>
         <div className="user-role-controls">
-          <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option><option value="shared">Shared</option></select></label>
+          <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="admin">Admin</option><option value="shared">Shared</option><option value="user">User</option></select></label>
           <OrganizerControl user={user} users={users} disabled={Boolean(updating)} confirm={confirm}
             onChange={(organizerId) => changeUser(user.id, { organizerId })} />
         </div>

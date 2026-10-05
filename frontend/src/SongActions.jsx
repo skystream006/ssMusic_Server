@@ -2,6 +2,7 @@ import { Children, cloneElement, useEffect, useId, useRef, useState } from 'reac
 import { Check, CircleAlert, Clock3, Copy, ExternalLink, FileAudio, ImagePlus, Info, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Share2, Star, Trash2, Upload, X } from 'lucide-react';
 import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
 import { individualSongsId, individualVideosId } from '../../src/library.js';
+import { sortSelectOptions } from './selectOptions.js';
 
 export const transcriptionInactiveMessage = 'Transciption service is currently inactive. Refresh the page when transcription service is available';
 
@@ -76,7 +77,8 @@ export function SongActions({ name, className, children }) {
         menuRef.current.hidePopover();
         triggerRef.current.focus();
       }}>
-      {Children.toArray(children).map((child) => cloneElement(child, {}, <>
+      {sortSelectOptions(Children.toArray(children), (child) => child.props['data-action-label'] || child.props.title)
+        .map((child) => cloneElement(child, {}, <>
         {child.props.children}<span>{child.props['data-action-label'] || child.props.title}</span>
       </>))}
     </div>
@@ -490,8 +492,8 @@ export function TranscriptionDialog({ file, onClose, onSubmit, serviceActive = f
             <TranscriptionHelp id={`${titleId}-language-help`} label="Language">Choose the song's language or use Auto-detect. Viet Lyrics Fallback selects Vietnamese and locks this setting while enabled.</TranscriptionHelp>
           </div>
           <select ref={languageRef} autoFocus id={`${titleId}-language`} aria-describedby={`${titleId}-language-help`} value={language} disabled={vietLyricsFallback} onChange={(event) => setLanguage(event.target.value)}>
-            <option value="">Auto-detect</option>
-            {transcriptionLanguages.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+            {sortSelectOptions([['', 'Auto-detect'], ...transcriptionLanguages], ([, name]) => name)
+              .map(([code, name]) => <option key={code} value={code}>{name}</option>)}
           </select>
         </div>
         <div className="transcription-option">

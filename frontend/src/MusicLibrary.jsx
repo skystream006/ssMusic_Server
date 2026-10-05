@@ -8,6 +8,10 @@ import { submitJobUrl } from './jobSubmission.js';
 import { canChangePlaylistPrivacy, canChangePrivacy, canManageJob, canModifyJob, getFilePrivacy, formatBytes, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { replaceURL } from './navigation.js';
+import { sortSelectOptions } from './selectOptions.js';
+
+const backupWeekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+  .map((label, value) => ({ label, value }));
 
 export function ExportLibraryDialog({ request, onClose }) {
   const dialogRef = useRef(null);
@@ -146,7 +150,7 @@ export function ExportLibraryDialog({ request, onClose }) {
         {enabled && <div className="backup-schedule-fields">
           <label>Frequency<select value={frequency} disabled={locked} onChange={(event) => setFrequency(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
           {frequency === 'weekly' && <label>Day<select value={weekday} disabled={locked} onChange={(event) => setWeekday(Number(event.target.value))}>
-            {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((day, index) => <option key={day} value={index}>{day}</option>)}
+            {sortSelectOptions(backupWeekdays).map(({ label, value }) => <option key={value} value={value}>{label}</option>)}
           </select></label>}
           <label>Time (UTC)<input type="time" required value={time} disabled={locked} onChange={(event) => setTime(event.target.value)} /></label>
         </div>}
@@ -155,8 +159,8 @@ export function ExportLibraryDialog({ request, onClose }) {
       <fieldset className="backup-format-fields" hidden={!settingsNeeded} disabled={!settingsNeeded || locked}>
       <label htmlFor={formatId}>Export format</label>
       <select id={formatId} name="format" value={format} aria-describedby={instructionsId} onChange={(event) => setFormat(event.target.value)}>
-        <option value="itunes">iTunes XML</option>
         <option value="android">Android M3U8 (compatible players)</option>
+        <option value="itunes">iTunes XML</option>
       </select>
       <div id={instructionsId}>
         <p>Download a ZIP of your library. Song order within each playlist is retained.</p>
@@ -261,8 +265,9 @@ function LibraryDestinationDialog({ title, summary, label, destinations, folder 
       <div className="folder-dialog-heading"><h2 id={headingId}>{title}</h2><button className="music-icon-button" type="button" title="Close" aria-label={`Close ${title.toLowerCase()}`} disabled={busy} onClick={onClose}><X size={18} /></button></div>
       <p>{summary}</p>
       <label htmlFor={destinationId}>Destination {folder ? 'folder' : 'playlist'}</label><select id={destinationId} required={!folder} value={destination} disabled={busy || (!folder && !destinations.length)} onChange={(event) => setDestination(event.target.value)}>
-        {folder ? <option value="">Library</option> : !destinations.length && <option value="">No other playlists</option>}
-        {destinations.map((destination) => <option key={destination.id} value={destination.id}>{destination.title}</option>)}
+        {!folder && !destinations.length && <option value="">No other playlists</option>}
+        {sortSelectOptions(folder ? [{ id: '', title: 'Library' }, ...destinations] : destinations, (destination) => destination.title)
+          .map((destination) => <option key={destination.id} value={destination.id}>{destination.title}</option>)}
       </select>
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="dialog-actions"><button className="secondary-button" type="button" disabled={busy} onClick={onClose}>Cancel</button>
@@ -304,7 +309,8 @@ export function EditPlaylistDialog({ playlist, parentId, folders = [], canRename
       <label htmlFor={nameId}>Playlist name</label><input id={nameId} autoFocus={canRename} required={canRename} maxLength={200} value={name} disabled={saving || !canRename} onChange={(event) => setName(event.target.value)} />
       <label className="playlist-privacy"><input type="checkbox" checked={isPrivate} disabled={saving || !canChangePrivacy} onChange={(event) => setPrivate(event.target.checked)} />Make private</label>
       <label htmlFor={locationId}>Location</label><select id={locationId} value={location} disabled={saving} onChange={(event) => setLocation(event.target.value)}>
-        <option value="">Library</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.path}</option>)}
+        {sortSelectOptions([{ id: '', path: 'Library' }, ...folders], (folder) => folder.path)
+          .map((folder) => <option key={folder.id} value={folder.id}>{folder.path}</option>)}
       </select>
       <div className="playlist-dialog-links">
         {!playlist.protected && <a className="secondary-button" href={`/job/${encodeURIComponent(playlist.id)}`} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} />Open job details</a>}
@@ -363,7 +369,8 @@ export function FolderDialog({ folder, parentId, folders, saving, onSave, onDele
       {!folder && <button className="secondary-button compact-button folder-add-button" type="button" disabled={saving}
         onClick={() => { const id = crypto.randomUUID(); setNames((current) => [...current, { id, name: '' }]); setFocusTarget({ id }); }}><Plus size={17} />Add folder</button>}
       <label htmlFor={parentInputId}>Location</label><select id={parentInputId} value={location} disabled={saving} onChange={(event) => setLocation(event.target.value)}>
-        <option value="">Library</option>{folders.map((item) => <option key={item.id} value={item.id}>{item.path}</option>)}
+        {sortSelectOptions([{ id: '', path: 'Library' }, ...folders], (item) => item.path)
+          .map((item) => <option key={item.id} value={item.id}>{item.path}</option>)}
       </select>
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="dialog-actions">{folder && <button className="danger-button" type="button" disabled={saving} onClick={async () => {
