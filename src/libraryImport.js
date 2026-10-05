@@ -261,6 +261,12 @@ export async function extractImportMedia(zipPath, directory, { local = false, re
           if (type?.ext === 'wav') {
             const audio = await validateImportAudio({ name: `${entry.fileName}.wav`, path: filePath }, { local });
             files.push({ ...audio, name: entry.fileName, convertFromWav: true });
+          } else if (path.posix.extname(entry.fileName).toLowerCase() === '.mp3'
+            && (type?.ext === 'mp2' || (!type && await probeImportAudio({ path: filePath, name: entry.fileName }, '.mp2', true)))) {
+            const importName = entry.fileName.replace(/\.mp3$/i, '.mp2');
+            const audio = await validateImportAudio({ name: importName, path: filePath }, { local, requireProbe: true });
+            files.push({ ...audio, name: entry.fileName, importName });
+            report('extract', 'Corrected MP2 audio with an MP3 filename', { entry: entry.fileName, matched: importName });
           } else {
             files.push(await validateImportMedia({ name: entry.fileName, path: filePath }, { local }));
           }
@@ -390,6 +396,8 @@ export async function importItunesLibrary(xml, media, user, { local = false, rep
         if (file.convertFromWav) {
           if (!converted.has(file.path)) converted.set(file.path, await convertItunesWav(file, { local, report }));
           plan.files[index] = converted.get(file.path);
+        } else if (file.importName) {
+          plan.files[index] = { ...file, name: file.importName };
         }
         if (!countedPaths.has(file.path)) copiedBytes += plan.files[index].size;
         countedPaths.add(file.path);

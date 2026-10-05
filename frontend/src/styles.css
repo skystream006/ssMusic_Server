@@ -395,6 +395,12 @@ code { font: 400 11px 'DM Mono', monospace; }
 .auth-panel input { height: 46px; width: 100%; padding: 0 13px; border: 1px solid var(--line); outline: 0; color: var(--ink); background: var(--field); }
 .auth-panel input:focus { border-color: var(--royal); outline: 2px solid rgba(95, 127, 240, .22); }
 .auth-panel .notice { margin-top: 18px; line-height: 1.5; }
+.registration-shared { display: grid; gap: 10px; min-width: 0; margin: 8px 0; padding: 0; border: 0; }
+.auth-panel .registration-shared-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; color: var(--ink); font-size: 12px; text-transform: none; }
+.auth-panel .registration-shared-toggle input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--royal); }
+.registration-shared p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.account-user-select { width: 100%; min-width: 0; height: 48px; padding: 0 12px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--field); font: inherit; font-size: 14px; }
+.account-user-select:focus-visible { outline: 2px solid var(--royal); outline-offset: 2px; }
 .auth-loading { min-height: 100vh; display: flex; align-items: center; justify-content: center; gap: 11px; color: var(--muted); font-size: 12px; }
 .admin-heading { align-items: center; }
 .pending-count { min-width: 180px; padding: 18px 20px; border: 1px solid var(--line); background: var(--surface); }
@@ -426,6 +432,25 @@ code { font: 400 11px 'DM Mono', monospace; }
 .compact-button { height: 36px; justify-content: center; padding: 0 12px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .settings-heading h1 { font-size: 38px; }
+.settings-tabs { display: flex; align-items: stretch; gap: 6px; border-bottom: 1px solid var(--line); margin-bottom: 28px; }
+.settings-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; min-height: 48px; padding: 10px 16px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+.settings-tabs button[aria-selected="true"] { border-bottom-color: var(--royal); color: var(--ink); }
+.settings-tabs button svg { flex: none; }
+.settings-tabs button:focus-visible { outline: 2px solid var(--royal); outline-offset: -2px; }
+.settings-tabs button:disabled { opacity: .5; cursor: wait; }
+.account-sharing { padding: 4px 0 24px; }
+.account-sharing .section-title { gap: 12px; flex-wrap: wrap; }
+.account-sharing .notice { margin: 16px 0; overflow-wrap: anywhere; }
+.account-sharing .music-icon-button { width: 44px; height: 44px; }
+.pat-list.account-link-list li { grid-template-columns: 20px minmax(0, 1fr) auto; }
+.account-link-actions { display: flex; flex: none; gap: 4px; }
+.account-sharing-status { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 18px 0 26px; color: var(--muted); font-size: 12px; }
+@media (max-width: 520px) {
+  .settings-tabs { gap: 0; }
+  .settings-tabs button { flex: 1; flex-direction: column; gap: 5px; padding: 10px 5px; font-size: 11px; }
+  .account-sharing .pat-form { align-items: stretch; flex-direction: column; }
+  .account-sharing .pat-form > div { max-width: none; width: 100%; }
+}
 .settings-back { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 24px; color: var(--muted); font-size: 13px; }
 .settings-profile { padding: 24px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .settings-profile dl { display: flex; flex-wrap: wrap; gap: 24px 48px; margin: 24px 0 0; }

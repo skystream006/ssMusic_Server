@@ -46,11 +46,10 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
-import MusicLibrary from './MusicLibrary.jsx';
 import PublicMedia from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
 import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
-import { LibraryAccessList, UsernameForm } from './AccountSettings.jsx';
+import { LibraryAccessList, LinkedUsers, OrganizedSharedUsers, SettingsTabs, SharedRegistrationFields, UsernameForm } from './AccountSettings.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import JobPlaylistDialog from './JobPlaylistDialog.jsx';
 import { submitJobUrl } from './jobSubmission.js';
@@ -262,8 +261,7 @@ function StatusBadge({ status }) {
 function MusicHomePage() {
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
-  const LibraryView = user.role === 'shared' ? SharedLibraries : MusicLibrary;
-  return <AppShell section="music"><LibraryView user={user} request={request} confirm={confirm} />{dialog}</AppShell>;
+  return <AppShell section="music"><SharedLibraries user={user} request={request} confirm={confirm} />{dialog}</AppShell>;
 }
 
 function BackupJobStatus() {
@@ -1005,6 +1003,7 @@ function HealthMetrics() {
 
 function LoginPage({ onLogin, appLogin = false }) {
   const [name, setName] = useState('');
+  const [registrationAccount, setRegistrationAccount] = useState({ role: 'user', organizerId: null });
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState(null);
   const [redirectUrl, setRedirectUrl] = useState('');
@@ -1055,13 +1054,14 @@ function LoginPage({ onLogin, appLogin = false }) {
 
   async function register(event) {
     event.preventDefault();
+    if (busy || (registrationAccount.role === 'shared' && !registrationAccount.organizerId)) return;
     setBusy('register');
     setMessage(null);
     try {
       const ceremony = await request('/api/auth/register/options', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name, ...registrationAccount })
       });
       const response = await startRegistration({ optionsJSON: ceremony.options });
       const result = await request('/api/auth/register/verify', {
@@ -1073,6 +1073,7 @@ function LoginPage({ onLogin, appLogin = false }) {
         onLogin(result.user);
       } else {
         setName('');
+        setRegistrationAccount({ role: 'user', organizerId: null });
         setMessage({ type: 'warning', text: 'Passkey registered. An administrator must approve your access before you can log in.' });
       }
     } catch (error) {
@@ -1098,8 +1099,9 @@ function LoginPage({ onLogin, appLogin = false }) {
       {appLogin ? <a className="secondary-button" href="/">Cancel</a> : <><div className="auth-divider"><span>or register</span></div>
       <form onSubmit={register}>
         <label htmlFor="registration-name">Display name</label>
-        <input id="registration-name" minLength="2" maxLength="64" required value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" />
-        <button className="secondary-button" disabled={Boolean(busy)} type="submit">
+        <input id="registration-name" minLength="2" maxLength="64" required value={name} disabled={Boolean(busy)} onChange={(event) => setName(event.target.value)} placeholder="Your name" />
+        <SharedRegistrationFields account={registrationAccount} onChange={setRegistrationAccount} request={request} disabled={Boolean(busy)} />
+        <button className="secondary-button" disabled={Boolean(busy) || (registrationAccount.role === 'shared' && !registrationAccount.organizerId)} type="submit">
           {busy === 'register' ? <RefreshCw className="spin" size={18} /> : <ShieldCheck size={18} />}
           Register with Passkey
         </button>
@@ -1156,10 +1158,12 @@ function PatDialog({ pat, onClose }) {
 
 function UserSettingsPage({ userId }) {
   const { user: currentUser, setUser } = useContext(AuthContext);
+  const [settingsTab, setSettingsTab] = useState('account');
   const [details, setDetails] = useState(null);
   const [tokens, setTokens] = useState(null);
   const [passkeys, setPasskeys] = useState([]);
   const [libraryUsers, setLibraryUsers] = useState([]);
+  const [organizerUsers, setOrganizerUsers] = useState([]);
   const [sharedUserIds, setSharedUserIds] = useState([]);
   const [accessSaved, setAccessSaved] = useState(false);
   const [name, setName] = useState('');
@@ -1178,7 +1182,9 @@ function UserSettingsPage({ userId }) {
       if (passkeyResult) updatePasskeys(passkeyResult);
       else setDetails(result.user || currentUser);
       if (accounts) {
-        setLibraryUsers(accounts.users.filter((account) => account.id !== userId && account.status === 'approved' && account.role !== 'shared'));
+        const available = accounts.users.filter((account) => account.id !== userId && account.status === 'approved' && account.role !== 'shared');
+        setOrganizerUsers(available);
+        setLibraryUsers(result.libraries || available);
         setSharedUserIds(result.user.sharedUserIds || []);
       }
       setTokens(result.tokens);
@@ -1199,6 +1205,7 @@ function UserSettingsPage({ userId }) {
       const result = await request(endpoint, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(changes) });
       setDetails(result.user);
       setSharedUserIds(result.user.sharedUserIds || []);
+      if (result.libraries) setLibraryUsers(result.libraries);
       setAccessSaved(true);
     } catch (saveError) { setError(saveError.message); }
     finally { setBusy(''); }
@@ -1289,9 +1296,16 @@ function UserSettingsPage({ userId }) {
   return <AppShell section={userId ? 'admin' : 'settings'}>
     {userId && <a className="settings-back" href="/admin"><ArrowLeft size={16} />All users</a>}
     <section className="page-heading settings-heading"><div><p className="eyebrow">Account</p><h1>{userId ? 'User details' : 'User settings'}</h1></div></section>
+    {!userId && <SettingsTabs value={settingsTab} onChange={setSettingsTab} disabled={Boolean(busy)} />}
+    {!userId && settingsTab === 'links' && <div role="tabpanel" id="settings-panel-links" aria-labelledby="settings-tab-links">
+      <LinkedUsers request={request} confirm={confirm} />
+    </div>}
+    {!userId && settingsTab === 'shared' && <div role="tabpanel" id="settings-panel-shared" aria-labelledby="settings-tab-shared">
+      <OrganizedSharedUsers request={request} confirm={confirm} />
+    </div>}
     {error && <div className="notice error" role="alert">{error}<button type="button" className="secondary-button compact-button" onClick={load} disabled={Boolean(busy)}><RefreshCw size={16} />Retry</button></div>}
     {!details && !error && <p role="status">Loading account...</p>}
-    {details && <>
+    {details && (userId || settingsTab === 'account') && <div role={userId ? undefined : 'tabpanel'} id={userId ? undefined : 'settings-panel-account'} aria-labelledby={userId ? undefined : 'settings-tab-account'}>
       <section className="settings-profile" aria-label="User details">
         <UserIdentity user={details} />
         <dl><div><dt>Role</dt><dd>{details.role}</dd></div><div><dt>Joined</dt><dd>{formatDate(details.createdAt)}</dd></div><div><dt>User ID</dt><dd>{details.id}</dd></div></dl>
@@ -1301,6 +1315,11 @@ function UserSettingsPage({ userId }) {
         }} />
         {userId && <label className="role-control"><span>Role</span><select aria-label="User role" value={details.role} disabled={Boolean(busy) || userId === currentUser.id}
           onChange={(event) => saveAccess({ role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option><option value="shared">Shared</option></select></label>}
+        {userId && details.role === 'shared' && <label className="role-control"><span>Organizer</span>
+          <select aria-label="Shared user organizer" value={details.organizerId || ''} disabled={Boolean(busy)} onChange={(event) => saveAccess({ organizerId: event.target.value || null })}>
+            <option value="">Administrator managed</option>
+            {organizerUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+          </select></label>}
       </section>
       {accessSaved && <p className="notice success" role="status">Access saved.</p>}
       {userId && details.role === 'shared' && <SharedLibraryAccess users={libraryUsers} selectedIds={sharedUserIds}
@@ -1347,7 +1366,7 @@ function UserSettingsPage({ userId }) {
           </li>)}
         </ul>}
       </section>
-    </>}
+    </div>}
     {secret && <PatDialog pat={secret} onClose={() => setSecret(null)} />}
     {dialog}
   </AppShell>;

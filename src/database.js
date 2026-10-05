@@ -8,13 +8,13 @@ export function withTransaction(database, operation) {
 }
 
 function userStatements(user) {
-  return [{ sql: `INSERT INTO users (id, name, name_key, user_handle, role, status, created_at, updated_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+  return [{ sql: `INSERT INTO users (id, name, name_key, user_handle, role, status, created_at, updated_at, organizer_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name, name_key=excluded.name_key,
       user_handle=excluded.user_handle, role=excluded.role, status=excluded.status,
-      updated_at=excluded.updated_at`, values: [
+      updated_at=excluded.updated_at, organizer_id=excluded.organizer_id`, values: [
     user.id, user.name, user.name.toLowerCase(), user.userHandle, user.role, user.status,
-    user.createdAt, user.updatedAt
+    user.createdAt, user.updatedAt, user.organizerId ?? null
   ] }, ...user.credentials.map((credential) => ({ credential: true, sql: `INSERT INTO credentials (id, user_id, public_key, counter, transports, created_at, last_used_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(id) DO UPDATE SET
       public_key=excluded.public_key, counter=excluded.counter, transports=excluded.transports
@@ -32,7 +32,7 @@ export async function writeUser(database, user) {
 }
 
 export async function readUser(database, id) {
-  const user = await database.prepare(`SELECT id, name, user_handle AS "userHandle", role, status,
+  const user = await database.prepare(`SELECT id, name, user_handle AS "userHandle", role, status, organizer_id AS "organizerId",
     created_at AS "createdAt", updated_at AS "updatedAt" FROM users WHERE id = $1`).get(id);
   if (!user) return null;
   user.sharedUserIds = (await database.prepare('SELECT owner_id FROM library_shares WHERE viewer_id = $1 ORDER BY owner_id')

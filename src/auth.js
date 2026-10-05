@@ -8,6 +8,7 @@ import {
   verifyRegistrationResponse
 } from '@simplewebauthn/server';
 import {
+  acceptUserLink,
   addCredential,
   createPrivateAccessToken,
   createSession,
@@ -20,11 +21,19 @@ import {
   getSessionUser,
   getUser,
   getUserPasskeys,
+  listAvailableUsers,
+  listOrganizedUsers,
+  listOrganizerLibraries,
   listPrivateAccessTokens,
+  listUserLinks,
   listUsers,
   registerUser,
+  removeUserLink,
+  requestUserLink,
   updateCredentialCounter,
-  updateUser
+  updateOrganizedUser,
+  updateUser,
+  validateRegistrationAccount
 } from './authStore.js';
 
 const challenges = new Map();
@@ -235,6 +244,53 @@ export function registerAuthRoutes(app, limiters = {}) {
     }
   });
 
+  app.get('/api/auth/register/users', registrationOptionsLimiter, async (_req, res) => {
+    return res.json({ users: await listAvailableUsers() });
+  });
+
+  app.get('/api/auth/links', requireSession, async (req, res) => {
+    try {
+      const links = await listUserLinks(req.user.id);
+      return res.json({ links, users: (await listAvailableUsers()).filter((user) => user.id !== req.user.id) });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.post('/api/auth/links', requireSession, async (req, res) => {
+    try {
+      await requestUserLink(req.user.id, req.body?.userId);
+      return res.status(201).json({ links: await listUserLinks(req.user.id) });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.post('/api/auth/links/:id/accept', requireSession, async (req, res) => {
+    try {
+      await acceptUserLink(req.user.id, req.params.id);
+      return res.json({ links: await listUserLinks(req.user.id) });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.delete('/api/auth/links/:id', requireSession, async (req, res) => {
+    try {
+      if (!await removeUserLink(req.user.id, req.params.id)) return res.status(404).json({ error: 'User link not found' });
+      return res.status(204).end();
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.get('/api/auth/shared-users', requireSession, async (req, res) => {
+    try {
+      return res.json({ users: await listOrganizedUsers(req.user.id), libraries: await listOrganizerLibraries(req.user.id) });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.put('/api/auth/shared-users/:id/libraries', requireSession, async (req, res) => {
+    try {
+      if (!req.body || Object.keys(req.body).some((key) => key !== 'sharedUserIds')) {
+        return res.status(400).json({ error: 'Only shared library access may be changed here' });
+      }
+      return res.json({ user: await updateOrganizedUser(req.user.id, req.params.id, req.body.sharedUserIds) });
+    } catch (error) { return sendError(res, error); }
+  });
+
   app.post('/api/auth/register/options', registrationOptionsLimiter, async (req, res) => {
     try {
       if (req.body?.client && req.body.client !== 'web') {
@@ -244,6 +300,7 @@ export function registerAuthRoutes(app, limiters = {}) {
       if (name.length < 2 || name.length > 64) {
         return res.status(400).json({ error: 'Name must be between 2 and 64 characters' });
       }
+      const account = await validateRegistrationAccount({ role: req.body?.role, organizerId: req.body?.organizerId });
       const userHandle = crypto.randomBytes(32);
       const { rpID, origin } = getWebAuthnConfig(req);
       const options = await generateRegistrationOptions({
@@ -262,6 +319,7 @@ export function registerAuthRoutes(app, limiters = {}) {
         type: 'registration',
         challenge: options.challenge,
         name,
+        account,
         userHandle: userHandle.toString('base64url'),
         rpID,
         origin
@@ -359,7 +417,8 @@ export function registerAuthRoutes(app, limiters = {}) {
       const user = await registerUser(
         challenge.name,
         challenge.userHandle,
-        verification.registrationInfo.credential
+        verification.registrationInfo.credential,
+        challenge.account
       );
       if (user.status === 'approved') await issueSession(req, res, user);
       return res.status(201).json({ user });
@@ -451,7 +510,8 @@ export function registerAuthRoutes(app, limiters = {}) {
   app.get('/api/admin/users/:id', requireSession, requireAdmin, async (req, res) => {
     const user = (await getUser(req.params.id));
     if (!user) return res.status(404).json({ error: 'User not found' });
-    return res.json({ user, tokens: (await listPrivateAccessTokens(user.id)) });
+    const libraries = user.role === 'shared' ? await (user.organizerId ? listOrganizerLibraries(user.organizerId) : listAvailableUsers()) : [];
+    return res.json({ user, tokens: (await listPrivateAccessTokens(user.id)), libraries });
   });
 
   app.delete('/api/admin/users/:id', requireSession, requireAdmin, async (req, res) => {
@@ -482,10 +542,12 @@ export function registerAuthRoutes(app, limiters = {}) {
         status: req.body?.status,
         role: req.body?.role,
         name: req.body?.name,
+        organizerId: req.body?.organizerId,
         sharedUserIds: req.body?.sharedUserIds
       }, req.user.id);
       if (!user) return res.status(404).json({ error: 'User not found' });
-      return res.json({ user });
+      const libraries = user.role === 'shared' ? await (user.organizerId ? listOrganizerLibraries(user.organizerId) : listAvailableUsers()) : [];
+      return res.json({ user, libraries });
     } catch (error) {
       return sendError(res, error);
     }

@@ -209,12 +209,12 @@ export function PlaybackProvider({ children, request }) {
       setMetadata({ title: song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, ''), artist: song.artist || '', sylt: [], uslt: '' });
       setVideoOpen(true);
     } else if (song) {
-      request(`/api/jobs/${encodeURIComponent(song.jobId)}/lyrics/${encodeURIComponent(song.name)}`)
+      request(song.lyricsUrl || `/api/jobs/${encodeURIComponent(song.jobId)}/lyrics/${encodeURIComponent(song.name)}`)
         .then((result) => { if (active) setMetadata(result); })
         .catch((error) => { if (active) setLyricError(error.message); });
     }
     return () => { active = false; };
-  }, [song?.jobId, song?.name, song?.streamUrl, request]);
+  }, [song?.jobId, song?.name, song?.streamUrl, song?.lyricsUrl, request]);
 
   function selectSong(track, queue = songs, scope = queueScopeRef.current) {
     autoPlayRef.current = true;
@@ -427,7 +427,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <button type="button" aria-pressed={mode === 'sylt'} onClick={() => setMode('sylt')}>SYLT</button>
           <button type="button" aria-pressed={mode === 'uslt'} onClick={() => setMode('uslt')}>USLT</button>
         </div>
-        {metadata?.canEdit && !editingLyrics && <button className="lyrics-copy" type="button" title="Edit lyrics" aria-label="Edit lyrics"
+        {metadata?.canEdit && !song?.readOnly && !editingLyrics && <button className="lyrics-copy" type="button" title="Edit lyrics" aria-label="Edit lyrics"
           disabled={!song || song.transcription?.status === 'sent'} onClick={() => setEditingLyrics({ song, metadata })}><Pencil size={17} /></button>}
         <button className="lyrics-copy" type="button" title={currentCopy && !currentCopy.error ? 'Lyrics copied' : 'Copy lyrics'} aria-label="Copy lyrics"
           disabled={Boolean(editingLyrics) || copying || !lyricsText.trim()} onClick={copyLyrics}>

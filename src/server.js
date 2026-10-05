@@ -23,7 +23,7 @@ import { countMediaFiles, createMediaCountMonitor, getSystemHealth } from './hea
 import { isYouTubeUrl } from './utils.js';
 import { scheduleDailyMaintenance, scheduleLibraryBackups } from './scheduler.js';
 import { attachUser, registerAuthRoutes, requireAdmin, requireAuth } from './auth.js';
-import { restrictSharedAccess, sharedLibraryUsers, libraryReaderId, canReadSharedSong, sharedJobSummary } from './sharedAccess.js';
+import { restrictSharedAccess, sharedLibraryUsers, libraryReaderId, canReadSharedSong, canReadLibrarySong, readOnlyLibraryFile, sharedJobSummary } from './sharedAccess.js';
 import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
@@ -167,18 +167,19 @@ const libraryBackups = (await createLibraryBackupService({ async loadLibrary(use
 } }));
 
 app.get('/api/library/shared-users', async (req, res) => {
-  res.json({ users: req.user.role === 'shared' ? await sharedLibraryUsers(req.user.id) : [] });
+  res.json({ users: await sharedLibraryUsers(req.user.id) });
 });
 
 app.get('/api/library', async (req, res) => {
   try {
     const ownerId = await libraryReaderId(req.user, req.query.userId);
     const library = await readPostgresLibrary(openDatabase(), ownerId);
-    if (req.user.role === 'shared') {
+    const readOnly = req.user.role === 'shared' || ownerId !== req.user.id;
+    if (readOnly) {
       library.jobs = library.jobs.map(sharedJobSummary);
       library.playlists = library.playlists.map(({ initiatedBy, contributors, ...playlist }) => playlist);
     }
-    res.json({ ...library, ownerId });
+    res.json({ ...library, ownerId, readOnly });
   } catch (error) { res.status(error.statusCode || 500).json({ error: error.message }); }
 });
 
@@ -301,13 +302,15 @@ app.get('/api/library/tracks', async (req, res) => {
     const available = new Map((await Promise.all([...pageJobs.values()].map(async (job) =>
       (await listJobFiles(job)).map((file) => [songKey({ jobId: job.id, name: file.name }), file])))).flat());
     result.files = result.files.filter((track) => available.has(songKey(track))).map((track) => ({ ...track, ...available.get(songKey(track)) }));
-    if (req.user.role === 'shared') {
+    const readOnly = req.user.role === 'shared' || ownerId !== req.user.id;
+    if (readOnly) {
       result.files = await Promise.all(result.files.map(async ({ noVocalsName, noVocalsVersion, ...track }) => ({
-        ...track, sourceJob: sharedJobSummary(track.sourceJob),
-        ...(noVocalsVersion && await canReadSharedSong(req.user.id, noVocalsVersion.jobId, noVocalsVersion.name) ? { noVocalsVersion } : {})
+        ...readOnlyLibraryFile(track, ownerId), sourceJob: sharedJobSummary(track.sourceJob),
+        ...(noVocalsVersion && await canReadLibrarySong(req.user, ownerId, noVocalsVersion.jobId, noVocalsVersion.name)
+          ? { noVocalsVersion: readOnlyLibraryFile(noVocalsVersion, ownerId) } : {})
       })));
     }
-    return res.json(paginated ? result : { files: result.files, version: result.version });
+    return res.json({ ...(paginated ? result : { files: result.files, version: result.version }), ownerId, readOnly });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -431,6 +434,9 @@ async function listJobFiles(job, order, names) {
 }
 
 async function resolveRequestedFile(req, acceptsFile = null) {
+  if (req.query.userId !== undefined && !await canReadLibrarySong(req.user, req.query.userId, req.params.id, req.params.name)) {
+    throw Object.assign(new Error('Library song access denied'), { statusCode: 403 });
+  }
   if (req.user.role === 'shared' && !await canReadSharedSong(req.user.id, req.params.id, req.params.name)) {
     throw Object.assign(new Error('Library song access denied'), { statusCode: 403 });
   }
@@ -493,7 +499,7 @@ app.get('/api/jobs/:id/lyrics/:name', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     return res.json({ ...await readSongMetadata(filePath),
       transcriptionLocked: Boolean(job.songMetadata?.[req.params.name]?.transcriptionLocked),
-      canEdit: Boolean(req.user.role !== 'shared' && /\.mp3$/i.test(req.params.name)
+      canEdit: Boolean(req.user.role !== 'shared' && (req.query.userId === undefined || req.query.userId === req.user.id) && /\.mp3$/i.test(req.params.name)
         && (req.user.role === 'admin' || req.user.id === job.initiatedBy?.id || job.contributors?.some((user) => user.id === req.user.id))
         && !['queued', 'running'].includes(job.status) && job.transcriptions?.[req.params.name]?.status !== 'sent') });
   } catch (error) {

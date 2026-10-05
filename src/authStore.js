@@ -8,6 +8,7 @@ function publicUser(user) {
     id: user.id,
     name: user.name,
     role: user.role,
+    organizerId: user.organizerId ?? null,
     sharedUserIds: user.sharedUserIds || [],
     status: user.status,
     createdAt: user.createdAt,
@@ -32,9 +33,100 @@ async function countApprovedAdmins(excludingUserId = null) {
 }
 
 export async function listUsers() {
-  return (await database.prepare(`SELECT users.id, name, role, status, created_at AS "createdAt",
+  return (await database.prepare(`SELECT users.id, name, role, status, organizer_id AS "organizerId", created_at AS "createdAt",
     updated_at AS "updatedAt", (SELECT count(*) FROM credentials WHERE user_id = users.id) AS "credentialCount"
     FROM users ORDER BY created_at`).all());
+}
+
+export async function listAvailableUsers() {
+  return database.prepare(`SELECT id, name FROM users WHERE status = 'approved' AND role <> 'shared'
+    ORDER BY lower(name), id`).all();
+}
+
+async function requireLibraryUser(userId) {
+  const user = await database.prepare('SELECT id, name, role, status FROM users WHERE id = $1').get(userId);
+  if (!user || user.status !== 'approved' || user.role === 'shared') {
+    throw Object.assign(new Error('Approved, non-Shared user required'), { statusCode: 403 });
+  }
+  return user;
+}
+
+export async function listUserLinks(userId) {
+  await requireLibraryUser(userId);
+  return database.prepare(`SELECT users.id, users.name,
+    CASE WHEN user_links.accepted_at IS NOT NULL THEN 'linked'
+      WHEN user_links.requester_id = $1 THEN 'outgoing' ELSE 'incoming' END AS status
+    FROM user_links JOIN users ON users.id = CASE WHEN user_links.requester_id = $1
+      THEN user_links.recipient_id ELSE user_links.requester_id END
+    WHERE (user_links.requester_id = $1 OR user_links.recipient_id = $1)
+      AND users.status = 'approved' AND users.role <> 'shared' ORDER BY lower(users.name), users.id`).all(userId);
+}
+
+export async function requestUserLink(userId, targetId) {
+  return withTransaction(database, async () => {
+    await requireLibraryUser(userId);
+    if (typeof targetId !== 'string' || targetId === userId) {
+      throw Object.assign(new Error('Select another user to link'), { statusCode: 400 });
+    }
+    await requireLibraryUser(targetId);
+    const existing = await database.prepare(`SELECT 1 FROM user_links
+      WHERE (requester_id = $1 AND recipient_id = $2) OR (requester_id = $2 AND recipient_id = $1)`).get(userId, targetId);
+    if (existing) throw Object.assign(new Error('A link or link request already exists'), { statusCode: 409 });
+    for (const id of [userId, targetId]) {
+      const { count } = await database.prepare('SELECT count(*) AS count FROM user_links WHERE requester_id = $1 OR recipient_id = $1').get(id);
+      if (count >= 500) throw Object.assign(new Error('User link limit reached'), { statusCode: 409 });
+    }
+    await database.prepare('INSERT INTO user_links (requester_id, recipient_id, created_at) VALUES ($1, $2, $3)')
+      .run(userId, targetId, new Date().toISOString());
+  });
+}
+
+export async function acceptUserLink(userId, requesterId) {
+  return withTransaction(database, async () => {
+    await requireLibraryUser(userId);
+    const result = await database.prepare(`UPDATE user_links SET accepted_at = $1
+      WHERE recipient_id = $2 AND requester_id = $3 AND accepted_at IS NULL`).run(new Date().toISOString(), userId, requesterId);
+    if (!result.changes) throw Object.assign(new Error('Incoming link request not found'), { statusCode: 404 });
+    await requireLibraryUser(requesterId);
+  });
+}
+
+export async function removeUserLink(userId, targetId) {
+  return withTransaction(database, async () => {
+    await requireLibraryUser(userId);
+    const result = await database.prepare(`DELETE FROM user_links
+      WHERE (requester_id = $1 AND recipient_id = $2) OR (requester_id = $2 AND recipient_id = $1)`).run(userId, targetId);
+    if (!result.changes) return false;
+    await database.prepare(`DELETE FROM library_shares USING users AS viewer WHERE viewer.id = library_shares.viewer_id
+      AND ((viewer.organizer_id = $1 AND library_shares.owner_id = $2)
+        OR (viewer.organizer_id = $2 AND library_shares.owner_id = $1))`).run(userId, targetId);
+    return true;
+  });
+}
+
+export async function listOrganizerLibraries(organizerId) {
+  const organizer = await requireLibraryUser(organizerId);
+  const links = await listUserLinks(organizerId);
+  return [{ id: organizer.id, name: organizer.name }, ...links.filter((link) => link.status === 'linked').map(({ id, name }) => ({ id, name }))];
+}
+
+export async function listOrganizedUsers(organizerId) {
+  await requireLibraryUser(organizerId);
+  return database.prepare(`SELECT id, name, status,
+    ARRAY(SELECT owner_id FROM library_shares WHERE viewer_id = users.id ORDER BY owner_id) AS "sharedUserIds"
+    FROM users WHERE organizer_id = $1 AND role = 'shared' ORDER BY lower(name), id`).all(organizerId);
+}
+
+export async function updateOrganizedUser(organizerId, userId, sharedUserIds) {
+  return withTransaction(database, async () => {
+    await requireLibraryUser(organizerId);
+    const user = await readUser(database, userId);
+    if (!user || user.role !== 'shared' || user.organizerId !== organizerId) {
+      throw Object.assign(new Error('Shared user not found for this organizer'), { statusCode: 404 });
+    }
+    if (!Array.isArray(sharedUserIds)) throw Object.assign(new Error('Select shared libraries'), { statusCode: 400 });
+    return updateUserRecord(userId, { sharedUserIds }, organizerId);
+  });
 }
 
 export async function findCredential(credentialId) {
@@ -45,11 +137,26 @@ export async function findCredential(credentialId) {
   return { user, credential: { ...credential, publicKey: Buffer.from(credential.publicKey, 'base64url') } };
 }
 
-export async function registerUser(name, userHandle, credential) {
-  return (await withTransaction(database, async () => (await registerUserRecord(name, userHandle, credential))));
+export async function validateRegistrationAccount({ role = 'user', organizerId = null } = {}) {
+  if (!['user', 'shared'].includes(role) || (role === 'user' && organizerId !== null)) {
+    throw Object.assign(new Error('Invalid registration account type'), { statusCode: 400 });
+  }
+  if (role === 'shared') {
+    const organizer = typeof organizerId === 'string'
+      ? await database.prepare('SELECT role, status FROM users WHERE id = $1').get(organizerId) : null;
+    if (!organizer || organizer.role === 'shared' || organizer.status !== 'approved') {
+      throw Object.assign(new Error('Select an approved, non-Shared organizer'), { statusCode: 400 });
+    }
+  }
+  return { role, organizerId };
 }
 
-async function registerUserRecord(name, userHandle, credential) {
+export async function registerUser(name, userHandle, credential, account = {}) {
+  return (await withTransaction(database, async () => (await registerUserRecord(name, userHandle, credential, account))));
+}
+
+async function registerUserRecord(name, userHandle, credential, account) {
+  const registration = await validateRegistrationAccount(account);
   const normalizedName = normalizeName(name);
   if ((await database.prepare('SELECT 1 FROM users WHERE name_key = $1').get(normalizedName.toLowerCase()))) {
     const error = new Error('That name is already registered');
@@ -68,7 +175,8 @@ async function registerUserRecord(name, userHandle, credential) {
     id: crypto.randomUUID(),
     name: normalizedName,
     userHandle,
-    role: isFirstUser ? 'admin' : 'user',
+    role: isFirstUser ? 'admin' : registration.role,
+    organizerId: registration.organizerId,
     status: isFirstUser ? 'approved' : 'pending',
     credentials: [{
       id: credential.id,
@@ -173,6 +281,7 @@ export async function deleteUser(userId, actorId) {
       error.statusCode = 409;
       throw error;
     }
+    await database.prepare('DELETE FROM library_shares WHERE viewer_id IN (SELECT id FROM users WHERE organizer_id = $1)').run(user.id);
     (await database.prepare('DELETE FROM users WHERE id = $1').run(user.id));
     return true;
   }));
@@ -208,23 +317,41 @@ async function updateUserRecord(userId, changes, actorId) {
     throw error;
   }
 
-  const sharedUserIds = changes.sharedUserIds ?? user.sharedUserIds;
+  const organizerId = role === 'shared' ? (changes.organizerId === undefined ? user.organizerId : changes.organizerId) : null;
+  if (changes.organizerId !== undefined && changes.organizerId !== null && role !== 'shared') {
+    throw Object.assign(new Error('Only Shared accounts have an organizer'), { statusCode: 400 });
+  }
+  if (organizerId !== null) {
+    if (organizerId === user.id) throw Object.assign(new Error('A Shared user cannot organize itself'), { statusCode: 400 });
+    await validateRegistrationAccount({ role: 'shared', organizerId });
+  }
+  const sharedUserIds = changes.sharedUserIds === undefined
+    ? (organizerId !== user.organizerId ? [] : user.sharedUserIds) : changes.sharedUserIds;
   if (!Array.isArray(sharedUserIds) || sharedUserIds.length > 500
     || sharedUserIds.some((id) => typeof id !== 'string' || id === user.id)
     || (changes.sharedUserIds !== undefined && role !== 'shared' && sharedUserIds.length)) {
     throw Object.assign(new Error('Invalid shared library users'), { statusCode: 400 });
   }
   const grants = role === 'shared' ? [...new Set(sharedUserIds)] : [];
+  const availableIds = organizerId ? new Set((await listOrganizerLibraries(organizerId)).map(({ id }) => id)) : null;
   for (const id of grants) {
     const owner = await database.prepare('SELECT role, status FROM users WHERE id = $1').get(id);
     if (!owner || owner.role === 'shared' || owner.status !== 'approved') {
       throw Object.assign(new Error('Select approved, non-Shared library users'), { statusCode: 400 });
     }
+    if (availableIds && !availableIds.has(id)) {
+      throw Object.assign(new Error('Select the organizer or an accepted linked library'), { statusCode: 403 });
+    }
   }
   await database.prepare('DELETE FROM library_shares WHERE viewer_id = $1').run(user.id);
   for (const id of grants) await database.prepare('INSERT INTO library_shares (viewer_id, owner_id) VALUES ($1, $2)').run(user.id, id);
-  if (role === 'shared' || status !== 'approved') await database.prepare('DELETE FROM library_shares WHERE owner_id = $1').run(user.id);
+  if (role === 'shared' || status !== 'approved') {
+    await database.prepare('DELETE FROM library_shares WHERE owner_id = $1 OR viewer_id IN (SELECT id FROM users WHERE organizer_id = $1)').run(user.id);
+    await database.prepare('DELETE FROM user_links WHERE requester_id = $1 OR recipient_id = $1').run(user.id);
+    await database.prepare('UPDATE users SET organizer_id = NULL WHERE organizer_id = $1').run(user.id);
+  }
   user.sharedUserIds = grants;
+  user.organizerId = organizerId;
   user.status = status;
   user.role = role;
   user.updatedAt = new Date().toISOString();

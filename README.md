@@ -184,6 +184,13 @@ MP2 (MPEG Layer II) audio is preserved for imports, downloads,
 and public sharing; browsers without MP2 decoding support must save the file
 and play it in a compatible player. Embedded metadata editing remains MP3-only.
 
+iTunes ZIP imports also accept MP2 audio mislabeled with a `.mp3` extension.
+After ffprobe confirms valid MP2 audio, the imported copy uses `.mp2` without
+transcoding. XML matching uses the original filename; playlist links and order
+are preserved, filename collisions are renamed safely, and the source ZIP/XML
+remain unchanged. The import log records each correction. Direct **Files**
+uploads still require an extension matching the audio contents.
+
 Audio validation checks file contents, not just extensions. If the signature is
 unrecognized (for example, an MP3 with leading padding), the importer uses
 FFmpeg's `ffprobe` to confirm matching audio without changing the file. Docker
@@ -564,9 +571,28 @@ The app and operational APIs require passkey authentication. On a new server, re
 the first passkey to create the initial approved administrator. Later registrations are
 saved as pending and cannot log in until an administrator approves them from **Admin**.
 Administrators can approve or revoke access and assign User, Admin, or Shared roles.
-For a Shared account, open **Admin > All users > User details**, select the library
-owners under **Shared libraries**, and choose **Save access**. Multiple approved
-User or Admin accounts can be selected. Shared users can switch between these
+During registration, select **Register as a Shared user** and choose an **Organizer**
+from the approved User and Admin accounts. Shared registrations still require admin
+approval; choosing an organizer does not automatically grant any libraries. The
+registration picker exposes only eligible users' IDs and display names.
+
+Approved User and Admin accounts can send, accept, decline, cancel, or remove link
+requests from **User settings > Linked users**. Both users must consent before their
+libraries become visible to each other. Accepted links provide read-only library
+access, not ownership or contributor permissions, and do not include other users'
+links. Use the **Library** dropdown on the Music page to switch between your own
+library and accepted linked libraries. Your own library remains editable.
+
+Organizers manage assigned accounts from **User settings > Shared users**. Select a
+Shared user, check the libraries they may read, and choose **Save access**. Choices
+are the organizer's own library and their accepted linked users' libraries. An
+organizer cannot change account approval, credentials, roles, or another organizer's
+Shared users. Pending accounts can be configured but cannot log in before approval.
+Admins can change the organizer under **Admin > All users > User details**;
+reassignment clears existing grants. **Administrator managed** retains the previous
+admin-only grant workflow, allowing any approved User or Admin library.
+
+Shared users can switch between their granted
 libraries, browse playlists, play media, read lyrics, view song metadata, and download individual songs.
 Shared users can see their granted library owners under **User settings > Library access**.
 They cannot access health metrics or run health polling. They can change their own
@@ -578,6 +604,24 @@ No grants means no library access. Removing a grant immediately blocks subsequen
 requests for its songs; already downloaded media cannot be recalled. Changing away
 from Shared clears the account's grants. Revoking, deleting, or changing a library
 owner to Shared removes grants to that owner's library.
+Removing a user link also removes any dependent grants to Shared accounts managed by
+either user. Revoking, deleting, or converting an organizer to Shared removes their
+links and delegated grants and clears their organizer assignments; reapproval or
+relinking does not restore old grants.
+
+Link and organizer management require a passkey session (cookie or Bearer), not a PAT:
+- `GET /api/auth/links` lists links, incoming/outgoing requests, and eligible users.
+- `POST /api/auth/links` accepts `{ "userId": "..." }` to request a link.
+- `POST /api/auth/links/:id/accept` accepts an incoming request from that user.
+- `DELETE /api/auth/links/:id` declines, cancels, or removes a link.
+- `GET /api/auth/shared-users` lists the organizer's Shared accounts and eligible libraries.
+- `PUT /api/auth/shared-users/:id/libraries` accepts `{ "sharedUserIds": ["..."] }`;
+    an empty array removes all grants.
+
+`GET /api/auth/register/users` supplies the registration organizer picker.
+`POST /api/auth/register/options` accepts optional `role` (`user` or `shared`) and
+`organizerId` fields with the name. Shared registrations require an organizer; the
+choice is bound to the single-use passkey challenge and revalidated at verification.
 
 Users can rename themselves in **User settings > Username**. Administrators can
 rename accounts in **Admin > User details > Username**. Names must be 2-64 characters

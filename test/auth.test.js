@@ -113,6 +113,64 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     assert.equal(selfAdmin.status, 200);
     assert.equal((await selfAdmin.json()).user.role, 'admin');
   });
+  await context.test('link and organizer HTTP routes require consent and account-scoped sessions', async () => {
+    const pending = await store.registerUser('Pending link', 'pending-link', credential('pending-link'));
+    const viewer = await store.registerUser('Shared car', 'shared-car', credential('shared-car'), { role: 'shared', organizerId: user.id });
+    await store.updateUser(viewer.id, { status: 'approved' }, admin.id);
+    const viewerSession = await store.createSession(viewer.id);
+    const viewerHeaders = { Cookie: `ssytdlp_session=${viewerSession.token}` };
+    const userPat = await store.createPrivateAccessToken(user.id, 'Link test');
+    const organizerRoute = `/api/auth/shared-users/${viewer.id}/libraries`;
+    const directoryResponse = await call('/api/auth/register/users');
+    assert.equal(directoryResponse.status, 200);
+    assert.equal(directoryResponse.headers.get('cache-control'), 'no-store');
+    const directory = (await directoryResponse.json()).users;
+    assert.deepEqual(new Set(directory.map(({ id }) => id)), new Set([admin.id, user.id]));
+    assert.ok(directory.every((record) => Object.keys(record).sort().join(',') === 'id,name'));
+    for (const route of ['/api/auth/links', '/api/auth/shared-users']) {
+      assert.equal((await call(route)).status, 401);
+      assert.equal((await call(route, 'GET', { 'X-PAT': userPat.token })).status, 401);
+      assert.equal((await call(route, 'GET', viewerHeaders)).status, 403);
+    }
+    assert.equal((await call('/api/auth/links', 'POST', userHeaders, { userId: user.id })).status, 400);
+    assert.equal((await call('/api/auth/links', 'POST', userHeaders, { userId: pending.id })).status, 403);
+    assert.equal((await call('/api/auth/links', 'POST', userHeaders, { userId: admin.id })).status, 201);
+    assert.equal((await call(`/api/auth/links/${admin.id}/accept`, 'POST', userHeaders)).status, 404);
+    assert.equal((await call(organizerRoute, 'PUT', userHeaders, { sharedUserIds: [admin.id] })).status, 403);
+    assert.equal((await call(`/api/auth/links/${user.id}/accept`, 'POST', adminHeaders)).status, 200);
+    const managed = await (await call('/api/auth/shared-users', 'GET', userHeaders)).json();
+    assert.equal(managed.users[0].id, viewer.id);
+    assert.deepEqual(managed.users[0].sharedUserIds, []);
+    assert.deepEqual(new Set(managed.libraries.map(({ id }) => id)), new Set([admin.id, user.id]));
+    for (const headers of [{}, { 'X-PAT': userPat.token }]) {
+      assert.equal((await call(organizerRoute, 'PUT', headers, { sharedUserIds: [admin.id] })).status, 401);
+    }
+    assert.equal((await call(organizerRoute, 'PUT', adminHeaders, { sharedUserIds: [admin.id] })).status, 404);
+    assert.equal((await call(organizerRoute, 'PUT', viewerHeaders, { sharedUserIds: [admin.id] })).status, 403);
+    assert.equal((await call(organizerRoute, 'PUT', userHeaders, { sharedUserIds: [admin.id], role: 'admin' })).status, 400);
+    const granted = await call(organizerRoute, 'PUT', { Authorization: `Bearer ${userSession.token}` }, { sharedUserIds: [admin.id] });
+    assert.equal(granted.status, 200);
+    assert.deepEqual((await granted.json()).user.sharedUserIds, [admin.id]);
+    assert.equal((await call(`/api/auth/links/${admin.id}`, 'DELETE', userHeaders)).status, 204);
+    assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, []);
+    assert.equal((await call(`/api/auth/links/${admin.id}`, 'DELETE', userHeaders)).status, 404);
+    const reassigned = await call(`/api/admin/users/${viewer.id}`, 'PATCH', adminHeaders, { organizerId: admin.id });
+    assert.equal(reassigned.status, 200);
+    assert.equal((await reassigned.json()).user.organizerId, admin.id);
+    assert.equal((await call(organizerRoute, 'PUT', userHeaders, { sharedUserIds: [user.id] })).status, 404);
+    assert.equal((await call(organizerRoute, 'PUT', adminHeaders, { sharedUserIds: [admin.id] })).status, 200);
+    const accountDetails = await (await call(`/api/admin/users/${viewer.id}`, 'GET', adminHeaders)).json();
+    assert.deepEqual(accountDetails.libraries, [{ id: admin.id, name: admin.name }]);
+    assert.deepEqual((await (await call('/api/auth/shared-users', 'GET', adminHeaders)).json()).users[0].sharedUserIds, [admin.id]);
+    for (const account of [{ role: 'admin' }, { role: 'shared' }, { role: 'shared', organizerId: pending.id },
+      { role: 'shared', organizerId: viewer.id }, { role: 'user', organizerId: user.id }]) {
+      assert.equal((await call('/api/auth/register/options', 'POST', {}, { name: 'Signup', ...account })).status, 400);
+    }
+    await store.deleteUser(viewer.id, admin.id);
+    await store.deleteUser(pending.id, admin.id);
+    await store.deletePrivateAccessToken(user.id, userPat.id);
+  });
+
   const mobileSession = await store.createSession(user.id);
   const mobileHeaders = { Authorization: `Bearer ${mobileSession.token}` };
   assert.deepEqual(await (await call('/protected', 'POST', mobileHeaders)).json(), { userId: user.id });
@@ -260,6 +318,46 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
         }
       };
     }
+
+    await passkeyContext.test('Shared passkey signup binds account type and organizer and revalidates approval', async () => {
+      const key = authenticator();
+      const start = await call('/api/auth/register/options', 'POST', { Origin: origin }, {
+        name: 'Car passkey', role: 'shared', organizerId: user.id
+      });
+      assert.equal(start.status, 200);
+      const attempt = await start.json();
+      const body = { requestId: attempt.requestId, response: key.register(attempt.options), role: 'admin', organizerId: admin.id };
+      const registered = await call('/api/auth/register/verify', 'POST', { Origin: origin }, body);
+      assert.equal(registered.status, 201);
+      assert.equal(registered.headers.get('set-cookie'), null);
+      const { user: shared } = await registered.json();
+      assert.equal(shared.role, 'shared');
+      assert.equal(shared.organizerId, user.id);
+      assert.equal(shared.status, 'pending');
+      assert.deepEqual(shared.sharedUserIds, []);
+      assert.equal((await call('/api/auth/register/verify', 'POST', { Origin: origin }, body)).status, 400);
+      await store.updateUser(shared.id, { status: 'approved' }, admin.id);
+      const login = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
+      const loggedIn = await call('/api/auth/login/verify', 'POST', { Origin: origin }, {
+        requestId: login.requestId, response: key.login(login.options)
+      });
+      assert.equal(loggedIn.status, 200);
+      assert.equal((await loggedIn.json()).user.role, 'shared');
+      await store.deleteUser(shared.id, admin.id);
+
+      const organizer = await store.registerUser('Signup organizer', 'signup-organizer', credential('signup-organizer'));
+      await store.updateUser(organizer.id, { status: 'approved' }, admin.id);
+      const changedKey = authenticator();
+      const changed = await (await call('/api/auth/register/options', 'POST', { Origin: origin }, {
+        name: 'Changed organizer', role: 'shared', organizerId: organizer.id
+      })).json();
+      await store.updateUser(organizer.id, { status: 'revoked' }, admin.id);
+      assert.equal((await call('/api/auth/register/verify', 'POST', { Origin: origin }, {
+        requestId: changed.requestId, response: changedKey.register(changed.options)
+      })).status, 400);
+      assert.equal(await store.findCredential(changedKey.credential.id), null);
+      await store.deleteUser(organizer.id, admin.id);
+    });
 
     const first = authenticator();
     const second = authenticator();

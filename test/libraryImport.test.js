@@ -198,6 +198,36 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     const mp2Itunes = await imports.importItunesLibrary(mp2Xml, mp2Media, owner);
     assert.equal(mp2Itunes.importedFiles, 1);
     assert.deepEqual(await fs.readFile(path.join(mp2Itunes.jobs[0].outputDir, mp2Itunes.jobs[0].files[0])), paddedMp2);
+    const mislabeledZip = new AdmZip();
+    mislabeledZip.addFile('Music/Single.MP3', mp2Bytes);
+    mislabeledZip.addFile('Music/Single.mp2', paddedMp2);
+    mislabeledZip.addFile('Music/Padded.mp3', paddedMp2);
+    const mislabeledZipPath = path.join(directory, 'mislabeled-mp2.zip');
+    await fs.writeFile(mislabeledZipPath, mislabeledZip.toBuffer());
+    const correctionLogs = [];
+    const mislabeledMedia = await imports.extractImportMedia(mislabeledZipPath, directory, {
+      report: (stage, message, details) => correctionLogs.push({ stage, message, ...details })
+    });
+    const mislabeledXml = plist.build({ Tracks: {
+      1: { 'Track ID': 1, Location: 'file:///Music/Single.MP3' },
+      2: { 'Track ID': 2, Location: 'file:///Music/Single.mp2' },
+      3: { 'Track ID': 3, Location: 'file:///Music/Padded.mp3' }
+    }, Playlists: [
+      { Name: 'Corrected MP2', 'Playlist Items': [{ 'Track ID': 1 }, { 'Track ID': 2 }, { 'Track ID': 3 }] },
+      { Name: 'Linked MP2', 'Playlist Items': [{ 'Track ID': 1 }] }
+    ] });
+    const correctedMp2 = await imports.importItunesLibrary(mislabeledXml, mislabeledMedia, owner);
+    assert.equal(correctedMp2.importedFiles, 3);
+    assert.deepEqual(correctedMp2.jobs[0].files, ['Single.mp2', 'Single (2).mp2', 'Padded.mp2']);
+    assert.deepEqual(correctedMp2.jobs[1].files, []);
+    assert.deepEqual(await fs.readFile(path.join(correctedMp2.jobs[0].outputDir, 'Single.mp2')), mp2Bytes);
+    assert.deepEqual(await fs.readFile(path.join(correctedMp2.jobs[0].outputDir, 'Padded.mp2')), paddedMp2);
+    const correctedJobs = await manager.getJobs();
+    const correctedLibrary = await getLibrary(owner.id, correctedJobs);
+    assert.deepEqual(getPlaylistTracks(correctedLibrary, correctedJobs).get(correctedMp2.jobs[1].id),
+      [{ jobId: correctedMp2.jobs[0].id, name: 'Single.mp2', playlistId: correctedMp2.jobs[1].id }]);
+    assert.equal(correctionLogs.filter((entry) => entry.message === 'Corrected MP2 audio with an MP3 filename').length, 2);
+    assert.deepEqual(new AdmZip(mislabeledZipPath).readFile('Music/Single.MP3'), mp2Bytes);
     const padded = Buffer.concat([Buffer.alloc(4096), await fs.readFile(mp3Path)]);
     await fs.writeFile(mp3Path, padded);
     assert.equal(await fileTypeFromFile(mp3Path), undefined);

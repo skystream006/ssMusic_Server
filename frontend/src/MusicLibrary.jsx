@@ -359,7 +359,7 @@ function FolderDialog({ folder, parentId, folders, saving, onSave, onClose }) {
 }
 
 export default function MusicLibrary({ user, request, confirm, owner = null }) {
-  const readOnly = user.role === 'shared';
+  const readOnly = user.role === 'shared' || Boolean(owner && owner.id !== user.id);
   const transcriptionActive = useTranscriptionService(request, !readOnly);
   const playback = usePlayback();
   const sidebarRef = useRef(null);
@@ -454,7 +454,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     const load = async () => {
       const mutation = mutationRef.current;
       try {
-        const result = await request('/api/library');
+        const result = await request(owner ? `/api/library?${new URLSearchParams({ userId: owner.id })}` : '/api/library');
         if (active && !savingRef.current && mutation === mutationRef.current) {
           setLibrary((current) => current && current.version > result.version ? current : result);
           setError('');
@@ -464,7 +464,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     load();
     const timer = window.setInterval(load, 10000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [request, refresh]);
+  }, [request, refresh, owner?.id]);
 
   useEffect(() => {
     if (!library) return;
@@ -478,7 +478,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     const controller = new AbortController();
     setTracksLoading(true);
     setTrackError('');
-    const query = new URLSearchParams({ ...(selectedId ? { entryId: selectedId } : {}),
+    const query = new URLSearchParams({ ...(owner ? { userId: owner.id } : {}), ...(selectedId ? { entryId: selectedId } : {}),
       ...(paginated ? { page: trackPage, pageSize: 50, search: debouncedTrackSearch } : {}) });
     request(`/api/library/tracks?${query}`, { signal: controller.signal }).then((result) => {
       if (active) {
@@ -488,7 +488,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     }).catch((loadError) => { if (active) setTrackError(loadError.message); })
       .finally(() => { if (active) setTracksLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, debouncedTrackSearch, searchPending, paginated]);
+  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, debouncedTrackSearch, searchPending, paginated, owner?.id]);
 
   function selectEntry(id) {
     setSelectedSongs(new Set());
@@ -916,7 +916,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     </div>}
     <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>
     <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: (tracksLoading || searchPending) && !trackError,
-      pagination, error: trackError, queueScope: paginated ? JSON.stringify([owner?.id, selectedId || 'all', trackPage, debouncedTrackSearch]) : selectedId,
+      pagination, error: trackError, queueScope: JSON.stringify([owner?.id || user.id, selectedId || 'all', ...(paginated ? [trackPage, debouncedTrackSearch] : [])]),
       search: paginated ? trackSearch : undefined, onSearch: paginated ? setTrackSearch : undefined,
       songSelection: !readOnly && selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),

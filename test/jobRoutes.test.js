@@ -326,6 +326,58 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   await sharedServerExited;
   await startServer();
 
+  await context.test('accepted user links expose read-only libraries without granting mutation rights', async () => {
+    const libraryRoute = `/api/library?userId=${users.Owner.id}`;
+    const tracksRoute = `/api/library/tracks?userId=${users.Owner.id}`;
+    const original = (await call('/api/library', 'GET', credentials.Owner[0])).body;
+    assert.equal(original.readOnly, false);
+    assert.equal((await call(libraryRoute, 'GET', credentials.Other[0])).status, 403);
+    assert.equal((await call('/api/auth/links', 'POST', credentials.Other[0], { userId: users.Owner.id })).status, 201);
+    assert.equal((await call(tracksRoute, 'GET', credentials.Other[0])).status, 403);
+    assert.equal((await call(`/api/auth/links/${users.Other.id}/accept`, 'POST', mobileHeaders.Owner)).status, 200);
+    let song;
+    for (const headers of [...credentials.Other, mobileHeaders.Other]) {
+      const owners = await call('/api/library/shared-users', 'GET', headers);
+      assert.deepEqual(owners.body.users, [{ id: users.Owner.id, name: users.Owner.name }]);
+      const library = await call(libraryRoute, 'GET', headers);
+      assert.equal(library.status, 200, library.text);
+      assert.equal(library.body.ownerId, users.Owner.id);
+      assert.equal(library.body.readOnly, true);
+      assert.deepEqual(library.body.entries, original.entries);
+      assert.ok(library.body.jobs.every((job) => !('outputDir' in job) && !('initiatedBy' in job)));
+      const tracks = await call(tracksRoute, 'GET', headers);
+      assert.equal(tracks.status, 200, tracks.text);
+      assert.equal(tracks.body.readOnly, true);
+      song = tracks.body.files.find((file) => file.jobId === 'music' && file.name === songName);
+      assert.equal(song.readOnly, true);
+      assert.equal(song.libraryOwnerId, users.Owner.id);
+      assert.equal(new URL(song.streamUrl, 'http://localhost').searchParams.get('userId'), users.Owner.id);
+      assert.equal((await call(song.streamUrl, 'GET', headers)).status, 200);
+      const lyrics = await call(song.lyricsUrl, 'GET', headers);
+      assert.equal(lyrics.status, 200);
+      assert.equal(lyrics.body.canEdit, false);
+      for (const [route, method, body] of [[libraryRoute, 'PUT', original],
+        ['/api/library/entries', 'POST', { userId: users.Owner.id, version: original.version, action: 'create-folder', name: 'Intrusion' }],
+        ['/api/jobs/music/title', 'PATCH', { playlistTitle: 'Intrusion' }],
+        [`/api/jobs/music/files/${encodeURIComponent(songName)}/metadata`, 'PATCH', { title: 'Intrusion' }]]) {
+        assert.equal((await call(route, method, headers, body)).status, 403, route);
+      }
+      assert.equal((await call('/api/library', 'GET', headers)).body.readOnly, false);
+      assert.equal((await call(`/api/library?userId=${users.Admin.id}`, 'GET', headers)).status, 403);
+    }
+    assert.equal((await call(`/api/library?userId=${users.Other.id}`, 'GET', credentials.Owner[0])).status, 200);
+    assert.deepEqual((await call('/api/library', 'GET', credentials.Owner[0])).body, original);
+    assert.equal((await call(`/api/auth/links/${users.Owner.id}`, 'DELETE', credentials.Other[0])).status, 204);
+    for (const route of [libraryRoute, tracksRoute, song.streamUrl, song.lyricsUrl, song.downloadUrl]) {
+      assert.equal((await call(route, 'GET', credentials.Other[0])).status, 403, route);
+    }
+    assert.deepEqual((await call('/api/library/shared-users', 'GET', credentials.Owner[0])).body.users, []);
+  });
+  const linkedServerExited = once(server, 'exit');
+  server.kill();
+  await linkedServerExited;
+  await startServer();
+
   for (const route of ['/', '/app-login', '/job', '/job/music', '/job/music/player']) {
     assert.equal((await call(route)).status, 200);
   }

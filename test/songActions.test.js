@@ -30,6 +30,10 @@ let PlaybackProvider;
 let SharedLibraryAccess;
 let UsernameForm;
 let LibraryAccessList;
+let SharedRegistrationFields;
+let SettingsTabs;
+let LinkedUsers;
+let OrganizedSharedUsers;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
@@ -38,10 +42,38 @@ before(async () => {
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
-  ({ UsernameForm, LibraryAccessList } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
+  ({ UsernameForm, LibraryAccessList, SharedRegistrationFields, SettingsTabs, LinkedUsers, OrganizedSharedUsers } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('Shared registration exposes its help text and requires an organizer selection', () => {
+  const props = { request() {}, onChange() {} };
+  const regular = renderToStaticMarkup(createElement(SharedRegistrationFields, { ...props, account: { role: 'user' } }));
+  assert.match(regular, /Register as a Shared user/);
+  assert.match(regular, /Shared users allow read-only access to multiple libraries\. This is convenient if you have a separate system such as in your car to provide listen to multiple libraries\./);
+  assert.doesNotMatch(regular, /<select/);
+  const shared = renderToStaticMarkup(createElement(SharedRegistrationFields, { ...props, account: { role: 'shared' } }));
+  assert.match(shared, /type="checkbox"[^>]*checked=""/);
+  assert.match(shared, /<select[^>]*required=""/);
+  assert.match(shared, /Select an organizer/);
+  assert.match(shared, /Loading available users/);
+});
+
+test('account sharing tabs expose linked users and organizer controls with loading states', () => {
+  const tabs = renderToStaticMarkup(createElement(SettingsTabs, { value: 'shared', onChange() {} }));
+  assert.match(tabs, /role="tablist" aria-label="User settings"/);
+  assert.match(tabs, /id="settings-tab-shared"[^>]*aria-selected="true"[^>]*tabindex="0"/);
+  assert.match(tabs, />Linked users</);
+  assert.match(tabs, />Shared users</);
+  const props = { request() {}, confirm() {} };
+  const links = renderToStaticMarkup(createElement(LinkedUsers, props));
+  assert.match(links, /Loading user links/);
+  assert.match(links, /aria-label="Refresh user links"/);
+  const organized = renderToStaticMarkup(createElement(OrganizedSharedUsers, props));
+  assert.match(organized, /Loading Shared users/);
+  assert.match(organized, /aria-label="Refresh Shared users"/);
+});
 
 test('repeat cycles from off through queue and one song back to off', () => {
   assert.equal(nextRepeatMode('off'), 'all');

@@ -8,11 +8,21 @@ CREATE TABLE IF NOT EXISTS users (
 );
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
 ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'user', 'shared'));
+ALTER TABLE users ADD COLUMN IF NOT EXISTS organizer_id TEXT REFERENCES users(id) ON DELETE SET NULL;
 CREATE TABLE IF NOT EXISTS library_shares (
   viewer_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   PRIMARY KEY (viewer_id, owner_id), CHECK (viewer_id <> owner_id)
 );
+CREATE TABLE IF NOT EXISTS user_links (
+  requester_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL, accepted_at TEXT,
+  PRIMARY KEY (requester_id, recipient_id), CHECK (requester_id <> recipient_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS user_links_pair ON user_links
+  (LEAST(requester_id, recipient_id), GREATEST(requester_id, recipient_id));
+CREATE INDEX IF NOT EXISTS user_links_recipient ON user_links(recipient_id);
 CREATE TABLE IF NOT EXISTS credentials (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   public_key TEXT NOT NULL, counter BIGINT NOT NULL, transports JSONB NOT NULL,

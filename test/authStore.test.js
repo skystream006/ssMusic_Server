@@ -50,6 +50,106 @@ test('Shared roles persist multiple grants and reject invalid library owners', a
   assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, []);
 });
 
+test('Shared registration persists its organizer without granting library access', async (testContext) => {
+  const store = await loadStore(testContext);
+  const admin = await store.registerUser('Admin', 'admin', credential('admin'));
+  const viewer = await store.registerUser('Car player', 'car', credential('car'), {
+    role: 'shared', organizerId: admin.id
+  });
+  assert.equal(viewer.role, 'shared');
+  assert.equal(viewer.status, 'pending');
+  assert.equal(viewer.organizerId, admin.id);
+  assert.deepEqual(viewer.sharedUserIds, []);
+  assert.equal((await store.getUser(viewer.id)).organizerId, admin.id);
+  for (const organizerId of [undefined, 'missing', viewer.id]) {
+    await assert.rejects(store.registerUser('Invalid viewer', 'invalid', credential('invalid'), {
+      role: 'shared', organizerId
+    }), { statusCode: 400 });
+  }
+});
+
+test('user links require recipient acceptance, are mutual, and survive reloads', async (context) => {
+  const store = await loadStore(context);
+  const admin = await store.registerUser('Admin', 'admin', credential('admin'));
+  const owner = await store.registerUser('Owner', 'owner', credential('owner'));
+  const other = await store.registerUser('Other', 'other', credential('other'));
+  await assert.rejects(store.requestUserLink(admin.id, owner.id), { statusCode: 403 });
+  await store.updateUser(owner.id, { status: 'approved' }, admin.id);
+  await store.updateUser(other.id, { status: 'approved' }, admin.id);
+  await assert.rejects(store.requestUserLink(admin.id, admin.id), { statusCode: 400 });
+  await store.requestUserLink(admin.id, owner.id);
+  assert.deepEqual(await store.listUserLinks(admin.id), [{ id: owner.id, name: owner.name, status: 'outgoing' }]);
+  assert.deepEqual(await store.listUserLinks(owner.id), [{ id: admin.id, name: admin.name, status: 'incoming' }]);
+  assert.deepEqual(await store.listOrganizerLibraries(admin.id), [{ id: admin.id, name: admin.name }]);
+  await assert.rejects(store.requestUserLink(owner.id, admin.id), { statusCode: 409 });
+  await assert.rejects(store.acceptUserLink(admin.id, owner.id), { statusCode: 404 });
+  await assert.rejects(store.acceptUserLink(other.id, admin.id), { statusCode: 404 });
+  await store.acceptUserLink(owner.id, admin.id);
+  assert.equal((await store.listUserLinks(admin.id))[0].status, 'linked');
+  assert.equal((await store.listUserLinks(owner.id))[0].status, 'linked');
+  await closeDatabases();
+  const reloaded = await import(`../src/authStore.js?links=${crypto.randomUUID()}`);
+  assert.equal((await reloaded.listUserLinks(owner.id))[0].status, 'linked');
+  assert.equal(await reloaded.removeUserLink(other.id, owner.id), false);
+  assert.equal(await reloaded.removeUserLink(owner.id, admin.id), true);
+  assert.deepEqual(await reloaded.listUserLinks(admin.id), []);
+});
+
+test('organizers manage only assigned Shared users and accepted linked libraries', async (context) => {
+  const store = await loadStore(context);
+  const admin = await store.registerUser('Admin', 'admin', credential('admin'));
+  const owner = await store.registerUser('Owner', 'owner', credential('owner'));
+  const other = await store.registerUser('Other', 'other', credential('other'));
+  for (const user of [owner, other]) await store.updateUser(user.id, { status: 'approved' }, admin.id);
+  const viewer = await store.registerUser('Car player', 'car', credential('car'), { role: 'shared', organizerId: owner.id });
+  assert.equal((await store.listOrganizedUsers(owner.id))[0].id, viewer.id);
+  assert.deepEqual(await store.listOrganizedUsers(admin.id), []);
+  await assert.rejects(store.updateOrganizedUser(admin.id, viewer.id, [admin.id]), { statusCode: 404 });
+  await assert.rejects(store.updateOrganizedUser(owner.id, other.id, [owner.id]), { statusCode: 404 });
+  await assert.rejects(store.updateOrganizedUser(owner.id, viewer.id, [other.id]), { statusCode: 403 });
+  await assert.rejects(store.updateOrganizedUser(owner.id, viewer.id, null), { statusCode: 400 });
+  await store.requestUserLink(owner.id, other.id);
+  await assert.rejects(store.updateOrganizedUser(owner.id, viewer.id, [other.id]), { statusCode: 403 });
+  await store.acceptUserLink(other.id, owner.id);
+  const updated = await store.updateOrganizedUser(owner.id, viewer.id, [owner.id, other.id, other.id]);
+  assert.deepEqual(new Set(updated.sharedUserIds), new Set([owner.id, other.id]));
+  assert.equal(updated.status, 'pending');
+  await store.updateUser(viewer.id, { status: 'approved' }, admin.id);
+  await assert.rejects(store.requestUserLink(viewer.id, other.id), { statusCode: 403 });
+  await assert.rejects(store.requestUserLink(owner.id, viewer.id), { statusCode: 403 });
+  await store.removeUserLink(other.id, owner.id);
+  assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, [owner.id]);
+  await store.requestUserLink(owner.id, other.id);
+  await store.acceptUserLink(other.id, owner.id);
+  assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, [owner.id]);
+  await store.updateOrganizedUser(owner.id, viewer.id, [other.id]);
+  await store.updateUser(other.id, { status: 'revoked' }, admin.id);
+  assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, []);
+  assert.deepEqual(await store.listUserLinks(owner.id), []);
+  await store.updateOrganizedUser(owner.id, viewer.id, [owner.id]);
+  await store.updateUser(owner.id, { status: 'revoked' }, admin.id);
+  assert.equal((await store.getUser(viewer.id)).organizerId, null);
+  assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, []);
+  await store.updateUser(viewer.id, { organizerId: admin.id, sharedUserIds: [admin.id] }, admin.id);
+  assert.equal((await store.getUser(viewer.id)).organizerId, admin.id);
+});
+
+test('deleting an organizer clears delegated grants without deleting Shared users', async (context) => {
+  const store = await loadStore(context);
+  const admin = await store.registerUser('Admin', 'admin', credential('admin'));
+  const owner = await store.registerUser('Owner', 'owner', credential('owner'));
+  await store.updateUser(owner.id, { status: 'approved' }, admin.id);
+  await store.requestUserLink(owner.id, admin.id);
+  await store.acceptUserLink(admin.id, owner.id);
+  const viewer = await store.registerUser('Car player', 'car', credential('car'), { role: 'shared', organizerId: owner.id });
+  await store.updateOrganizedUser(owner.id, viewer.id, [admin.id]);
+  await store.deleteUser(owner.id, admin.id);
+  const remaining = await store.getUser(viewer.id);
+  assert.equal(remaining.organizerId, null);
+  assert.deepEqual(remaining.sharedUserIds, []);
+  assert.deepEqual(await store.listUserLinks(admin.id), []);
+});
+
 test('duplicate credentials and names are rejected and credential updates persist', async (testContext) => {
   const store = await loadStore(testContext);
   const admin = await store.registerUser('Alice', 'alice-handle', credential('alice-key'));

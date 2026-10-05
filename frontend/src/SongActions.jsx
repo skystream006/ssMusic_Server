@@ -318,7 +318,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
     const dialog = dialogRef.current;
     const previousFocus = document.activeElement;
     dialog.showModal();
-    request(`/api/jobs/${encodeURIComponent(jobId)}/lyrics/${encodeURIComponent(file.name)}`)
+    request(file.lyricsUrl || `/api/jobs/${encodeURIComponent(jobId)}/lyrics/${encodeURIComponent(file.name)}`)
       .then((result) => {
         if (!active) return;
         setValues({ ...Object.fromEntries(fields.map(([field]) => [field, result[field] || ''])), rating: result.rating || 0 });
@@ -328,7 +328,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
       }).catch((loadError) => { if (active) setError(loadError.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
-  }, [jobId, file.name, request]);
+  }, [jobId, file.name, file.lyricsUrl, request]);
 
   async function chooseArtwork(event) {
     const image = event.target.files?.[0];
