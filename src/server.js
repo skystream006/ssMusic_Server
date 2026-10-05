@@ -17,6 +17,7 @@ import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenan
 import { findNoVocals, individualPlaylistId, orderFiles, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
+import { prepareLibraryExport } from './libraryExport.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles, resolveImportUser } from './libraryImport.js';
 import { createReplaceFileHandler } from './replaceFile.js';
 import { countMediaFiles, createMediaCountMonitor, getSystemHealth } from './health.js';
@@ -238,6 +239,35 @@ app.get('/api/library/export', async (req, res) => {
     res.removeHeader('Content-Length');
     res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Unable to export library.' });
   } finally { await download?.release(); }
+});
+
+app.get('/api/library/playlists/:id/download', async (req, res) => {
+  let archive;
+  let streaming;
+  try {
+    const ownerId = await libraryReaderId(req.user, req.query.userId);
+    if (!ownerId) return res.status(403).json({ error: 'Library access denied' });
+    const jobs = await getLibraryJobs({ id: ownerId });
+    const library = await getLibrary(ownerId, jobs);
+    const prepared = await prepareLibraryExport(library, jobs, { format: 'playlist', playlistId: req.params.id });
+    if (res.destroyed) return;
+    const title = library.entries.find((entry) => entry.id === req.params.id).name
+      || jobs.find((job) => job.id === req.params.id)?.playlistTitle || req.params.id;
+    res.attachment(`${String(title).replace(/[^a-z0-9._-]+/gi, '_').slice(0, 120)}.zip`);
+    res.type('application/zip');
+    archive = new ZipArchive({ zlib: { level: 6 } });
+    archive.on('warning', (error) => archive.destroy(error));
+    streaming = pipeline(archive, res);
+    for (const document of prepared.documents) archive.append(document.content, { name: document.name });
+    for (const file of prepared.files) archive.file(file.filePath, { name: file.archivePath });
+    await Promise.all([streaming, archive.finalize()]);
+  } catch (error) {
+    archive?.destroy();
+    await streaming?.catch(() => {});
+    if (res.destroyed || res.headersSent) return;
+    res.removeHeader('Content-Disposition');
+    res.status(error.statusCode || 500).type('json').json({ error: error.statusCode ? error.message : 'Unable to download playlist.' });
+  }
 });
 
 app.post('/api/library/links', async (req, res) => {

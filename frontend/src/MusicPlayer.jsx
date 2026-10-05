@@ -472,6 +472,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           </header>
           <div className="songs-toolbar"><h3>Tracks</h3>
             <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search tracks" placeholder="Search tracks" maxLength={libraryView.pagination ? 200 : undefined} value={trackSearch} onChange={(event) => (libraryView.onSearch || setSearch)(event.target.value)} /></label>
+            {libraryView.type === 'playlist' && libraryView.selectedId && <a className="music-icon-button"
+              href={`/api/library/playlists/${encodeURIComponent(libraryView.selectedId)}/download${libraryView.ownerId ? `?${new URLSearchParams({ userId: libraryView.ownerId })}` : ''}`}
+              target="_blank" rel="noreferrer" title="Download playlist (ZIP)" aria-label="Download playlist (ZIP)"><ArrowDownToLine size={19} /></a>}
             {selection && <button className="music-icon-button" type="button" title="Select songs" aria-label="Select songs" aria-pressed={selection.active} disabled={libraryView.saving} onClick={selection.toggle}><ListChecks size={19} /></button>}
           </div>
           {selection?.active && <div className="library-bulk-toolbar song-bulk-toolbar">

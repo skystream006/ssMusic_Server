@@ -269,6 +269,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       assert.ok(tracks.body.files.length > 0);
       assert.ok(tracks.body.files.every((track) => !('outputDir' in track.sourceJob)));
       assert.deepEqual(tracks.body.files.find((track) => track.jobId === 'music' && track.name === songName).transcription, sharedTranscription);
+      const playlistDownload = await call(`/api/library/playlists/music/download?userId=${users.Owner.id}`, 'GET', headers);
+      assert.equal(playlistDownload.status, 200, playlistDownload.text);
+      assert.equal(new AdmZip(playlistDownload.buffer).getEntries().filter((entry) => entry.entryName.startsWith('Media/')).length, 3);
       assert.equal((await call(`/api/library?userId=${users.Admin.id}`, 'GET', headers)).status, 200);
       for (const route of [`/api/library?userId=${users.Other.id}`, `/api/library/tracks?userId=${users.Other.id}`,
         `/api/jobs/unowned/stream/${encodeURIComponent(songName)}`, `/api/jobs/unowned/lyrics/${encodeURIComponent(songName)}`,
@@ -313,6 +316,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     }
     assert.equal((await call(userPath, 'PATCH', credentials.Admin[0], { sharedUserIds: [] })).status, 200);
     assert.equal((await call('/api/library', 'GET', credentials.Reader[0])).body.songCount, 0);
+    assert.equal((await call(`/api/library/playlists/music/download?userId=${users.Owner.id}`, 'GET', credentials.Reader[0])).status, 403);
     assert.equal((await call(`/api/jobs/music/stream/${encodeURIComponent(songName)}`, 'GET', credentials.Reader[0])).status, 403);
     for (const headers of [...credentials.Reader, mobileHeaders.Reader]) {
       assert.equal((await call(metadataReadPath, 'GET', headers)).status, 403);
@@ -329,9 +333,11 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   await context.test('accepted user links expose read-only libraries without granting mutation rights', async () => {
     const libraryRoute = `/api/library?userId=${users.Owner.id}`;
     const tracksRoute = `/api/library/tracks?userId=${users.Owner.id}`;
+    const playlistRoute = `/api/library/playlists/music/download?userId=${users.Owner.id}`;
     const original = (await call('/api/library', 'GET', credentials.Owner[0])).body;
     assert.equal(original.readOnly, false);
     assert.equal((await call(libraryRoute, 'GET', credentials.Other[0])).status, 403);
+    assert.equal((await call(playlistRoute, 'GET', credentials.Other[0])).status, 403);
     assert.equal((await call('/api/auth/links', 'POST', credentials.Other[0], { userId: users.Owner.id })).status, 201);
     assert.equal((await call(tracksRoute, 'GET', credentials.Other[0])).status, 403);
     assert.equal((await call(`/api/auth/links/${users.Other.id}/accept`, 'POST', mobileHeaders.Owner)).status, 200);
@@ -353,6 +359,11 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       assert.equal(song.libraryOwnerId, users.Owner.id);
       assert.equal(new URL(song.streamUrl, 'http://localhost').searchParams.get('userId'), users.Owner.id);
       assert.equal((await call(song.streamUrl, 'GET', headers)).status, 200);
+      const playlistDownload = await call(playlistRoute, 'GET', headers);
+      assert.equal(playlistDownload.status, 200, playlistDownload.text);
+      const playlistZip = new AdmZip(playlistDownload.buffer);
+      assert.equal(playlistZip.getEntries().filter((entry) => entry.entryName.endsWith('.m3u8')).length, 1);
+      assert.equal(playlistZip.getEntries().filter((entry) => entry.entryName.startsWith('Media/')).length, 3);
       const lyrics = await call(song.lyricsUrl, 'GET', headers);
       assert.equal(lyrics.status, 200);
       assert.equal(lyrics.body.canEdit, false);
@@ -368,7 +379,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     assert.equal((await call(`/api/library?userId=${users.Other.id}`, 'GET', credentials.Owner[0])).status, 200);
     assert.deepEqual((await call('/api/library', 'GET', credentials.Owner[0])).body, original);
     assert.equal((await call(`/api/auth/links/${users.Owner.id}`, 'DELETE', credentials.Other[0])).status, 204);
-    for (const route of [libraryRoute, tracksRoute, song.streamUrl, song.lyricsUrl, song.downloadUrl]) {
+    for (const route of [libraryRoute, tracksRoute, playlistRoute, song.streamUrl, song.lyricsUrl, song.downloadUrl]) {
       assert.equal((await call(route, 'GET', credentials.Other[0])).status, 403, route);
     }
     assert.deepEqual((await call('/api/library/shared-users', 'GET', credentials.Owner[0])).body.users, []);
@@ -437,6 +448,44 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   };
   const savedLibrary = await call('/api/library', 'PUT', credentials.Owner[1], organized);
   assert.equal(savedLibrary.status, 200);
+  await context.test('playlist downloads stream one ordered ZIP without changing library backups', async () => {
+    const route = '/api/library/playlists/music/download';
+    assert.equal((await call(route)).status, 401);
+    for (const headers of [...credentials.Owner, mobileHeaders.Owner]) {
+      const downloaded = await call(route, 'GET', headers);
+      assert.equal(downloaded.status, 200, downloaded.text);
+      assert.match(downloaded.headers['content-type'], /application\/zip/);
+      assert.match(downloaded.headers['content-disposition'], /attachment; filename="music\.zip"/);
+      assert.equal(downloaded.headers['cache-control'], 'no-store');
+      const zip = new AdmZip(downloaded.buffer);
+      assert.equal(zip.getEntries().filter((entry) => entry.entryName.endsWith('.m3u8')).length, 1);
+      const paths = zip.readAsText('1-music.m3u8').split('\n').filter((line) => line && !line.startsWith('#'));
+      assert.equal(paths.length, 3);
+      assert.equal(zip.getEntries().filter((entry) => entry.entryName.startsWith('Media/')).length, 3);
+      assert.equal(zip.readAsText(paths[0]), 'keep');
+      assert.equal(zip.readAsText(paths[1]), 'song');
+      assert.deepEqual(zip.readFile(paths[2]), taggedAudio);
+      assert.ok(zip.getEntry('IMPORT.txt'));
+    }
+    for (const name of ['Other', 'Admin']) {
+      assert.equal((await call(route, 'GET', credentials[name][0])).status, 404);
+      assert.equal((await call(`${route}?userId=${users.Owner.id}`, 'GET', credentials[name][0])).status, 403);
+    }
+    for (const id of ['missing', 'folder-mixes', 'unowned']) {
+      const denied = await call(`/api/library/playlists/${id}/download`, 'GET', credentials.Owner[0]);
+      assert.equal(denied.status, 404);
+      assert.equal(denied.headers['content-disposition'], undefined);
+    }
+    assert.equal((await call(`${route}?userId[]=invalid`, 'GET', credentials.Owner[0])).status, 400);
+    const songPath = path.join(musicDir, 'keep.mp3');
+    await fs.rename(songPath, `${songPath}.missing`);
+    try {
+      const missing = await call(route, 'GET', credentials.Owner[0]);
+      assert.equal(missing.status, 409, missing.text);
+      assert.equal(missing.headers['content-disposition'], undefined);
+    } finally { await fs.rename(`${songPath}.missing`, songPath); }
+    assert.equal((await call('/api/library', 'GET', credentials.Owner[0])).body.version, savedLibrary.body.version);
+  });
   assert.equal((await call('/api/library/export?source=latest', 'GET', credentials.Owner[0])).status, 404);
   assert.equal((await call('/api/library/backup', 'POST', {}, { format: 'android' })).status, 401);
   assert.equal((await call('/api/library/backup/schedule', 'PUT', {}, { enabled: false })).status, 401);
@@ -676,6 +725,9 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const contributedZip = new AdmZip(contributedExport.buffer);
   assert.equal(contributedZip.getEntries().filter((entry) => entry.entryName.endsWith('.m3u8')).length, 1);
   assert.equal(contributedZip.getEntries().filter((entry) => entry.entryName.startsWith('Music/')).length, 2);
+  const contributedPlaylist = await call('/api/library/playlists/shared/download', 'GET', credentials.Other[1]);
+  assert.equal(contributedPlaylist.status, 200, contributedPlaylist.text);
+  assert.equal(new AdmZip(contributedPlaylist.buffer).getEntries().filter((entry) => entry.entryName.startsWith('Media/')).length, 2);
   assert.equal((await call(`/api/jobs/shared/files/${encodeURIComponent(songName)}/metadata`, 'PATCH', credentials.Other[0], { title: 'Contributor edit' })).status, 200);
   const actionLibrary = (await call('/api/library', 'GET', credentials.Other[0])).body;
   assert.deepEqual(actionLibrary.jobs.find((job) => job.id === 'shared').contributors, shared.body.contributors);

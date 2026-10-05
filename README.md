@@ -329,6 +329,24 @@ Include `userId` to assign the local import to another eligible user. Both local
 endpoints require an authenticated admin (session cookie, Bearer session, or admin PAT).
 Non-admin local listings and submissions return `403`.
 
+## Download a playlist
+
+Select a playlist on the music page and choose **Download playlist (ZIP)** beside
+the track search. The ZIP contains that playlist's current audio and video files,
+including moved and linked tracks, plus an M3U8 playlist in the saved track order.
+Search filters and checkbox selections do not limit the download. Original files,
+embedded tags, lyrics and artwork are retained without transcoding.
+
+Extract the whole ZIP, keeping the `.m3u8` file beside the `Media/` folder, then
+open the playlist in a player supporting UTF-8 M3U8 with relative paths. Individual
+Songs and empty playlists are supported. Pending downloads are not included.
+The browser downloads directly; errors open in a separate tab without leaving
+the music page. Playlist downloads do not create or replace your library backup.
+
+`GET /api/library/playlists/:id/download` requires authentication and access to the
+selected playlist. Add `?userId=<library-owner-id>` for an accepted linked library
+or a library granted to a Shared account. Revoked access is checked on each request.
+
 ## Export your library
 
 Choose **Export library** on the music page. Select **Latest export (backup)** to

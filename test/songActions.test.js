@@ -199,6 +199,28 @@ test('account settings label username editing and keep library access read-only'
   assert.doesNotMatch(access, /type="checkbox"|Save access/);
 });
 
+test('playlist download control uses native ZIP links for personal and shared playlists only', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const render = (overrides = {}) => renderToStaticMarkup(createElement(PlaybackProvider, { request() {} },
+      createElement(MusicPlayer, { libraryView: { tracks: [], title: 'Playlist', type: 'playlist', selectedId: 'playlist /?', ...overrides } })));
+    const link = (html) => html.match(/<a[^>]*aria-label="Download playlist \(ZIP\)"[^>]*>/)?.[0];
+    assert.match(link(render()), /href="\/api\/library\/playlists\/playlist%20%2F%3F\/download"/);
+    assert.match(link(render()), /target="_blank" rel="noreferrer"/);
+    assert.match(link(render()), /title="Download playlist \(ZIP\)"/);
+    for (const readOnly of [false, true]) {
+      assert.match(link(render({ readOnly, ownerId: 'owner & friend' })), /download\?userId=owner\+%26\+friend"/);
+    }
+    assert.equal(link(render({ type: 'folder' })), undefined);
+    assert.equal(link(render({ type: undefined, selectedId: null })), undefined);
+    assert.equal(link(render({ selectedId: null })), undefined);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
 test('playlist bulk deletion is available only for an eligible selection while not saving', () => {
   const previousWindow = globalThis.window;
   globalThis.window = { location: { search: '' } };

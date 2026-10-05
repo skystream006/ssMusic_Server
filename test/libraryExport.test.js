@@ -103,6 +103,64 @@ test('Android playlists retain moved songs, saved order, singles, empty lists an
   }
 });
 
+test('playlist downloads include only selected membership in saved order without changing the library', async (context) => {
+  const { library, jobs } = await fixture(context);
+  const unboundedRead = context.mock.method(NodeID3.Promise, 'read');
+  library.songAdds = [{ jobId: 'first', name: 'A #100%.mp3', playlistId: 'second' }];
+  library.playlistSongOrder.second.unshift(songKey(library.songAdds[0]));
+  const original = structuredClone(library);
+  const result = await prepareLibraryExport(library, jobs, { format: 'playlist', playlistId: 'second' });
+  const playlists = result.documents.filter((document) => document.name.endsWith('.m3u8'));
+  assert.equal(playlists.length, 1);
+  assert.deepEqual(result.files.map((file) => file.filePath), [
+    path.join(jobs[0].outputDir, 'A #100%.mp3'),
+    path.join(jobs[0].outputDir, 'B.mp3'),
+    path.join(jobs[1].outputDir, 'A #100%.mp3'),
+    path.join(jobs[1].outputDir, '[NoVocals]/B.mp3')
+  ]);
+  assert.deepEqual(playlists[0].content.split('\n').filter((line) => line && !line.startsWith('#')),
+    result.files.map((file) => file.archivePath));
+  assert.deepEqual(library, original);
+  assert.equal(unboundedRead.mock.callCount(), 0);
+});
+
+test('playlist downloads reject folders and unavailable selections', async (context) => {
+  const { library, jobs } = await fixture(context);
+  for (const playlistId of ['missing', 'folder', '', null, ['second']]) {
+    await assert.rejects(() => prepareLibraryExport(library, jobs, { format: 'playlist', playlistId }),
+      { statusCode: 404, message: 'Playlist not found' });
+  }
+});
+
+test('playlist downloads retain videos and ignore unrelated missing media', async (context) => {
+  const { library, jobs } = await fixture(context);
+  jobs[1].files.push('Movie.mp4');
+  await fs.writeFile(path.join(jobs[1].outputDir, 'Movie.mp4'), 'video bytes');
+  await fs.unlink(path.join(jobs[2].outputDir, 'Single.mp3'));
+  const result = await prepareLibraryExport(library, jobs, { format: 'playlist', playlistId: 'second' });
+  assert.equal(result.files.length, 4);
+  const video = result.files.find((file) => file.archivePath.endsWith('.mp4'));
+  assert.equal(await fs.readFile(video.filePath, 'utf8'), 'video bytes');
+  assert.ok(result.documents[0].content.includes(`\n${video.archivePath}\n`));
+  assert.ok(result.files.every((file) => file.archivePath.startsWith('Media/')));
+  const audioOnly = await prepareLibraryExport(library, jobs, { ...exportOptions('android'), playlistId: 'second' });
+  assert.equal(audioOnly.files.length, 3);
+  assert.ok(audioOnly.files.every((file) => file.archivePath.startsWith('Music/')));
+  await fs.unlink(video.filePath);
+  await assert.rejects(() => prepareLibraryExport(library, jobs, { format: 'playlist', playlistId: 'second' }),
+    { statusCode: 409 });
+});
+
+test('playlist downloads support empty playlists and Individual Songs', async (context) => {
+  const { library, jobs } = await fixture(context);
+  const empty = await prepareLibraryExport(library, jobs, { format: 'playlist', playlistId: 'empty' });
+  assert.equal(empty.files.length, 0);
+  assert.equal(empty.documents[0].content, '#EXTM3U\n#PLAYLIST:Empty\n');
+  const singles = await prepareLibraryExport(library, jobs, { format: 'playlist', playlistId: individualSongsId });
+  assert.deepEqual(singles.files.map((file) => file.filePath), [path.join(jobs[2].outputDir, 'Single.mp3')]);
+  assert.match(singles.documents[0].content, /#PLAYLIST:Individual Songs/);
+});
+
 test('iTunes XML maps ordered track IDs to included files and encodes locations, names and folder hierarchy', async (context) => {
   const { library, jobs } = await fixture(context);
   const options = exportOptions('itunes', '/Users/You/Music & More');

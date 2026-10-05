@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import { ZipArchive } from 'archiver';
 import { getPlaylistIds, getPlaylistTracks, songKey } from './library.js';
 import { readSongMetadata } from './music.js';
+import { isPlayableFile } from './media.js';
 import { isSongFile } from './transcription.js';
 
 function failure(message, statusCode = 400) {
@@ -105,13 +106,16 @@ ${text('Music Folder', `${baseUrl}Music/`)}
 export async function prepareLibraryExport(library, jobs, options) {
   const jobMap = new Map(jobs.map((job) => [job.id, job]));
   const entryMap = new Map(library.entries.map((entry) => [entry.id, entry]));
+  const selected = options.playlistId === undefined ? null : entryMap.get(options.playlistId);
+  if (options.playlistId !== undefined && selected?.type !== 'playlist') throw failure('Playlist not found', 404);
+  const entries = selected ? [{ ...selected, parentId: null }] : library.entries;
   const playlistTracks = getPlaylistTracks(library, jobs);
   const tracks = new Map();
   const playlists = [];
-  for (const id of getPlaylistIds(library.entries)) {
+  for (const id of getPlaylistIds(entries)) {
     const playlist = { id, title: entryMap.get(id).name || jobMap.get(id)?.playlistTitle || id, tracks: [] };
     for (const song of playlistTracks.get(id)) {
-      if (!isSongFile(song.name)) continue;
+      if (options.format === 'playlist' ? !isPlayableFile(song.name) : !isSongFile(song.name)) continue;
       const key = songKey(song);
       if (!tracks.has(key)) {
         const extension = path.extname(song.name).toLowerCase();
@@ -119,10 +123,10 @@ export async function prepareLibraryExport(library, jobs, options) {
           throw failure('This library contains audio that iTunes cannot import. Convert it to MP3 or AAC before exporting.');
         }
         const filePath = await resolveSong(jobMap.get(song.jobId), song.name);
-        const { title, artist, album, genre } = await readSongMetadata(filePath);
+        const { title, artist, album, genre } = await readSongMetadata(filePath, { bounded: options.format === 'playlist' });
         const trackId = tracks.size + 1;
         tracks.set(key, { id: trackId, filePath, metadata: { title, artist, album, genre },
-          archivePath: `Music/${trackId}-${safeName(path.basename(song.name, path.extname(song.name)))}${extension}` });
+          archivePath: `${options.format === 'playlist' ? 'Media' : 'Music'}/${trackId}-${safeName(path.basename(song.name, path.extname(song.name)))}${extension}` });
       }
       playlist.tracks.push(tracks.get(key));
     }
@@ -130,13 +134,15 @@ export async function prepareLibraryExport(library, jobs, options) {
   }
   const files = [...tracks.values()];
   const documents = options.format === 'itunes'
-    ? [{ name: 'Library.xml', content: itunesLibrary(library, files, playlists, options.baseUrl) }]
+    ? [{ name: 'Library.xml', content: itunesLibrary({ ...library, entries }, files, playlists, options.baseUrl) }]
     : playlists.map((playlist, index) => ({
       name: `${index + 1}-${safeName(playlist.title)}.m3u8`,
       content: '#EXTM3U\n' + `#PLAYLIST:${playlist.title.replace(/[\r\n]/g, ' ')}\n`
         + playlist.tracks.map((track) => `#EXTINF:-1,${[track.metadata.artist, track.metadata.title].filter(Boolean).join(' - ').replace(/[\r\n]/g, ' ')}\n${track.archivePath}\n`).join('')
     }));
-  documents.push({ name: 'IMPORT.txt', content: options.format === 'itunes'
+  documents.push({ name: 'IMPORT.txt', content: options.format === 'playlist'
+    ? 'Extract the entire ZIP into one folder. Keep the .m3u8 playlist beside the Media folder. Open the playlist in a player that supports UTF-8 M3U8 playlists with relative paths. Use playlist order, with shuffle off, to retain the saved track order. Original media files, metadata and artwork are retained. No media is transcoded.\n'
+    : options.format === 'itunes'
     ? `Extract all ZIP contents directly into:\n${options.destination}\n\nKeep Library.xml beside the Music folder. In iTunes (Windows) or Music (macOS), add the extracted Music folder to your library first, then use File > Library > Import Playlist and select Library.xml. The XML uses absolute file URLs for the destination above; extracting elsewhere requires a new export with the correct destination. Select playlist order (not artist/title sorting) to see the saved song order. Audio tags and artwork are retained in the original files. No audio is transcoded.\n`
     : 'Extract the entire ZIP into one folder on your Android device. Keep the .m3u8 files beside the Music folder. In a player that supports UTF-8 M3U8 playlists with relative paths, grant access to this folder, scan the audio, then import each .m3u8 playlist. Use playlist order, with shuffle off, to retain saved song order. Android has no universal library import format: support, empty playlists and playlist names depend on the player. Folder hierarchy is not imported. Audio tags and artwork are retained in the original files. No audio is transcoded.\n' });
   return { files, documents };
