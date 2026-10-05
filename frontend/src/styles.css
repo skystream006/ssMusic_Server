@@ -106,7 +106,7 @@ a { color: inherit; }
 .app-shell { min-height: 100vh; }
 .topbar { height: 68px; padding: 0 max(24px, calc((100vw - 1500px) / 2)); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--paper) 94%, transparent); position: sticky; top: 0; z-index: 10; backdrop-filter: blur(12px); }
 .brand { display: inline-flex; align-items: center; gap: 10px; width: fit-content; font: 600 20px 'Newsreader', serif; text-decoration: none; }
-.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; color: var(--on-accent); background: var(--royal); }
+.brand-mark { display: block; flex: none; width: 34px; height: 34px; object-fit: contain; }
 nav { display: flex; align-self: stretch; }
 nav a { display: flex; align-items: center; gap: 7px; padding: 0 22px; color: var(--muted); font-size: 13px; font-weight: 600; text-decoration: none; border-bottom: 3px solid transparent; }
 nav a.active { color: var(--ink); border-color: var(--royal); }
@@ -380,7 +380,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 .page-notice { margin: 30px 0; }
 .auth-page { min-height: 100vh; width: min(1060px, calc(100% - 48px)); padding: 70px 0; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(340px, .8fr); align-items: center; gap: 90px; }
 .auth-intro { padding: 24px 0; }
-.auth-mark { width: 58px; height: 58px; display: grid; place-items: center; margin-bottom: 38px; color: var(--on-accent); background: var(--royal); box-shadow: 8px 8px 0 var(--shadow); }
+.auth-mark { display: block; width: 58px; height: 58px; object-fit: contain; margin-bottom: 38px; }
 .auth-intro h1 { max-width: 620px; }
 .auth-intro > p:last-child { max-width: 570px; margin: 22px 0 0; color: var(--muted); font-size: 14px; line-height: 1.75; }
 .auth-panel { padding: 30px; border: 1px solid var(--line); border-top-color: var(--ink); background: var(--surface); box-shadow: 7px 7px 0 var(--shadow); }
@@ -970,7 +970,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .pat-form > div { max-width: none; }
   .pat-form > button { justify-content: center; }
   .topbar { height: auto; min-height: 62px; padding: 0 10px; gap: 5px; }
-  .brand-mark { width: 28px; height: 30px; }
+  .brand-mark { width: 28px; height: 28px; }
   .account-menu { gap: 3px; }
   .account-menu button, .account-menu > a { width: 29px; height: 32px; }
   .brand span:last-child { display: none; }
