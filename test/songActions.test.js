@@ -34,6 +34,7 @@ let SharedRegistrationFields;
 let SettingsTabs;
 let LinkedUsers;
 let OrganizedSharedUsers;
+let OrganizerControl;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
@@ -42,10 +43,39 @@ before(async () => {
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
-  ({ UsernameForm, LibraryAccessList, SharedRegistrationFields, SettingsTabs, LinkedUsers, OrganizedSharedUsers } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
+  ({ UsernameForm, LibraryAccessList, SharedRegistrationFields, SettingsTabs, LinkedUsers, OrganizedSharedUsers, OrganizerControl } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('admin organizer control lists only eligible users and preserves selection and disabled states', () => {
+  const user = { id: 'car', name: 'Car player', role: 'shared', organizerId: 'owner' };
+  const users = [user, { id: 'owner', name: 'Owner', role: 'user', status: 'approved' },
+    { id: 'admin', name: 'Admin', role: 'admin', status: 'approved' },
+    { id: 'pending', name: 'Pending', role: 'user', status: 'pending' },
+    { id: 'revoked', name: 'Revoked', role: 'user', status: 'revoked' },
+    { id: 'shared', name: 'Other Shared', role: 'shared', status: 'approved' }];
+  const props = { user, users, onChange() {}, confirm() {} };
+  const html = renderToStaticMarkup(createElement(OrganizerControl, props));
+  assert.match(html, /aria-label="Organizer for Car player"/);
+  assert.match(html, /<option value="owner" selected="">Owner<\/option>/);
+  assert.match(html, /<option value="admin">Admin<\/option>/);
+  assert.match(html, /<option value="">Administrator managed<\/option>/);
+  assert.doesNotMatch(html, /value="(?:car|pending|revoked|shared)"/);
+  assert.match(renderToStaticMarkup(createElement(OrganizerControl, { ...props, disabled: true })), /<select[^>]*disabled=""/);
+  assert.match(renderToStaticMarkup(createElement(OrganizerControl, { ...props, user: { ...user, organizerId: null } })), /<option value="" selected="">Administrator managed/);
+  assert.equal(renderToStaticMarkup(createElement(OrganizerControl, { ...props, user: users[1] })), '');
+});
+
+test('import library owner selection is available only to administrators', () => {
+  const props = { request() {}, onClose() {}, onImported() {} };
+  const admin = renderToStaticMarkup(createElement(ImportMusic, { ...props, user: { id: 'admin', role: 'admin' } }));
+  assert.match(admin, /aria-label="Library owner"/);
+  assert.match(admin, /Loading users/);
+  const regular = renderToStaticMarkup(createElement(ImportMusic, { ...props, user: { id: 'listener', role: 'user' } }));
+  assert.doesNotMatch(regular, /aria-label="Library owner"/);
+  assert.match(regular, /iTunes library/);
+});
 
 test('Shared registration exposes its help text and requires an organizer selection', () => {
   const props = { request() {}, onChange() {} };

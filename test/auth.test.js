@@ -154,14 +154,30 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     assert.equal((await call(`/api/auth/links/${admin.id}`, 'DELETE', userHeaders)).status, 204);
     assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, []);
     assert.equal((await call(`/api/auth/links/${admin.id}`, 'DELETE', userHeaders)).status, 404);
+    const adminRoute = `/api/admin/users/${viewer.id}`;
+    assert.equal((await call(adminRoute, 'PATCH', {}, { organizerId: admin.id })).status, 401);
+    for (const headers of [userHeaders, viewerHeaders]) {
+      assert.equal((await call(adminRoute, 'PATCH', headers, { organizerId: admin.id })).status, 403);
+    }
+    for (const organizerId of [pending.id, viewer.id, 'missing', 42]) {
+      assert.equal((await call(adminRoute, 'PATCH', adminHeaders, { organizerId })).status, 400);
+      assert.equal((await store.getUser(viewer.id)).organizerId, user.id);
+    }
+    assert.equal((await call(organizerRoute, 'PUT', userHeaders, { sharedUserIds: [user.id] })).status, 200);
     const reassigned = await call(`/api/admin/users/${viewer.id}`, 'PATCH', adminHeaders, { organizerId: admin.id });
     assert.equal(reassigned.status, 200);
     assert.equal((await reassigned.json()).user.organizerId, admin.id);
+    assert.deepEqual((await store.getUser(viewer.id)).sharedUserIds, []);
     assert.equal((await call(organizerRoute, 'PUT', userHeaders, { sharedUserIds: [user.id] })).status, 404);
     assert.equal((await call(organizerRoute, 'PUT', adminHeaders, { sharedUserIds: [admin.id] })).status, 200);
     const accountDetails = await (await call(`/api/admin/users/${viewer.id}`, 'GET', adminHeaders)).json();
     assert.deepEqual(accountDetails.libraries, [{ id: admin.id, name: admin.name }]);
     assert.deepEqual((await (await call('/api/auth/shared-users', 'GET', adminHeaders)).json()).users[0].sharedUserIds, [admin.id]);
+    const administratorManaged = await call(adminRoute, 'PATCH', adminHeaders, { organizerId: null });
+    assert.equal(administratorManaged.status, 200);
+    const unassigned = (await administratorManaged.json()).user;
+    assert.equal(unassigned.organizerId, null);
+    assert.deepEqual(unassigned.sharedUserIds, []);
     for (const account of [{ role: 'admin' }, { role: 'shared' }, { role: 'shared', organizerId: pending.id },
       { role: 'shared', organizerId: viewer.id }, { role: 'user', organizerId: user.id }]) {
       assert.equal((await call('/api/auth/register/options', 'POST', {}, { name: 'Signup', ...account })).status, 400);

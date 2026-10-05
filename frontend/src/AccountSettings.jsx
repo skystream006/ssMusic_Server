@@ -2,6 +2,26 @@ import { useEffect, useId, useState } from 'react';
 import { Link2, RefreshCw, Save, Settings, Unlink, UserCheck, UserPlus, Users, X } from 'lucide-react';
 import { SharedLibraryAccess } from './SharedLibraries.jsx';
 
+export function OrganizerControl({ user, users, onChange, confirm, disabled = false }) {
+  if (user.role !== 'shared') return null;
+  const organizers = users.filter((account) => account.id !== user.id && account.status === 'approved' && account.role !== 'shared');
+  const organizer = organizers.find((account) => account.id === user.organizerId);
+  return <label className="role-control organizer-control"><span>Organizer</span>
+    <select aria-label={`Organizer for ${user.name}`} value={user.organizerId || ''} disabled={disabled}
+      title={organizer?.name || 'Administrator managed'} onChange={async (event) => {
+        const organizerId = event.target.value || null;
+        if (organizerId === (user.organizerId || null)) return;
+        const name = organizers.find((account) => account.id === organizerId)?.name || 'Administrator managed';
+        if (await confirm({ title: 'Change organizer?',
+          message: `Change the organizer for "${user.name}" to "${name}"? Current library access will be cleared and must be selected again.`,
+          label: 'Change organizer' })) onChange(organizerId);
+      }}>
+      <option value="">Administrator managed</option>
+      {organizers.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+    </select>
+  </label>;
+}
+
 export function SharedRegistrationFields({ account, onChange, request, disabled = false }) {
   const inputId = useId();
   const [users, setUsers] = useState(null);

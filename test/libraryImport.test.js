@@ -41,8 +41,25 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   const imports = await import('../src/libraryImport.js');
   const manager = await import('../src/jobManager.js');
   const { getLibrary, linkLibraryJob } = await import('../src/libraryStore.js');
-  const { registerUser } = await import('../src/authStore.js');
+  const { registerUser, updateUser } = await import('../src/authStore.js');
   const owner = await registerUser('Owner', 'Owner', { id: 'owner', publicKey: Buffer.from('owner'), counter: 0 });
+  await context.test('import recipients must be approved non-Shared users selected by an admin', async () => {
+    const recipient = await registerUser('Import recipient', 'recipient', { id: 'recipient', publicKey: Buffer.from('recipient'), counter: 0 });
+    await assert.rejects(imports.resolveImportUser(owner, recipient.id), { statusCode: 400 });
+    const approved = await updateUser(recipient.id, { status: 'approved' }, owner.id);
+    assert.equal((await imports.resolveImportUser(owner, approved.id)).id, approved.id);
+    assert.equal(await imports.resolveImportUser(approved), approved);
+    assert.equal(await imports.resolveImportUser(approved, approved.id), approved);
+    await assert.rejects(imports.resolveImportUser(approved, owner.id), { statusCode: 403 });
+    for (const userId of ['', null, [], 42, 'missing']) {
+      await assert.rejects(imports.resolveImportUser(owner, userId), { statusCode: 400 });
+    }
+    const shared = await updateUser(recipient.id, { role: 'shared' }, owner.id);
+    await assert.rejects(imports.resolveImportUser(owner, shared.id), { statusCode: 400 });
+    await assert.rejects(imports.resolveImportUser(shared), { statusCode: 403 });
+    await updateUser(recipient.id, { role: 'user', status: 'revoked' }, owner.id);
+    await assert.rejects(imports.resolveImportUser(owner, recipient.id), { statusCode: 400 });
+  });
   async function countUpload(fieldname, megabytes, extraBytes = 0, request = { importBytes: 0 }) {
     const chunk = Buffer.alloc(1024 ** 2);
     function* chunks() {
@@ -585,6 +602,15 @@ test('music imports validate media, preserve playlists and enforce ownership', a
       }
       return readFile(...args);
     });
+    await diagnostics.test('only admins may start local library imports', async () => {
+      for (const role of ['user', 'shared']) {
+        await imports.handleLibraryImport({ ...request, user: { ...owner, role } }, reply);
+        assert.equal(reply.statusCode, 403);
+        assert.match(response.error, /Administrator access/);
+        assert.equal(imports.getImportProgress(owner.id, importId), null);
+      }
+      assert.equal(readMock.mock.callCount(), 0);
+    });
     await imports.handleLibraryImport(request, reply);
     assert.equal(reply.statusCode, 201);
     assert.equal(response.importId, importId);
@@ -628,9 +654,13 @@ test('music imports validate media, preserve playlists and enforce ownership', a
         assert.equal(imports.getImportProgress('other', importId), null);
         await imports.handleLibraryImport(request, reply);
         assert.equal(reply.statusCode, 409);
-        await imports.handleLibraryImport({ ...request, user: { id: 'another-user', name: 'Other' } }, reply);
+        await imports.handleLibraryImport({ ...request, user: { id: 'another-user', name: 'Other', role: 'admin' } }, reply);
         assert.equal(reply.statusCode, 409);
         assert.match(response.error, /already being imported/);
+        await imports.handleLibraryImport({ ...request, user: { id: 'another-user', name: 'Other', role: 'admin' },
+          body: { ...request.body, userId: owner.id } }, reply);
+        assert.equal(reply.statusCode, 409);
+        assert.match(response.error, /writing to this library/);
       } finally { releaseRead(); await pending; }
       assert.equal(replies.length, 1);
       const finished = imports.getImportProgress(owner.id, importId);

@@ -1077,6 +1077,35 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(imported.body.jobs[0].source, 'files');
   assert.equal((await call('/api/library', 'GET', credentials.Owner[0])).body.playlists.some((playlist) => playlist.id === importedId), true);
   assert.deepEqual((await call(`/api/jobs/${importedId}/stream/Uploaded.wav`, 'GET', credentials.Owner[0])).buffer, audio);
+  await context.test('admins assign browser uploads to approved users without exposing other import destinations', async () => {
+    const destination = `/api/jobs/import/playlists?userId=${users.Owner.id}`;
+    assert.equal((await call(destination)).status, 401);
+    const own = await call(destination, 'GET', credentials.Owner[0]);
+    assert.equal(own.status, 200, own.text);
+    assert.ok(own.body.playlists.some((playlist) => playlist.id === importedId));
+    assert.ok(own.body.playlists.every((playlist) => Object.keys(playlist).every((key) => ['id', 'playlistTitle', 'status'].includes(key))));
+    for (const headers of [...credentials.Other, mobileHeaders.Other]) {
+      assert.equal((await call(destination, 'GET', headers)).status, 403);
+      assert.equal((await upload({ ...importOptions, userId: users.Owner.id }, [uploadFile], headers)).status, 403);
+    }
+    assert.equal((await call(destination, 'GET', credentials.Admin[0])).status, 200);
+    for (const userId of [users.Pending.id, users.Revoked.id, 'missing']) {
+      assert.equal((await call(`/api/jobs/import/playlists?userId=${userId}`, 'GET', credentials.Admin[0])).status, 400);
+      assert.equal((await upload({ ...importOptions, userId }, [uploadFile], credentials.Admin[0])).status, 400);
+    }
+    const assigned = await upload({ ...importOptions, userId: users.Other.id }, [uploadFile], credentials.Admin[1]);
+    assert.equal(assigned.status, 201, assigned.text);
+    const assignedId = assigned.body.jobs[0].id;
+    assert.equal(assigned.body.jobs[0].initiatedBy.id, users.Other.id);
+    const targetLibrary = (await call('/api/library', 'GET', credentials.Other[0])).body;
+    assert.ok(targetLibrary.entries.some((entry) => entry.id === assignedId));
+    assert.equal((await call('/api/library', 'GET', credentials.Admin[0])).body.entries.some((entry) => entry.id === assignedId), false);
+    const append = await upload({ mode: 'files', createNew: 'false', playlistId: assignedId, userId: users.Other.id }, [uploadFile], mobileHeaders.Admin);
+    assert.equal(append.status, 201, append.text);
+    assert.deepEqual(append.body.jobs[0].files, ['Uploaded.wav', 'Uploaded (2).wav']);
+    assert.equal((await upload({ mode: 'files', createNew: 'false', playlistId: importedId, userId: users.Other.id }, [uploadFile], credentials.Admin[0])).status, 400);
+    assert.equal((await call(`/api/jobs/${assignedId}`, 'DELETE', credentials.Admin[0])).status, 204);
+  });
   const existingOptions = { mode: 'files', createNew: 'false', playlistId: importedId };
   assert.equal((await upload(existingOptions, [uploadFile], credentials.Other[0])).status, 400);
   const appended = await upload(existingOptions, [uploadFile], credentials.Owner[1]);
@@ -1133,6 +1162,17 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const mediaZip = new AdmZip();
   mediaZip.addFile(`Music/${itunesSourceName}`, canConvertWav ? audio : encodedAudio);
   const itunesFiles = [{ field: 'xml', name: 'Library.xml', data: xml }, { field: 'media', name: 'Media.zip', data: mediaZip.toBuffer() }];
+  const assignedItunes = await upload({ mode: 'itunes', userId: users.Other.id }, itunesFiles, credentials.Admin[0]);
+  assert.equal(assignedItunes.status, 201, assignedItunes.text);
+  assert.ok(assignedItunes.body.jobs.every((job) => job.initiatedBy.id === users.Other.id));
+  const recipientLibrary = (await call('/api/library', 'GET', credentials.Other[0])).body;
+  assert.ok(assignedItunes.body.jobs.every((job) => recipientLibrary.entries.some((entry) => entry.id === job.id)));
+  const assignedLogRoute = `/api/jobs/import/logs/${assignedItunes.body.importId}`;
+  assert.equal((await call(assignedLogRoute, 'GET', credentials.Other[0])).status, 404);
+  assert.equal((await call(assignedLogRoute, 'GET', credentials.Admin[0])).body.status, 'completed');
+  for (const job of assignedItunes.body.jobs.toReversed()) {
+    assert.equal((await call(`/api/jobs/${job.id}`, 'DELETE', credentials.Admin[0])).status, 204);
+  }
   assert.equal((await upload({ mode: 'itunes' }, itunesFiles.slice(0, 1))).status, 400);
   const importedItunes = await upload({ mode: 'itunes' }, itunesFiles, mobileHeaders.Owner);
   assert.equal(importedItunes.status, 201, importedItunes.text);
@@ -1176,7 +1216,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(removeLast.body.fileDeleted, true);
   assert.equal((await call(linkedTracks.body.files[0].streamUrl, 'GET', credentials.Owner[0])).status, 404);
   assert.equal((await call('/api/jobs/import/local')).status, 401);
-  assert.deepEqual((await call('/api/jobs/import/local', 'GET', credentials.Owner[0])).body, { xmlFiles: [], zipFiles: [] });
+  assert.equal((await call('/api/jobs/import/local', 'GET', credentials.Owner[0])).status, 403);
+  assert.deepEqual((await call('/api/jobs/import/local', 'GET', credentials.Admin[0])).body, { xmlFiles: [], zipFiles: [] });
   await fs.mkdir(process.env.IMPORT_STORAGE_ROOT);
   const localXmlName = 'Library \u97f3\u697d.XML';
   const localZipName = 'iTunes media.ZIP';
@@ -1187,30 +1228,37 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   await fs.writeFile(localZipPath, originalZip);
   await fs.writeFile(path.join(process.env.IMPORT_STORAGE_ROOT, 'ignored.txt'), 'not a library');
   await fs.mkdir(path.join(process.env.IMPORT_STORAGE_ROOT, 'folder.zip'));
-  const localListing = await call('/api/jobs/import/local', 'GET', credentials.Owner[1]);
+  const localListing = await call('/api/jobs/import/local', 'GET', credentials.Admin[1]);
   assert.equal(localListing.status, 200);
   assert.deepEqual(localListing.body, { xmlFiles: [{ name: localXmlName, size: Buffer.byteLength(xml) }], zipFiles: [{ name: localZipName, size: originalZip.length }] });
-  const localOptions = { mode: 'itunes', source: 'local', xmlName: localXmlName, zipName: localZipName };
+  const localOptions = { mode: 'itunes', source: 'local', xmlName: localXmlName, zipName: localZipName, userId: users.Owner.id };
   assert.equal((await call('/api/jobs/import', 'POST', {}, localOptions)).status, 401);
-  for (const zipName of ['../outside.zip', '..\\outside.zip', '/tmp/outside.zip', 'C:\\outside.zip', 'folder.zip', localXmlName]) {
-    assert.equal((await call('/api/jobs/import', 'POST', credentials.Owner[0], { ...localOptions, zipName })).status, 400);
+  for (const headers of [...credentials.Owner, mobileHeaders.Owner]) {
+    assert.equal((await call('/api/jobs/import/local', 'GET', headers)).status, 403);
+    assert.equal((await call('/api/jobs/import/local', 'HEAD', headers)).status, 403);
+    assert.equal((await call('/api/jobs/import?background=true', 'POST', headers, localOptions)).status, 403);
   }
-  assert.equal((await call('/api/jobs/import', 'POST', credentials.Owner[0], { ...localOptions, xmlName: '' })).status, 400);
-  const missingImport = await call('/api/jobs/import', 'POST', credentials.Owner[0], { ...localOptions, zipName: 'deleted.zip' });
+  for (const zipName of ['../outside.zip', '..\\outside.zip', '/tmp/outside.zip', 'C:\\outside.zip', 'folder.zip', localXmlName]) {
+    assert.equal((await call('/api/jobs/import', 'POST', credentials.Admin[0], { ...localOptions, zipName })).status, 400);
+  }
+  assert.equal((await call('/api/jobs/import', 'POST', credentials.Admin[0], { ...localOptions, xmlName: '' })).status, 400);
+  const missingImport = await call('/api/jobs/import', 'POST', credentials.Admin[0], { ...localOptions, zipName: 'deleted.zip' });
   assert.equal(missingImport.status, 404);
-  const failedLog = await call(`/api/jobs/import/logs/${missingImport.body.importId}`, 'GET', credentials.Owner[0]);
+  const failedLog = await call(`/api/jobs/import/logs/${missingImport.body.importId}`, 'GET', credentials.Admin[0]);
   assert.equal(failedLog.body.status, 'failed');
   assert.ok(failedLog.body.entries.some((entry) => entry.level === 'error' && entry.stage === 'receive'));
   assert.equal(failedLog.text.includes('stack'), false);
   assert.equal(failedLog.text.includes(directory.replaceAll('\\', '\\\\')), false);
   const localImportId = '12345678-1234-1234-1234-123456789abc';
-  assert.equal((await call('/api/jobs/import?importId=invalid', 'POST', mobileHeaders.Owner, localOptions)).status, 400);
-  const localImport = await call(`/api/jobs/import?importId=${localImportId}`, 'POST', mobileHeaders.Owner, localOptions);
+  assert.equal((await call('/api/jobs/import?importId=invalid', 'POST', mobileHeaders.Admin, localOptions)).status, 400);
+  const localImport = await call(`/api/jobs/import?importId=${localImportId}`, 'POST', mobileHeaders.Admin, localOptions);
   assert.equal(localImport.status, 201, localImport.text);
   assert.equal(localImport.body.importId, localImportId);
-  const localLog = await call(`/api/jobs/import/logs/${localImportId}`, 'GET', mobileHeaders.Owner);
+  const localLog = await call(`/api/jobs/import/logs/${localImportId}`, 'GET', mobileHeaders.Admin);
   assert.equal(localLog.body.entries[0].details.source, 'local');
-  assert.equal((await call(`/api/jobs/import/logs/${missingImport.body.importId}`, 'GET', credentials.Owner[0])).status, 404);
+  assert.ok(localLog.body.entries.some((entry) => entry.details.ownerId === users.Owner.id));
+  assert.equal((await call(`/api/jobs/import/logs/${localImportId}`, 'GET', credentials.Owner[0])).status, 404);
+  assert.equal((await call(`/api/jobs/import/logs/${missingImport.body.importId}`, 'GET', credentials.Admin[0])).status, 404);
   assert.equal(localImport.body.importedFiles, 1);
   assert.equal(localImport.body.jobs[0].initiatedBy.id, users.Owner.id);
   assert.equal(localImport.body.jobs[0].playlistTitle, 'iTunes favorites');
@@ -1218,8 +1266,11 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   const completedStorage = path.join(directory, 'import-storage-completed');
   assert.equal(await fs.readFile(path.join(completedStorage, localXmlName), 'utf8'), xml);
   assert.deepEqual(await fs.readFile(path.join(completedStorage, localZipName)), originalZip);
-  assert.deepEqual((await call('/api/jobs/import/local', 'GET', credentials.Owner[0])).body, { xmlFiles: [], zipFiles: [] });
+  assert.deepEqual((await call('/api/jobs/import/local', 'GET', credentials.Admin[0])).body, { xmlFiles: [], zipFiles: [] });
   const manyFiles = Array.from({ length: 1001 }, (_, index) => ({ ...uploadFile, name: `Track ${index}.wav` }));
+  const boundaryUpload = await upload({ ...importOptions, mode: 'invalid', userId: users.Other.id }, manyFiles.slice(0, 1000), credentials.Admin[0]);
+  assert.equal(boundaryUpload.status, 400, boundaryUpload.text);
+  assert.match(boundaryUpload.body.error, /Choose files, or upload both/);
   const bulkImport = await upload({ ...importOptions, playlistTitle: 'Large import' }, manyFiles);
   assert.equal(bulkImport.status, 413, bulkImport.text);
   const oversizedXml = await upload({ mode: 'itunes' }, [{ ...itunesFiles[0], data: ' '.repeat(20 * 1024 ** 2 + 1) }, itunesFiles[1]]);
@@ -1227,14 +1278,14 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await upload(importOptions, [uploadFile])).status, 201);
   await fs.writeFile(localXmlPath, xml.replace('</plist>', `${' '.repeat(21 * 1024 ** 2)}</plist>`));
   await fs.writeFile(localZipPath, originalZip);
-  const largeLocalImport = await call('/api/jobs/import?background=true', 'POST', credentials.Owner[0], localOptions);
+  const largeLocalImport = await call('/api/jobs/import?background=true', 'POST', credentials.Admin[0], localOptions);
   assert.equal(largeLocalImport.status, 202, largeLocalImport.text);
   assert.equal(largeLocalImport.body.status, 'running');
   const progressRoute = `/api/jobs/import/logs/${largeLocalImport.body.importId}`;
   assert.equal((await call(progressRoute, 'GET', credentials.Other[0])).status, 404);
   let progress;
   for (let attempt = 0; attempt < 100; attempt++) {
-    const response = await call(progressRoute, 'GET', credentials.Owner[0]);
+    const response = await call(progressRoute, 'GET', credentials.Admin[0]);
     assert.equal(response.status, 200, response.text);
     progress = response.body;
     if (progress.status !== 'running') break;

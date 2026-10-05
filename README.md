@@ -177,8 +177,13 @@ matched WAV is converted once, even when it belongs to several playlists.
 The source ZIP and XML remain unchanged. Other media and direct **Files** uploads
 are preserved without transcoding. Conversion requires FFmpeg (included in Docker).
 
-New imports appear as completed jobs and in your music library; imported jobs
-cannot be rerun. Imports into existing playlists require owner or contributor access.
+New imports appear as completed jobs and in the destination user's music library;
+imported jobs cannot be rerun. Regular users upload to their own library. Admins
+can choose an approved User or Admin in the **Library owner** dropdown for Files,
+uploaded iTunes libraries, and local imports. Shared, pending, and revoked accounts
+cannot receive imports. Changing the owner reloads that user's playlist choices.
+New jobs belong to the selected user, not the admin who starts the import. Imports
+into existing playlists require the destination user's owner or contributor access.
 
 MP2 (MPEG Layer II) audio is preserved for imports, downloads,
 and public sharing; browsers without MP2 decoding support must save the file
@@ -207,8 +212,9 @@ playlist creation, and cleanup. The import ID correlates with timestamped
 with `docker compose logs -f app`. Full errors and stack traces are server-only;
 logs can contain media paths and track names, so redact these before sharing.
 
-`GET /api/jobs/import/logs/:importId` returns progress for the importing account
-only. Clients can supply a UUID via `POST /api/jobs/import?importId=<uuid>` to
+`GET /api/jobs/import/logs/:importId` returns progress only to the account that
+started the import, including an admin importing for another user. The log records
+the selected library owner. Clients can supply a UUID via `POST /api/jobs/import?importId=<uuid>` to
 poll while the request runs. The response also includes `importId`. Browser
 logs retain the latest 200 entries of each account's latest import in memory,
 for up to an hour after completion, with at most 20 accounts retained. Restarting
@@ -216,7 +222,7 @@ the server clears them; server output retains the full log according to your
 logging configuration.
 
 The dialog submits local imports with `?background=true`, receiving HTTP 202
-with `{importId, status: "running"}` after the source files are checked. Processing
+with `{importId, status: "running"}` after the destination user and source files are checked. Processing
 continues in the server process; the progress endpoint returns `status` and,
 after cleanup, either `result` (imported file count and playlist IDs/titles) or
 `error`. This avoids holding a request open through long local imports. Clients
@@ -231,7 +237,7 @@ and 1,000 directly uploaded files. Uploaded iTunes libraries are limited to
 Playlist links do not add to the media-copy size limit. Limits are enforced by the server as well as the
 upload form where applicable.
 
-**Import from local** bypasses these upload and processing caps, allowing large
+The admin-only **Import from local** option bypasses these upload and processing caps, allowing large
 archives such as an 18 GB ZIP. File validation and path protections still apply.
 Uploads and extraction use temporary disk storage, cleaned after each request;
 XML parsing uses memory. Allow enough server disk space and memory for extracted
@@ -242,13 +248,17 @@ File validation, unsafe archive-path checks, and the existing 5,000-entry
 library constraint remain. There is no library-wide song-link count limit,
 including for uploaded and local iTunes imports. Request-size limits and the
 5,000-song limit per bulk transfer request still apply. At most two imports run
-concurrently, one per user.
+concurrently, one per initiating account and one writer per destination library.
 
 The authenticated `POST /api/jobs/import` endpoint accepts multipart form data:
 `mode=files`, `createNew=true`, `playlistTitle`, and repeated `files` fields;
 or `createNew=false` with `playlistId` instead of `playlistTitle`.
 For iTunes, send `mode=itunes`, `xml`, and `media`. Session cookies, PATs and
 bearer tokens use the same authentication as the existing jobs API.
+An optional `userId` selects the destination library; only admins may specify
+another user. Omitting it imports into the authenticated user's library.
+`GET /api/jobs/import/playlists?userId=<id>` returns only the eligible destination
+playlists' IDs, titles, and statuses; regular users may query only their own account.
 
 ### Movie playback
 
@@ -286,8 +296,9 @@ Rebuild/recreate the app after updating the code or mount:
 docker compose up -d --build
 ```
 
-In **Jobs > Import media > iTunes library > Import from local**, refresh the
-file list, select the XML and ZIP, then choose **Import**. Only regular files
+As an admin, open **Jobs > Import media > iTunes library > Import from local**,
+choose the **Library owner**, refresh the file list, select the XML and ZIP, then
+choose **Import**. Only regular files
 directly in the folder are listed; subfolders and symbolic links are excluded.
 Finish copying both files before importing, and do not replace them while an
 import is running. After a successful local import, both source files move to
@@ -299,8 +310,8 @@ failure rolls back the imported playlists. Both folders must be writable.
 Local import sends only filenames to the server, so an 18 GB ZIP does not pass
 through the browser or incur an extra uploaded ZIP copy. Extraction and imported
 media still need server disk space and processing time; keep the page open
-until completion. Reverse proxies may need longer response timeouts. All approved
-users can list and import from this shared folder, so place only intended music
+until completion. Reverse proxies may need longer response timeouts. Only admins
+can list and import from this shared folder, so place only intended music
 imports there. Archiving across separate volumes temporarily needs space for a
 second copy of the XML and ZIP.
 
@@ -314,7 +325,9 @@ the source folder. Compose mounts the completed folder at
 `GET /api/jobs/import/local` returns `xmlFiles` and `zipFiles` with names and
 sizes. For local imports, `POST /api/jobs/import` accepts JSON:
 `{"mode":"itunes","source":"local","xmlName":"Library.xml","zipName":"itunes.zip"}`.
-Both endpoints require the same authentication as uploaded imports.
+Include `userId` to assign the local import to another eligible user. Both local
+endpoints require an authenticated admin (session cookie, Bearer session, or admin PAT).
+Non-admin local listings and submissions return `403`.
 
 ## Export your library
 
@@ -588,8 +601,9 @@ Shared user, check the libraries they may read, and choose **Save access**. Choi
 are the organizer's own library and their accepted linked users' libraries. An
 organizer cannot change account approval, credentials, roles, or another organizer's
 Shared users. Pending accounts can be configured but cannot log in before approval.
-Admins can change the organizer under **Admin > All users > User details**;
-reassignment clears existing grants. **Administrator managed** retains the previous
+Admins can change the organizer directly in a Shared user's row under **Admin > All users**
+or from that user's details. Select the **Organizer** dropdown and confirm the change;
+reassignment clears existing library grants. **Administrator managed** retains the previous
 admin-only grant workflow, allowing any approved User or Admin library.
 
 Shared users can switch between their granted

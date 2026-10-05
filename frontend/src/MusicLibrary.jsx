@@ -941,7 +941,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     {folderDialog && <FolderDialog folder={folderDialog.folder} parentId={folderDialog.parentId} folders={possibleFolders(folderDialog.folder?.id)} saving={saving} onSave={saveFolder} onClose={() => setFolderDialog(null)} />}
     {renamingPlaylist && <RenamePlaylistDialog playlist={renamingPlaylist} saving={saving} onSave={renamePlaylist} onClose={() => setRenamingPlaylist(null)} />}
     {addingPlaylist && <AddPlaylistDialog user={user} request={request} confirm={confirm} onAdded={playlistAdded} onClose={() => setAddingPlaylist(false)} />}
-    {importing && <ImportMusic request={request} initialPlaylistId={selected?.type === 'playlist' ? selectedId : ''} onClose={() => setImporting(false)} onImported={() => setRefresh((value) => value + 1)} />}
+    {importing && <ImportMusic user={user} request={request} initialPlaylistId={selected?.type === 'playlist' ? selectedId : ''} onClose={() => setImporting(false)} onImported={() => setRefresh((value) => value + 1)} />}
     {exportingLibrary && <ExportLibraryDialog request={request} onClose={() => setExportingLibrary(false)} />}
     {movingSong && <LibraryDestinationDialog title="Move song" summary={movingSong.name} label="Move song" destinations={entries.filter((entry) => entry.type === 'playlist' && entry.id !== movingSong.playlistId).map((entry) => ({
       id: entry.id, title: `${entry.parentId ? `${folderPath(entryMap.get(entry.parentId))} / ` : ''}${entryTitle(entry)}`

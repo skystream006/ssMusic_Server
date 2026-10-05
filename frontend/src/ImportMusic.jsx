@@ -3,9 +3,14 @@ import { Check, FileAudio, FileArchive, FileCode, HardDrive, RefreshCw, Upload, 
 import { formatBytes } from './SongActions.jsx';
 import { mediaAccept } from '../../src/media.js';
 
-export default function ImportMusic({ request, onClose, onImported, initialPlaylistId = '' }) {
+export default function ImportMusic({ user, request, onClose, onImported, initialPlaylistId = '' }) {
   const dialogRef = useRef(null);
   const headingId = useId();
+  const isAdmin = user?.role === 'admin';
+  const [ownerId, setOwnerId] = useState(user?.id || '');
+  const [owners, setOwners] = useState(null);
+  const [ownerError, setOwnerError] = useState('');
+  const [ownerRevision, setOwnerRevision] = useState(0);
   const [mode, setMode] = useState('files');
   const [playlists, setPlaylists] = useState(null);
   const [playlistId, setPlaylistId] = useState(initialPlaylistId);
@@ -32,6 +37,8 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
   const [logError, setLogError] = useState('');
   const logRef = useRef(null);
   const followLog = useRef(true);
+  const local = isAdmin && mode === 'itunes' && itunesSource === 'local';
+  const importOwner = isAdmin ? owners?.find((owner) => owner.id === ownerId) : user;
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -41,9 +48,22 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
   }, []);
 
   useEffect(() => {
+    if (!isAdmin) return;
     let active = true;
+    setOwners(null);
+    setOwnerError('');
+    request('/api/admin/users').then((result) => {
+      if (active) setOwners(result.users.filter((account) => account.status === 'approved' && account.role !== 'shared'));
+    }).catch((failure) => { if (active) setOwnerError(failure.message); });
+    return () => { active = false; };
+  }, [isAdmin, ownerRevision, request]);
+
+  useEffect(() => {
+    let active = true;
+    setPlaylists(null);
     setLoadError('');
-    request('/api/library').then((library) => {
+    const query = isAdmin && ownerId ? `?${new URLSearchParams({ userId: ownerId })}` : '';
+    request(`/api/jobs/import/playlists${query}`).then((library) => {
       if (!active) return;
       const available = library.playlists.filter((playlist) => !['running', 'queued'].includes(playlist.status));
       setPlaylists(available);
@@ -51,10 +71,10 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
       if (!available.length) setCreateNew(true);
     }).catch((failure) => { if (active) setLoadError(failure.message); });
     return () => { active = false; };
-  }, [revision]);
+  }, [ownerId, isAdmin, revision, request]);
 
   useEffect(() => {
-    if (mode !== 'itunes' || itunesSource !== 'local') return;
+    if (!local) return;
     let active = true;
     setLocalLoading(true);
     setLocalError('');
@@ -66,7 +86,7 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     }).catch((failure) => { if (active) { setLocalError(failure.message); setLocalFiles(null); } })
       .finally(() => { if (active) setLocalLoading(false); });
     return () => { active = false; };
-  }, [mode, itunesSource, localRevision]);
+  }, [local, localRevision, request]);
 
   useEffect(() => {
     if (!importId) return;
@@ -115,12 +135,12 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
 
   async function submit(event) {
     event.preventDefault();
-    if (submitting) return;
+    if (submitting || !ready) return;
     setError('');
     let options;
-    if (mode === 'itunes' && itunesSource === 'local') {
+    if (local) {
       options = { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'itunes', source: 'local', xmlName: localXml, zipName: localZip }) };
+        body: JSON.stringify({ mode: 'itunes', source: 'local', xmlName: localXml, zipName: localZip, userId: ownerId }) };
     } else {
       const selected = mode === 'files' ? files : [xml, media].filter(Boolean);
       if (selected.reduce((total, file) => total + file.size, 0) > 2 * 1024 ** 3) {
@@ -137,6 +157,7 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
       }
       const body = new FormData();
       body.set('mode', mode);
+      if (isAdmin) body.set('userId', ownerId);
       if (mode === 'files') {
         body.set('createNew', String(createNew));
         if (createNew) body.set('playlistTitle', playlistTitle.trim());
@@ -157,7 +178,7 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     setMonitoring(false);
     let monitorProgress = false;
     try {
-      const background = mode === 'itunes' && itunesSource === 'local';
+      const background = local;
       const imported = await request(`/api/jobs/import${nextImportId ? `?importId=${nextImportId}${background ? '&background=true' : ''}` : ''}`, options);
       if (imported.status === 'running') {
         monitorProgress = true;
@@ -175,10 +196,11 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     } finally { if (!monitorProgress) setSubmitting(false); }
   }
 
-  const ready = mode === 'files'
-    ? files.length > 0 && (createNew ? Boolean(playlistTitle.trim()) : Boolean(playlistId))
-    : itunesSource === 'local' ? Boolean(localXml && localZip && localFiles && !localLoading && !localError) : Boolean(xml && media);
-  const expanded = mode === 'itunes' && itunesSource === 'local' && Boolean(importId);
+  const ownerReady = !isAdmin || Boolean(importOwner && !ownerError);
+  const ready = ownerReady && (mode === 'files'
+    ? playlists !== null && !loadError && files.length > 0 && (createNew ? Boolean(playlistTitle.trim()) : Boolean(playlistId))
+    : local ? Boolean(localXml && localZip && localFiles && !localLoading && !localError) : Boolean(xml && media));
+  const expanded = local && Boolean(importId);
 
   const logPanel = importId && <section className="import-log-panel" aria-label="Import diagnostics">
     <h3>Import log</h3>
@@ -205,11 +227,29 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
     </div>
     {result ? <>
       <p className="notice success" role="status"><Check size={18} />Imported {result.importedFiles} {result.importedFiles === 1 ? 'file' : 'files'} into {result.jobs.length} {result.jobs.length === 1 ? 'playlist' : 'playlists'}.</p>
+      {isAdmin && <p className="metadata-filename">Library owner: {importOwner?.name || ownerId}</p>}
       <ul className="import-results">{result.jobs.map((job) => <li key={job.id}><a href={`/job/${encodeURIComponent(job.id)}`}>{job.playlistTitle}</a></li>)}</ul>
       {logPanel}
       <div className="dialog-actions"><button className="primary-button" type="button" onClick={onClose}><Check size={17} />Done</button></div>
     </> : <form onSubmit={submit}>
       <fieldset className="import-fields" disabled={submitting} hidden={expanded && submitting}>
+        {isAdmin && <>
+          <label className="import-field import-owner">Library owner
+            <select aria-label="Library owner" value={importOwner ? ownerId : ''} disabled={owners === null} required onChange={(event) => {
+              setOwnerId(event.target.value);
+              setPlaylists(null);
+              setPlaylistId('');
+              setCreateNew(false);
+              setError('');
+            }}>
+              <option value="">{owners === null ? 'Loading users...' : owners.length ? 'Select a library owner' : 'No eligible users'}</option>
+              {owners?.map((owner) => <option key={owner.id} value={owner.id}>{owner.name}{owner.id === user.id ? ' (you)' : ''}</option>)}
+            </select>
+          </label>
+          {ownerError && <div className="notice error" role="alert">{ownerError}
+            <button className="music-icon-button" type="button" aria-label="Reload library owners" title="Reload library owners" onClick={() => setOwnerRevision((value) => value + 1)}><RefreshCw size={16} /></button>
+          </div>}
+        </>}
         <div className="import-modes" role="group" aria-label="Import source">
           <button type="button" aria-pressed={mode === 'files'} onClick={() => { if (mode !== 'files') { setMode('files'); setFiles([]); setError(''); } }}><FileAudio size={17} />Files</button>
           <button type="button" aria-pressed={mode === 'itunes'} onClick={() => { if (mode !== 'itunes') { setMode('itunes'); setXml(null); setMedia(null); setError(''); } }}><FileArchive size={17} />iTunes library</button>
@@ -230,11 +270,11 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
             {files.length > 0 && <small>{files.length} {files.length === 1 ? 'file' : 'files'} / {formatBytes(files.reduce((size, file) => size + file.size, 0))}</small>}
           </label>
         </div> : <div className="import-itunes-options">
-          <div className="import-modes" role="group" aria-label="iTunes import location">
+          {isAdmin && <div className="import-modes" role="group" aria-label="iTunes import location">
             <button type="button" aria-pressed={itunesSource === 'upload'} onClick={() => { if (itunesSource !== 'upload') { setItunesSource('upload'); setXml(null); setMedia(null); setError(''); } }}><Upload size={17} />Upload files</button>
             <button type="button" aria-pressed={itunesSource === 'local'} onClick={() => { setItunesSource('local'); setError(''); }}><HardDrive size={17} />Import from local</button>
-          </div>
-          {itunesSource === 'local' ? <>
+          </div>}
+          {local ? <>
             <div className="import-storage-heading"><span>Local storage</span>
               <button className="music-icon-button" type="button" title="Refresh local files" aria-label="Refresh local files" disabled={localLoading} onClick={() => setLocalRevision((value) => value + 1)}><RefreshCw className={localLoading ? 'spin' : undefined} size={17} /></button>
             </div>
@@ -263,11 +303,12 @@ export default function ImportMusic({ request, onClose, onImported, initialPlayl
         </div>}
       </fieldset>
       {expanded && submitting && <div className="import-local-summary">
+        <span>Library owner: {importOwner?.name || ownerId}</span>
         <span><FileCode size={16} />{localXml}</span>
         <span><FileArchive size={16} />{localZip}</span>
       </div>}
       {error && <p className="notice error" role="alert">{error}</p>}
-      {submitting && <p className="import-progress" role="status"><RefreshCw className="spin" size={17} />{mode === 'itunes' && itunesSource === 'local' ? 'Processing local library...' : 'Importing media...'}</p>}
+      {submitting && <p className="import-progress" role="status"><RefreshCw className="spin" size={17} />{local ? 'Processing local library...' : 'Importing media...'}</p>}
       {logPanel}
       <div className="dialog-actions">
         <button className="secondary-button" type="button" disabled={submitting} onClick={onClose}>Cancel</button>

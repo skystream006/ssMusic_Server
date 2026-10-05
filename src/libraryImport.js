@@ -16,12 +16,14 @@ import { getLibrary, linkLibraryJob, setLibrary } from './libraryStore.js';
 import { individualPlaylistNames, individualVideosId, songKey } from './library.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
+import { getUser } from './authStore.js';
 
 const maxUploadBytes = 2 * 1024 ** 3;
 const maxAudioBytes = 512 * 1024 ** 2;
 const maxXmlBytes = 20 * 1024 ** 2;
 const maxExpandedBytes = 4 * 1024 ** 3;
 const activeImports = new Set();
+const activeLibraryImports = new Set();
 const activeLocalFiles = new Set();
 const importProgress = new Map();
 const importLogLifetime = 60 * 60 * 1000;
@@ -30,6 +32,18 @@ const libraryJobs = async (user) => (await getJobs(user.id)).filter((job) => job
   || job.contributors?.some((contributor) => contributor.id === user.id));
 
 const importStorageRoot = () => path.resolve(process.env.IMPORT_STORAGE_ROOT || path.join(process.cwd(), 'import-storage'));
+
+export async function resolveImportUser(actor, userId) {
+  if (userId !== undefined && (typeof userId !== 'string' || !userId)) throw failure('Select a valid library owner');
+  if (actor.role === 'shared') throw failure('Shared accounts cannot import libraries', 403);
+  if (userId === undefined || userId === actor.id) return actor;
+  if (actor.role !== 'admin') throw failure('Only administrators can import for another user', 403);
+  const user = await getUser(userId);
+  if (!user || user.status !== 'approved' || user.role === 'shared') {
+    throw failure('Select an approved, non-Shared library owner');
+  }
+  return user;
+}
 
 async function archiveLocalImportFiles(files) {
   const destination = path.resolve(process.env.IMPORT_STORAGE_COMPLETED_ROOT || path.join(importStorageRoot(), '..', 'import-storage-completed'));
@@ -440,6 +454,9 @@ export async function importItunesLibrary(xml, media, user, { local = false, rep
 }
 
 export async function handleLibraryImport(req, res) {
+  if (req.is('application/json') && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Administrator access is required to import local libraries' });
+  }
   if (activeImports.has(req.user.id) || activeImports.size >= 2) return res.status(409).json({ error: 'Another import is in progress. Try again shortly.' });
   const requestedId = req.query?.importId;
   if (requestedId !== undefined && (typeof requestedId !== 'string'
@@ -462,7 +479,7 @@ export async function handleLibraryImport(req, res) {
     console[level === 'error' ? 'error' : 'info'](`[library-import] ${JSON.stringify(entry)}`);
     const visibleDetails = Object.fromEntries(Object.entries(details).filter(([key]) => [
       'source', 'xml', 'xmlBytes', 'zip', 'zipBytes', 'bytes', 'mediaFiles', 'entries', 'files', 'linked', 'skipped',
-      'entry', 'tracks', 'playlists', 'trackId', 'track', 'location', 'matched', 'playlist', 'index', 'total', 'jobId', 'status'
+      'entry', 'tracks', 'playlists', 'trackId', 'track', 'location', 'matched', 'playlist', 'index', 'total', 'jobId', 'status', 'ownerId', 'owner'
     ].includes(key)).map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 1024) : value]));
     progress.entries.push({ time: entry.time, elapsedMs: entry.elapsedMs, stage, level, message, details: visibleDetails });
     if (progress.entries.length > 200) progress.entries.shift();
@@ -470,14 +487,24 @@ export async function handleLibraryImport(req, res) {
   let result;
   let status = 201;
   let acknowledged = false;
+  let libraryOwnerId;
   const lockedFiles = [];
   report('receive', 'Import started', { source: req.is('application/json') ? 'local' : 'upload' });
   try {
     req.importDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-import-'));
     let itunesFiles;
     const local = Boolean(req.is('application/json'));
+    if (local && (req.body?.mode !== 'itunes' || req.body?.source !== 'local')) throw failure('Choose an iTunes local storage import');
+    if (!local) {
+      req.importBytes = 0;
+      await new Promise((resolve, reject) => upload(req, res, (error) => error ? reject(error) : resolve()));
+    }
+    const importUser = await resolveImportUser(req.user, req.body?.userId);
+    if (activeLibraryImports.has(importUser.id)) throw failure('Another import is writing to this library. Try again shortly.', 409);
+    activeLibraryImports.add(importUser.id);
+    libraryOwnerId = importUser.id;
+    report('receive', 'Library owner selected', { ownerId: importUser.id, owner: importUser.name });
     if (local) {
-      if (req.body?.mode !== 'itunes' || req.body?.source !== 'local') throw failure('Choose an iTunes local storage import');
       itunesFiles = {
         xml: await resolveLocalImportFile(req.body.xmlName, '.xml'),
         media: await resolveLocalImportFile(req.body.zipName, '.zip')
@@ -489,19 +516,15 @@ export async function handleLibraryImport(req, res) {
         acknowledged = true;
         res.status(202).json({ importId, status: 'running' });
       }
-    } else {
-      req.importBytes = 0;
-      await new Promise((resolve, reject) => upload(req, res, (error) => error ? reject(error) : resolve()));
-      if (req.body?.mode === 'itunes' && req.files?.xml?.length === 1 && req.files?.media?.length === 1 && !req.files?.files) {
-        itunesFiles = { xml: req.files.xml[0], media: req.files.media[0] };
-      }
+    } else if (req.body?.mode === 'itunes' && req.files?.xml?.length === 1 && req.files?.media?.length === 1 && !req.files?.files) {
+      itunesFiles = { xml: req.files.xml[0], media: req.files.media[0] };
     }
     if (itunesFiles) {
       report('read', 'Reading import files', { xml: itunesFiles.xml.name || itunesFiles.xml.originalname,
         xmlBytes: itunesFiles.xml.size, zip: itunesFiles.media.name || itunesFiles.media.originalname, zipBytes: itunesFiles.media.size });
       const xml = await fs.readFile(itunesFiles.xml.path, 'utf8');
       const media = await extractImportMedia(itunesFiles.media.path, req.importDirectory, { local, report });
-      result = await importItunesLibrary(xml, media, req.user, { local, report, complete: async () => {
+      result = await importItunesLibrary(xml, media, importUser, { local, report, complete: async () => {
         if (!local) return;
         report('archive', 'Moving XML and ZIP to completed import storage');
         await archiveLocalImportFiles(Object.values(itunesFiles));
@@ -513,7 +536,7 @@ export async function handleLibraryImport(req, res) {
         const name = /^[\x00-\xff]*$/.test(file.originalname) && isUtf8(bytes) ? bytes.toString('utf8') : file.originalname;
         return { name, path: file.path };
       });
-      result = await importUploadedFiles(files, req.body, req.user);
+      result = await importUploadedFiles(files, req.body, importUser);
     } else throw failure('Choose files, or upload both an iTunes XML and a media ZIP');
   } catch (error) {
     status = error instanceof multer.MulterError
@@ -527,6 +550,7 @@ export async function handleLibraryImport(req, res) {
       report('cleanup', 'Unable to remove temporary import files', { error: error.message }, 'error');
     });
     for (const file of lockedFiles) activeLocalFiles.delete(file);
+    if (libraryOwnerId) activeLibraryImports.delete(libraryOwnerId);
     activeImports.delete(req.user.id);
   }
   report('complete', status === 201 ? 'Import completed' : 'Import ended with errors', { status,

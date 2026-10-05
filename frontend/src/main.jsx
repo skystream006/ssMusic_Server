@@ -49,7 +49,7 @@ import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
 import PublicMedia from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
 import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
-import { LibraryAccessList, LinkedUsers, OrganizedSharedUsers, SettingsTabs, SharedRegistrationFields, UsernameForm } from './AccountSettings.jsx';
+import { LibraryAccessList, LinkedUsers, OrganizedSharedUsers, OrganizerControl, SettingsTabs, SharedRegistrationFields, UsernameForm } from './AccountSettings.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import JobPlaylistDialog from './JobPlaylistDialog.jsx';
 import { submitJobUrl } from './jobSubmission.js';
@@ -454,7 +454,7 @@ function JobsPage() {
   return (
     <AppShell>
       {dialog}
-      {importing && <ImportMusic request={request} onClose={() => setImporting(false)} onImported={() => setRevision((current) => current + 1)} />}
+      {importing && <ImportMusic user={user} request={request} onClose={() => setImporting(false)} onImported={() => setRevision((current) => current + 1)} />}
       {addingJob && <JobPlaylistDialog job={addingJob} request={request} onClose={() => setAddingJob(null)} onAdded={(count, title) => {
         setAddingJob(null);
         setPlaylistMessage(count ? `Added ${count} ${count === 1 ? 'file' : 'files'} to "${title}".` : `All files are already in "${title}".`);
@@ -1315,11 +1315,8 @@ function UserSettingsPage({ userId }) {
         }} />
         {userId && <label className="role-control"><span>Role</span><select aria-label="User role" value={details.role} disabled={Boolean(busy) || userId === currentUser.id}
           onChange={(event) => saveAccess({ role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option><option value="shared">Shared</option></select></label>}
-        {userId && details.role === 'shared' && <label className="role-control"><span>Organizer</span>
-          <select aria-label="Shared user organizer" value={details.organizerId || ''} disabled={Boolean(busy)} onChange={(event) => saveAccess({ organizerId: event.target.value || null })}>
-            <option value="">Administrator managed</option>
-            {organizerUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
-          </select></label>}
+        {userId && <OrganizerControl user={details} users={organizerUsers} disabled={Boolean(busy)} confirm={confirm}
+          onChange={(organizerId) => saveAccess({ organizerId })} />}
       </section>
       {accessSaved && <p className="notice success" role="status">Access saved.</p>}
       {userId && details.role === 'shared' && <SharedLibraryAccess users={libraryUsers} selectedIds={sharedUserIds}
@@ -1454,7 +1451,11 @@ function AdminPage() {
       <div className="section-title"><div><span>02</span><h2>All users</h2></div><strong>{users.length}</strong></div>
       <div className="user-list">{users.map((user) => <article className="user-row" key={user.id}>
         <a className="user-details-link" href={`/admin/users/${encodeURIComponent(user.id)}`} aria-label={`View ${user.name} details`}><UserIdentity user={user} /><ExternalLink size={16} /></a>
-        <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option><option value="shared">Shared</option></select></label>
+        <div className="user-role-controls">
+          <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option><option value="shared">Shared</option></select></label>
+          <OrganizerControl user={user} users={users} disabled={Boolean(updating)} confirm={confirm}
+            onChange={(organizerId) => changeUser(user.id, { organizerId })} />
+        </div>
         <div className="user-actions">
           {user.status === 'approved'
             ? <button className="danger-button compact-button" disabled={Boolean(updating) || user.id === currentUser.id} onClick={() => changeUser(user.id, { status: 'revoked' })} type="button"><UserX size={16} />Revoke</button>

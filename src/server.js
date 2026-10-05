@@ -17,7 +17,7 @@ import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenan
 import { findNoVocals, individualPlaylistId, orderFiles, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
-import { getImportProgress, handleLibraryImport, listLocalImportFiles } from './libraryImport.js';
+import { getImportProgress, handleLibraryImport, listLocalImportFiles, resolveImportUser } from './libraryImport.js';
 import { createReplaceFileHandler } from './replaceFile.js';
 import { countMediaFiles, createMediaCountMonitor, getSystemHealth } from './health.js';
 import { isYouTubeUrl } from './utils.js';
@@ -338,13 +338,23 @@ app.post('/api/library/songs/remove', async (req, res) => {
 
 app.post('/api/jobs/import', handleLibraryImport);
 
+app.get('/api/jobs/import/playlists', async (req, res) => {
+  try {
+    const owner = await resolveImportUser(req.user, req.query.userId);
+    const library = await readPostgresLibrary(openDatabase(), owner.id);
+    return res.json({ user: { id: owner.id, name: owner.name },
+      playlists: library.playlists.filter((playlist) => !['running', 'queued'].includes(playlist.status))
+        .map(({ id, playlistTitle, status }) => ({ id, playlistTitle, status })) });
+  } catch (error) { return res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Unable to list import playlists' }); }
+});
+
 app.get('/api/jobs/import/logs/:importId', (req, res) => {
   const progress = getImportProgress(req.user.id, req.params.importId);
   if (!progress) return res.status(404).json({ error: 'Import log is no longer available' });
   res.json(progress);
 });
 
-app.get('/api/jobs/import/local', async (_req, res) => {
+app.get('/api/jobs/import/local', requireAdmin, async (_req, res) => {
   try { res.json(await listLocalImportFiles()); }
   catch (error) { res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Unable to list local import files' }); }
 });
