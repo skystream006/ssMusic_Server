@@ -20,7 +20,7 @@ import { createLibraryBackupService } from './libraryBackup.js';
 import { prepareLibraryExport } from './libraryExport.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles, resolveImportUser } from './libraryImport.js';
 import { createReplaceFileHandler } from './replaceFile.js';
-import { countMediaFiles, createMediaCountMonitor, getSystemHealth } from './health.js';
+import { scanMediaFiles, createMediaCountMonitor, getSystemHealth } from './health.js';
 import { isYouTubeUrl } from './utils.js';
 import { scheduleDailyMaintenance, scheduleLibraryBackups } from './scheduler.js';
 import { attachUser, registerAuthRoutes, requireAdmin, requireAuth } from './auth.js';
@@ -28,7 +28,7 @@ import { restrictSharedAccess, sharedLibraryUsers, libraryReaderId, canReadShare
 import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
-import { adminMediaSharesRouter, createMediaShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
+import { adminMediaSharesRouter, createMediaShare, createPlaylistShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
 import { canReadFile, visibleJob } from './privacy.js';
 import { attachSearchKey, requireSearchKey, searchSongs } from './songSearch.js';
 
@@ -110,7 +110,7 @@ app.use('/api', (req, res, next) => {
   return (artwork ? artworkLimiter : apiLimiter)(req, res, next);
 });
 app.use('/api/public', publicMediaRouter());
-app.get('/share/:token', (_req, res) => {
+app.get(['/share/:token', '/share/playlist/:token'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'), { cacheControl: false });
 });
 app.use('/api/jobs/:id/files/:name/metadata', express.json({ limit: '3mb' }));
@@ -120,7 +120,8 @@ app.use(express.static(path.resolve(process.cwd(), 'public')));
 app.use(attachUser);
 app.use(attachSearchKey);
 app.use(restrictSharedAccess);
-registerAuthRoutes(app, authLimiters);
+const mediaCount = createMediaCountMonitor(async () => scanMediaFiles((await getJobs())));
+registerAuthRoutes(app, authLimiters, () => mediaCount.getStatus());
 app.use('/api/admin/media-shares', requireAdmin, mediaShareHeaders, adminMediaSharesRouter());
 app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
@@ -616,6 +617,7 @@ app.post('/api/jobs/:id/files/:name/replace', createReplaceFileHandler((job, ord
   listJobFiles(visibleJob(job, user), order, names)));
 
 app.post('/api/jobs/:id/files/:name/share', createMediaShare);
+app.post('/api/library/playlists/:id/share', createPlaylistShare);
 
 app.post('/api/jobs/:id/files/:name/transcribe', async (req, res) => {
   try {
@@ -745,13 +747,12 @@ app.delete('/api/jobs/:id', async (req, res) => {
   }
 });
 
-const mediaCount = createMediaCountMonitor(async () => countMediaFiles((await getJobs())));
-
 app.get('/api/health', async (_req, res) => {
   try {
     const data = await getSystemHealth();
+    const { totalFiles, totalBytes, scannedAt, scanning, error } = mediaCount.getStatus();
     res.set('Cache-Control', 'no-store');
-    return res.json({ ...data, media: (await mediaCount.getStatus()) });
+    return res.json({ ...data, media: { totalFiles, totalBytes, scannedAt, scanning, error } });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

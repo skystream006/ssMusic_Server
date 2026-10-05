@@ -23,6 +23,8 @@ let replaceSongFile;
 let formatLyricsForCopy;
 let LyricsEditor;
 let ExportLibraryDialog;
+let EditPlaylistDialog;
+let FolderDialog;
 let ImportMusic;
 let canRunJobAction;
 let canChangePrivacy;
@@ -43,13 +45,54 @@ before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, PlaybackProvider, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
-  ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
+  ({ ExportLibraryDialog, EditPlaylistDialog, FolderDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
   ({ UsernameForm, LibraryAccessList, SharedRegistrationFields, SettingsTabs, LinkedUsers, OrganizedSharedUsers, OrganizerControl } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('playlist editing groups name, privacy, location, job details and public sharing', () => {
+  const props = { playlist: { id: 'mix', playlistTitle: 'My mix', private: false }, parentId: 'folder',
+    folders: [{ id: 'folder', path: 'Collection' }], canRename: true, canChangePrivacy: true, canShare: true };
+  const html = renderToStaticMarkup(createElement(EditPlaylistDialog, props));
+  assert.match(html, />Edit playlist</);
+  assert.match(html, /type="checkbox"/);
+  assert.match(html, /Make private/);
+  assert.match(html, /<option value="folder" selected="">Collection/);
+  assert.match(html, /href="\/job\/mix"/);
+  assert.match(html, /Share Playlist/);
+  assert.match(html, /Save changes/);
+  assert.doesNotMatch(html, /library-organize/);
+  const protectedHtml = renderToStaticMarkup(createElement(EditPlaylistDialog, { ...props,
+    playlist: { ...props.playlist, protected: true, private: true }, canRename: false, canShare: false }));
+  assert.doesNotMatch(protectedHtml, /Open job details/);
+  assert.match(protectedHtml, /type="checkbox"[^>]*checked=""/);
+  assert.match(protectedHtml, /disabled="" title="Private playlists cannot be shared"/);
+  const linked = renderToStaticMarkup(createElement(EditPlaylistDialog, { ...props, canRename: false, canChangePrivacy: false }));
+  assert.match(linked, /type="checkbox" disabled=""/);
+  assert.match(linked, /<select[^>]*>/);
+});
+
+test('folder editing includes location and deletion, but new folders cannot be deleted', () => {
+  const props = { folder: { id: 'folder', name: 'Collection' }, parentId: null, folders: [] };
+  const html = renderToStaticMarkup(createElement(FolderDialog, props));
+  assert.match(html, />Edit folder</);
+  assert.match(html, />Location</);
+  assert.match(html, />Delete folder</);
+  assert.doesNotMatch(renderToStaticMarkup(createElement(FolderDialog, { ...props, folder: null })), />Delete folder</);
+});
+
+test('playlist sharing reuses the public-link dialog without treating the playlist as a song', () => {
+  const html = renderToStaticMarkup(createElement(ShareMediaDialog, { playlist: { id: 'mix', playlistTitle: 'My mix' } }));
+  assert.match(html, />Share Playlist</);
+  assert.match(html, /the public songs in this playlist/);
+  assert.match(html, /Generate public link/);
+  const privateHtml = renderToStaticMarkup(createElement(ShareMediaDialog, { playlist: { id: 'mix', private: true } }));
+  assert.match(privateHtml, /Private playlists cannot be shared/);
+  assert.match(privateHtml, /type="button" disabled=""/);
+});
 
 test('admin organizer control lists only eligible users and preserves selection and disabled states', () => {
   const user = { id: 'car', name: 'Car player', role: 'shared', organizerId: 'owner' };

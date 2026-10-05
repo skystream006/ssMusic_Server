@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS media_shares (
 );
 CREATE INDEX IF NOT EXISTS media_shares_song ON media_shares(job_id, name);
 CREATE INDEX IF NOT EXISTS media_shares_creator ON media_shares(creator_id);
+CREATE TABLE IF NOT EXISTS playlist_shares (
+  token_hash TEXT PRIMARY KEY CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  playlist_id TEXT NOT NULL,
+  job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+  creator_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE
+);
+ALTER TABLE playlist_shares ADD COLUMN IF NOT EXISTS job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS playlist_shares_creator ON playlist_shares(creator_id, playlist_id);
 CREATE TABLE IF NOT EXISTS library_entries (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, id TEXT NOT NULL,
   parent_id TEXT, entry_type TEXT NOT NULL, position INTEGER NOT NULL, data JSONB NOT NULL,

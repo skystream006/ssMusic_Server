@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Headphones, Maximize2, Music2, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, Headphones, ListMusic, Maximize2, Music2, Play, SkipBack, SkipForward, X } from 'lucide-react';
 import LyricTimeline from './LyricTimeline.jsx';
 import appIcon from './assets/ic_launcher.png';
 import './publicMedia.css';
@@ -120,8 +120,11 @@ export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onS
 
 export function PublicMediaView({
   media, loading = false, error = '', playbackError = '', elapsed = 0, duration = 0,
-  audioRef, onProgress, onPlaybackError, onPlaybackReady, onSeek, onRetry
+  audioRef, onProgress, onPlaybackError, onPlaybackReady, onSeek, onRetry,
+  embedded = false, autoPlay = false, onEnded, navigation
 }) {
+  const Container = embedded ? 'section' : 'main';
+  const Heading = embedded ? 'h2' : 'h1';
   const title = displayText(media?.title, displayText(media?.name, 'Shared audio'));
   const knownDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   const position = Math.min(knownDuration, Math.max(0, Number.isFinite(elapsed) ? elapsed : 0));
@@ -132,18 +135,18 @@ export function PublicMediaView({
   const plainLyrics = typeof media?.uslt === 'string' ? media.uslt : '';
   const rating = Number(media?.rating);
 
-  return <main className="public-media-page" aria-busy={loading}>
-    <header className="public-media-masthead">
+  return <Container className={`public-media-page${embedded ? ' public-media-embedded' : ''}`} aria-busy={loading}>
+    {!embedded && <header className="public-media-masthead">
       <span className="public-media-brand"><img src={appIcon} alt="" width="34" height="34" />ssMusic</span>
       <span className="public-media-badge"><Headphones size={14} aria-hidden="true" />Shared listening</span>
-    </header>
+    </header>}
 
     {loading ? <section className="public-media-state" role="status">
       <Music2 size={32} aria-hidden="true" />
-      <h1>Loading shared audio…</h1>
+      <Heading>Loading shared audio…</Heading>
       <p>Getting the track and its details ready.</p>
     </section> : error || !media ? <section className="public-media-state" role="alert">
-      <h1>Shared audio unavailable</h1>
+      <Heading>Shared audio unavailable</Heading>
       <p>{error || 'This link may have expired, been revoked, or the file is no longer available.'}</p>
       {onRetry && <button className="secondary-button public-media-retry" type="button" onClick={onRetry}>Try again</button>}
     </section> : <>
@@ -154,7 +157,7 @@ export function PublicMediaView({
         </div>
         <div className="public-media-summary">
           <p className="public-media-eyebrow">A track shared with you</p>
-          <h1 id="public-media-title">{title}</h1>
+          <Heading id="public-media-title">{title}</Heading>
           <p className="public-media-artist">{displayText(media.artist, 'Unknown artist')}</p>
           <p className="public-media-album">{displayText(media.album, 'Unknown album')}</p>
           <p className="public-media-file"><span>{displayText(media.name, 'Audio file')}</span><span>{formatSize(media.sizeBytes)}</span></p>
@@ -167,12 +170,12 @@ export function PublicMediaView({
       <section className="public-media-player public-media-panel" aria-labelledby="public-media-listen">
         <div className="public-media-section-heading">
           <h2 id="public-media-listen">Listen</h2>
-          <span>Press play when you’re ready</span>
+          {navigation || <span>Press play when you’re ready</span>}
         </div>
-        {media.streamUrl ? <audio ref={audioRef} controls preload="metadata" src={media.streamUrl}
+        {media.streamUrl ? <audio ref={audioRef} controls preload="metadata" src={media.streamUrl} autoPlay={autoPlay || undefined}
           aria-label={`Audio player for ${title}`}
           onLoadedMetadata={onProgress} onDurationChange={onProgress} onTimeUpdate={onProgress}
-          onSeeked={onProgress} onEnded={onProgress} onError={onPlaybackError}
+          onSeeked={onProgress} onEnded={onEnded || onProgress} onError={onPlaybackError}
           onCanPlay={onPlaybackReady} onPlaying={onPlaybackReady}>
           Your browser does not support audio playback. Use Save file to listen locally.
         </audio> : <p className="public-media-error" role="alert">Audio playback is unavailable. You can still save the file.</p>}
@@ -194,17 +197,18 @@ export function PublicMediaView({
           canSeek={canSeek} onSeek={onSeek} />
       </div>
     </>}
-    <footer className="public-media-footer">Shared for listening. No account needed.</footer>
-  </main>;
+    {!embedded && <footer className="public-media-footer">Shared for listening. No account needed.</footer>}
+  </Container>;
 }
 
-function PublicMediaPage({ token, request }) {
+function PublicMediaPage({ token, request, endpoint, embedded = false, autoPlay = false, onEnded, navigation, playbackRef }) {
   const [state, setState] = useState({ loading: true, media: null, error: '' });
   const [attempt, setAttempt] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playbackError, setPlaybackError] = useState('');
-  const audioRef = useRef(null);
+  const internalAudioRef = useRef(null);
+  const audioRef = playbackRef || internalAudioRef;
 
   useEffect(() => {
     let active = true;
@@ -214,8 +218,8 @@ function PublicMediaPage({ token, request }) {
     setPlaybackError('');
     async function load() {
       try {
-        if (!token) throw new Error('Missing link');
-        const media = await request(`/api/public/media/${encodeURIComponent(token)}`);
+        if (!token && !endpoint) throw new Error('Missing link');
+        const media = await request(endpoint || `/api/public/media/${encodeURIComponent(token)}`);
         if (!media || typeof media !== 'object' || !media.streamUrl || !media.downloadUrl) throw new Error('Unavailable media');
         if (active) setState({ loading: false, media, error: '' });
       } catch {
@@ -225,7 +229,7 @@ function PublicMediaPage({ token, request }) {
     }
     load();
     return () => { active = false; };
-  }, [token, request, attempt]);
+  }, [token, endpoint, request, attempt]);
 
   function updateProgress(event) {
     const audio = event.currentTarget;
@@ -243,9 +247,108 @@ function PublicMediaPage({ token, request }) {
   }
 
   return <PublicMediaView {...state} audioRef={audioRef} elapsed={elapsed} duration={duration} playbackError={playbackError}
+    embedded={embedded} autoPlay={autoPlay} onEnded={onEnded} navigation={navigation}
     onProgress={updateProgress} onSeek={seek}
     onPlaybackError={() => setPlaybackError('This audio could not be played. The link may no longer be available, or your browser may not support this format. Try saving the file to listen locally.')}
-    onPlaybackReady={() => setPlaybackError('')} onRetry={token ? () => setAttempt((value) => value + 1) : undefined} />;
+    onPlaybackReady={() => setPlaybackError('')} onRetry={token || endpoint ? () => setAttempt((value) => value + 1) : undefined} />;
+}
+
+export function PublicPlaylistView({ playlist, loading, error, selectedId, onSelect, onPage, onRetry, children }) {
+  return <main className="public-media-page public-playlist-page" aria-busy={loading}>
+    <header className="public-media-masthead">
+      <span className="public-media-brand"><img src={appIcon} alt="" width="34" height="34" />ssMusic</span>
+      <span className="public-media-badge"><ListMusic size={16} aria-hidden="true" />Shared playlist</span>
+    </header>
+    <header className="public-playlist-heading"><h1>{displayText(playlist?.title, 'Shared playlist')}</h1>
+      {playlist && <span>{playlist.total.toLocaleString()} {playlist.total === 1 ? 'song' : 'songs'}</span>}
+    </header>
+    {loading ? <p className="public-media-empty" role="status">Loading shared playlist...</p>
+      : error ? <section className="public-media-state" role="alert"><h2>Playlist unavailable</h2><p>{error}</p>
+        <button className="secondary-button" type="button" onClick={onRetry}>Try again</button></section>
+        : playlist?.tracks.length ? <div className="public-playlist-layout">
+          <section className="public-playlist-tracks" aria-label="Playlist songs">
+            <ol start={(playlist.page - 1) * playlist.pageSize + 1}>
+              {playlist.tracks.map((track, index) => <li key={track.id}>
+                <button className="public-playlist-track" type="button" aria-current={track.id === selectedId ? 'true' : undefined}
+                  aria-label={`Play ${displayText(track.title, track.name)}`} title={displayText(track.title, track.name)} onClick={() => onSelect(track)}>
+                  <span className="public-playlist-number">{track.id === selectedId ? <Play size={16} aria-hidden="true" /> : (playlist.page - 1) * playlist.pageSize + index + 1}</span>
+                  <span><strong>{displayText(track.title, track.name)}</strong><small>{displayText(track.artist, 'Unknown artist')}</small></span>
+                </button>
+                <a className="music-icon-button" href={track.downloadUrl} download={track.name} title={`Save ${track.name}`} aria-label={`Save ${track.name}`}><Download size={17} /></a>
+              </li>)}
+            </ol>
+            <nav className="track-pagination" aria-label="Playlist pages">
+              <span>Page {playlist.page} of {playlist.totalPages}</span><div>
+                <button className="music-icon-button" type="button" title="Previous page" aria-label="Previous playlist page" disabled={playlist.page <= 1} onClick={() => onPage(playlist.page - 1)}><ChevronLeft size={18} /></button>
+                <button className="music-icon-button" type="button" title="Next page" aria-label="Next playlist page" disabled={playlist.page >= playlist.totalPages} onClick={() => onPage(playlist.page + 1)}><ChevronRight size={18} /></button>
+              </div>
+            </nav>
+          </section>
+          <div className="public-playlist-current">{children}</div>
+        </div> : <p className="public-media-empty" role="status">No public songs are available in this playlist.</p>}
+    <footer className="public-media-footer">Shared for listening. No account needed.</footer>
+  </main>;
+}
+
+export function PublicPlaylist({ token, request }) {
+  const [page, setPage] = useState(1);
+  const [state, setState] = useState({ playlist: null, loading: true, error: '' });
+  const [selectedId, setSelectedId] = useState(null);
+  const [autoPlay, setAutoPlay] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const selectLast = useRef(false);
+  const playbackRef = useRef(null);
+
+  useEffect(() => {
+    let active = true;
+    setState({ playlist: null, loading: true, error: '' });
+    request(`/api/public/playlists/${encodeURIComponent(token)}?page=${page}`).then((playlist) => {
+      if (!Array.isArray(playlist?.tracks)) throw new Error('Unavailable playlist');
+      if (!active) return;
+      setState({ playlist, loading: false, error: '' });
+      const preferLast = selectLast.current;
+      selectLast.current = false;
+      setSelectedId((current) => playlist.tracks.some((track) => track.id === current) ? current
+        : (preferLast ? playlist.tracks.at(-1)?.id : playlist.tracks[0]?.id) || null);
+    }).catch(() => {
+      if (active) setState({ playlist: null, loading: false,
+        error: 'This playlist is no longer available. Check your connection or ask the sender for a new link.' });
+    });
+    return () => { active = false; };
+  }, [token, request, page, attempt]);
+
+  const playlist = state.playlist;
+  const index = playlist?.tracks.findIndex((track) => track.id === selectedId) ?? -1;
+  const selected = playlist?.tracks[index];
+  const hasPrevious = Boolean(selected && (index > 0 || playlist.page > 1));
+  const hasNext = Boolean(selected && (index < playlist.tracks.length - 1 || playlist.page < playlist.totalPages));
+
+  function choose(track) {
+    if (track.id === selectedId) playbackRef.current?.play().catch(() => {});
+    else { setAutoPlay(true); setSelectedId(track.id); }
+  }
+
+  function advance(direction) {
+    if (!selected || (direction < 0 ? !hasPrevious : !hasNext)) return;
+    setAutoPlay(true);
+    const next = playlist.tracks[index + direction];
+    if (next) setSelectedId(next.id);
+    else {
+      selectLast.current = direction < 0;
+      setSelectedId(null);
+      setPage(playlist.page + direction);
+    }
+  }
+
+  return <PublicPlaylistView {...state} selectedId={selectedId} onSelect={choose}
+    onPage={(next) => { selectLast.current = false; setAutoPlay(false); setSelectedId(null); setPage(next); }}
+    onRetry={() => setAttempt((value) => value + 1)}>
+    {selected && <PublicMediaPage key={selected.id} endpoint={selected.metadataUrl} request={request}
+      embedded autoPlay={autoPlay} playbackRef={playbackRef} onEnded={() => advance(1)} navigation={<div className="public-playlist-transport">
+        <button className="music-icon-button" type="button" title="Previous song" aria-label="Previous playlist song" disabled={!hasPrevious} onClick={() => advance(-1)}><SkipBack size={19} /></button>
+        <button className="music-icon-button" type="button" title="Next song" aria-label="Next playlist song" disabled={!hasNext} onClick={() => advance(1)}><SkipForward size={19} /></button>
+      </div>} />}
+  </PublicPlaylistView>;
 }
 
 export default function PublicMedia({ token, request }) {

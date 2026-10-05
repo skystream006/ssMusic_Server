@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { countMediaFiles, createMediaCountMonitor, getTranscriptionHealth } from '../src/health.js';
+import { countMediaFiles, scanMediaFiles, createMediaCountMonitor, getTranscriptionHealth } from '../src/health.js';
 import { audioExtensions, videoExtensions } from '../src/media.js';
 
 test('media count includes audio and video across jobs, without counting links, missing files or non-media', async (context) => {
@@ -27,59 +27,92 @@ test('media count includes audio and video across jobs, without counting links, 
   assert.equal(await countMediaFiles([]), 0);
 });
 
-test('media count scans at startup and hourly, while status reads retain the last scan timestamp', async (context) => {
+test('media usage groups actual song files and storage by owner without counting playlist references twice', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-media-usage-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const firstDirectory = path.join(directory, 'first');
+  const secondDirectory = path.join(directory, 'second');
+  await fs.mkdir(path.join(firstDirectory, '[NoVocals]'), { recursive: true });
+  await fs.mkdir(secondDirectory);
+  await fs.mkdir(path.join(firstDirectory, 'directory.mp3'));
+  const fixtures = [
+    ['first/Song.MP3', 10], ['first/[NoVocals]/Song.flac', 7], ['first/Video.mp4', 20],
+    ['first/cover.jpg', 100], ['second/Song.mp3', 5], ['unowned.mp3', 3]
+  ];
+  await Promise.all(fixtures.map(([name, size]) => fs.writeFile(path.join(directory, name), Buffer.alloc(size))));
+  const jobs = [
+    { initiatedBy: { id: 'first' }, contributors: [{ id: 'second' }], outputDir: firstDirectory,
+      files: ['Song.MP3', '[NoVocals]/Song.flac', 'Video.mp4', 'cover.jpg', 'missing.mp3', 'directory.mp3', '../unowned.mp3'] },
+    { initiatedBy: { id: 'first' }, outputDir: path.join(firstDirectory, '.'), files: ['Song.MP3', 'Video.mp4'] },
+    { initiatedBy: { id: 'second' }, outputDir: secondDirectory, files: ['Song.mp3', 'Song.mp3'] },
+    { initiatedBy: { id: 'linked-playlist' }, outputDir: firstDirectory, files: [] },
+    { initiatedBy: { id: 'pending' }, files: [] },
+    { outputDir: directory, files: ['unowned.mp3'] }
+  ];
+  assert.deepEqual(await scanMediaFiles(jobs), {
+    totalFiles: 5, totalBytes: 45,
+    byUser: {
+      first: { totalFiles: 3, songFiles: 2, totalBytes: 37 },
+      second: { totalFiles: 1, songFiles: 1, totalBytes: 5 }
+    }
+  });
+  assert.deepEqual(await scanMediaFiles([]), { totalFiles: 0, totalBytes: 0, byUser: {} });
+});
+
+test('media usage scans at startup and daily, while status reads retain the last scan timestamp', async (context) => {
   context.mock.timers.enable({ apis: ['setInterval', 'Date'], now: new Date('2026-09-23T10:00:00Z') });
-  let count = 12;
-  const scan = context.mock.fn(async () => count);
+  let usage = { totalFiles: 12, totalBytes: 100, byUser: { owner: { totalFiles: 12, songFiles: 12, totalBytes: 100 } } };
+  const scan = context.mock.fn(async () => usage);
   const monitor = createMediaCountMonitor(scan);
   context.after(monitor.stop);
   assert.equal((await monitor.getStatus()).scanning, true);
   await monitor.ready;
-  const initial = { totalFiles: 12, scannedAt: '2026-09-23T10:00:00.000Z', scanning: false, error: null };
+  const initial = { ...usage, scannedAt: '2026-09-23T10:00:00.000Z', scanning: false, error: null };
   assert.deepEqual((await monitor.getStatus()), initial);
-  count = 20;
-  context.mock.timers.tick(3_599_999);
+  usage = { totalFiles: 20, totalBytes: 200, byUser: { owner: { totalFiles: 20, songFiles: 20, totalBytes: 200 } } };
+  context.mock.timers.tick(86_399_999);
   for (let index = 0; index < 10; index += 1) assert.deepEqual((await monitor.getStatus()), initial);
   assert.equal(scan.mock.callCount(), 1);
   context.mock.timers.tick(1);
   await Promise.resolve();
   assert.equal(scan.mock.callCount(), 2);
-  assert.deepEqual((await monitor.getStatus()), { ...initial, totalFiles: 20, scannedAt: '2026-09-23T11:00:00.000Z' });
+  assert.deepEqual((await monitor.getStatus()), { ...initial, ...usage, scannedAt: '2026-09-24T10:00:00.000Z' });
   monitor.stop();
-  context.mock.timers.tick(3_600_000);
+  context.mock.timers.tick(86_400_000);
   assert.equal(scan.mock.callCount(), 2);
 });
 
-test('media scan failures preserve the last successful count and timestamp until an hourly retry succeeds', async (context) => {
+test('media scan failures preserve the last successful usage and timestamp until a daily retry succeeds', async (context) => {
   context.mock.timers.enable({ apis: ['setInterval', 'Date'], now: new Date('2026-09-23T10:00:00Z') });
   let failing = false;
+  const usage = { totalFiles: 2, totalBytes: 10, byUser: { owner: { totalFiles: 2, songFiles: 2, totalBytes: 10 } } };
   const monitor = createMediaCountMonitor(async () => {
     if (failing) throw new Error('Private filesystem path');
-    return 0;
+    return usage;
   });
   context.after(monitor.stop);
   await monitor.ready;
   const initial = (await monitor.getStatus());
   failing = true;
-  context.mock.timers.tick(3_600_000);
+  context.mock.timers.tick(86_400_000);
   await Promise.resolve();
   assert.deepEqual((await monitor.getStatus()), { ...initial, error: 'Media count scan failed' });
   failing = false;
-  context.mock.timers.tick(3_600_000);
+  context.mock.timers.tick(86_400_000);
   await Promise.resolve();
-  assert.deepEqual((await monitor.getStatus()), { ...initial, scannedAt: '2026-09-23T12:00:00.000Z' });
+  assert.deepEqual((await monitor.getStatus()), { ...initial, scannedAt: '2026-09-25T10:00:00.000Z' });
 });
 
-test('hourly ticks never overlap a pending media count scan', async (context) => {
+test('daily ticks never overlap a pending media usage scan', async (context) => {
   context.mock.timers.enable({ apis: ['setInterval'] });
   let complete;
   const scan = context.mock.fn(() => new Promise((resolve) => { complete = resolve; }));
   const monitor = createMediaCountMonitor(scan);
   context.after(monitor.stop);
-  context.mock.timers.tick(7_200_000);
+  context.mock.timers.tick(172_800_000);
   assert.equal(scan.mock.callCount(), 1);
-  assert.deepEqual((await monitor.getStatus()), { totalFiles: null, scannedAt: null, scanning: true, error: null });
-  complete(5);
+  assert.deepEqual((await monitor.getStatus()), { totalFiles: null, totalBytes: null, byUser: null, scannedAt: null, scanning: true, error: null });
+  complete({ totalFiles: 5, totalBytes: 10, byUser: {} });
   await monitor.ready;
   assert.equal((await monitor.getStatus()).totalFiles, 5);
 });

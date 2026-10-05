@@ -2,45 +2,66 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import si from 'systeminformation';
-import { isPlayableFile } from './media.js';
+import { mediaType } from './media.js';
 
 export async function countMediaFiles(jobs) {
-  const files = new Set();
+  return (await scanMediaFiles(jobs)).totalFiles;
+}
+
+export async function scanMediaFiles(jobs) {
+  const files = new Map();
   for (const job of jobs) {
     if (!job.outputDir) continue;
     for (const name of job.files || []) {
-      if (typeof name !== 'string' || !isPlayableFile(name)) continue;
+      if (typeof name !== 'string') continue;
+      const type = mediaType(name);
+      if (!type) continue;
       const filePath = path.resolve(job.outputDir, name);
       const relative = path.relative(job.outputDir, filePath);
       if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) continue;
-      files.add(process.platform === 'win32' ? filePath.toLowerCase() : filePath);
+      const key = process.platform === 'win32' ? filePath.toLowerCase() : filePath;
+      if (!files.has(key)) files.set(key, { filePath, type, owners: new Set() });
+      const ownerId = job.initiatedBy?.id;
+      if (typeof ownerId === 'string' && ownerId) files.get(key).owners.add(ownerId);
     }
   }
-  let total = 0;
-  for (const filePath of files) {
+  let totalFiles = 0;
+  let totalBytes = 0;
+  const byUser = new Map();
+  for (const { filePath, type, owners } of files.values()) {
     try {
-      if ((await fs.lstat(filePath)).isFile()) total += 1;
+      const stats = await fs.lstat(filePath);
+      if (!stats.isFile()) continue;
+      totalFiles += 1;
+      totalBytes += stats.size;
+      for (const ownerId of owners) {
+        if (!byUser.has(ownerId)) byUser.set(ownerId, { totalFiles: 0, songFiles: 0, totalBytes: 0 });
+        const usage = byUser.get(ownerId);
+        usage.totalFiles += 1;
+        if (type === 'audio') usage.songFiles += 1;
+        usage.totalBytes += stats.size;
+      }
     } catch (error) {
       if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
     }
   }
-  return total;
+  return { totalFiles, totalBytes, byUser: Object.fromEntries(byUser) };
 }
 
 export function createMediaCountMonitor(scan) {
-  let state = { totalFiles: null, scannedAt: null, scanning: false, error: null };
+  let state = { totalFiles: null, totalBytes: null, byUser: null, scannedAt: null, scanning: false, error: null };
   async function refresh() {
     if (state.scanning) return;
     state = { ...state, scanning: true };
     try {
-      const totalFiles = await scan();
-      state = { totalFiles, scannedAt: new Date().toISOString(), scanning: false, error: null };
+      const usage = await scan();
+      state = { ...usage, scannedAt: new Date().toISOString(), scanning: false, error: null };
     } catch {
       state = { ...state, scanning: false, error: 'Media count scan failed' };
     }
   }
   const ready = refresh();
-  const timer = setInterval(refresh, 60 * 60 * 1000);
+  const timer = setInterval(refresh, 24 * 60 * 60 * 1000);
   timer.unref?.();
   return { ready, getStatus: () => ({ ...state }), stop: () => clearInterval(timer) };
 }

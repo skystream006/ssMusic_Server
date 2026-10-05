@@ -116,7 +116,7 @@ export function canRunJobAction(user, job, action) {
   return false;
 }
 
-export function ShareMediaDialog({ file, jobId, request, onClose }) {
+export function ShareMediaDialog({ file, jobId, playlist, request, onClose }) {
   const dialogRef = useRef(null);
   const linkRef = useRef(null);
   const generatingRef = useRef(false);
@@ -125,7 +125,7 @@ export function ShareMediaDialog({ file, jobId, request, onClose }) {
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
-  const privateFile = getFilePrivacy(file).private;
+  const privateFile = playlist ? Boolean(playlist.private) : getFilePrivacy(file).private;
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -140,7 +140,9 @@ export function ShareMediaDialog({ file, jobId, request, onClose }) {
     setGenerating(true);
     setError('');
     try {
-      const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/share`, { method: 'POST' });
+      const endpoint = playlist ? `/api/library/playlists/${encodeURIComponent(playlist.id)}/share`
+        : `/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/share`;
+      const result = await request(endpoint, { method: 'POST' });
       setUrl(new URL(result.url, window.location.origin).href);
     } catch (shareError) { setError(shareError.message); }
     finally { generatingRef.current = false; setGenerating(false); }
@@ -160,14 +162,14 @@ export function ShareMediaDialog({ file, jobId, request, onClose }) {
 
   return <dialog ref={dialogRef} className="confirmation-dialog share-media-dialog" aria-labelledby={headingId}
     aria-describedby={`${headingId}-help`} onCancel={(event) => { event.preventDefault(); if (!generatingRef.current) onClose(); }}>
-    <h2 id={headingId}>Share Media</h2>
-    <p className="metadata-filename">{file.title || file.name}</p>
-    <p id={`${headingId}-help`}>Anyone with this link can listen, read lyrics and metadata, and save this file without signing in. They cannot edit it. Only share content you have permission to share.</p>
-    {privateFile && <p className="notice warning" role="status">Private files cannot be shared. Only the owner can access this file.</p>}
+    <h2 id={headingId}>{playlist ? 'Share Playlist' : 'Share Media'}</h2>
+    <p className="metadata-filename">{playlist ? playlist.playlistTitle : file.title || file.name}</p>
+    <p id={`${headingId}-help`}>Anyone with this link can listen, read lyrics and metadata, and save {playlist ? 'the public songs in this playlist' : 'this file'} without signing in. They cannot edit {playlist ? 'the playlist' : 'it'}. Only share content you have permission to share.</p>
+    {privateFile && <p className="notice warning" role="status">{playlist ? 'Private playlists cannot be shared. Only the owner can access this playlist.' : 'Private files cannot be shared. Only the owner can access this file.'}</p>}
     {url && !privateFile && <>
-      <label className="sr-only" htmlFor={`${headingId}-link`}>Public media link</label>
+      <label className="sr-only" htmlFor={`${headingId}-link`}>{playlist ? 'Public playlist link' : 'Public media link'}</label>
       <textarea ref={linkRef} id={`${headingId}-link`} readOnly value={url} spellCheck={false} onFocus={(event) => event.target.select()} />
-      <p><a href={url} target="_blank" rel="noopener noreferrer"><ExternalLink size={15} /> Open media page</a></p>
+      <p><a href={url} target="_blank" rel="noopener noreferrer"><ExternalLink size={15} /> {playlist ? 'Open playlist page' : 'Open media page'}</a></p>
     </>}
     {error && <p className="notice error" role="alert">{error}</p>}
     <div className="dialog-actions">

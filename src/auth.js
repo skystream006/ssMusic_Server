@@ -174,7 +174,7 @@ export function requireAdmin(req, res, next) {
 
 const noLimit = (_req, _res, next) => next();
 
-export function registerAuthRoutes(app, limiters = {}) {
+export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => null) {
   const registrationOptionsLimiter = limiters.registrationOptions || noLimit;
   const registrationVerifyLimiter = limiters.registrationVerify || noLimit;
   const loginOptionsLimiter = limiters.loginOptions || noLimit;
@@ -510,7 +510,18 @@ export function registerAuthRoutes(app, limiters = {}) {
   });
 
   app.get('/api/admin/users', requireAdmin, async (_req, res) => {
-    res.json({ users: (await listUsers()) });
+    const users = await listUsers();
+    const usage = getMediaUsage();
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      users: users.map((user) => ({
+        ...user,
+        mediaUsage: usage?.byUser
+          ? usage.byUser[user.id] ?? { totalFiles: 0, songFiles: 0, totalBytes: 0 }
+          : null
+      })),
+      mediaScan: usage ? { scannedAt: usage.scannedAt, scanning: usage.scanning, error: usage.error } : null
+    });
   });
 
   app.get('/api/admin/users/:id', requireSession, requireAdmin, async (req, res) => {

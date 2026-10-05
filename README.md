@@ -106,7 +106,7 @@ Supplying a key alongside a session or PAT never upgrades its read-only scope.
 Treat this key as a server-wide read credential, not a public browser key;
 rotate it by replacing the environment value and restarting the server.
 
-## Public song links
+## Public media links
 
 Open a song's **Share Media** action, review the privacy warning, then choose
 **Generate public link** and **Copy link**. Recipients can open the link without
@@ -124,6 +124,25 @@ download that one audio file without signing in, and see its embedded metadata,
 artwork, rating, and lyrics. Other songs, playlists, job details, and editing
 remain private; videos and non-audio files cannot be shared this way.
 
+For a playlist, open its row's pencil, choose **Share Playlist** in **Edit playlist**,
+then **Generate public link** and **Copy link**. Save any pending edits first.
+`POST /api/library/playlists/:id/share` returns `{ "url": "/share/playlist/<token>" }`.
+The public page lists songs in the creator's saved playlist order, 50 per page,
+with playback, previous/next controls, individual downloads, metadata, and lyrics.
+Opening the page does not autoplay; choosing a song starts playback and completed
+songs advance to the next, including across pages. Recipients cannot edit the playlist.
+
+Playlist links follow current membership and order rather than a frozen copy.
+Only public audio files the creator is allowed to share are included; linked songs
+belonging to other users are excluded unless the creator has contributor or admin
+permission. Private playlists cannot be shared. Making a playlist or song private,
+removing a song, or revoking the creator's access blocks subsequent public requests.
+Moving, renaming, and rebuilding the library retain links; deleting the backing job
+permanently removes its links, including if the same job ID is later restored.
+`GET /api/public/playlists/:token?page=1` returns the title, pagination, and tracks
+with opaque IDs and public metadata, stream, and download URLs. Internal job IDs,
+filesystem paths, and account details are not included.
+
 Treat the link as a secret: recipients can forward it and downloaded copies
 cannot be recalled. Links persist across restarts, have no scheduled expiry,
 and only token hashes are stored in PostgreSQL. Deleting the source song/job or
@@ -135,7 +154,7 @@ share URLs in proxy logs or analytics.
 
 Public shared-media pages always use the midnight-blue dark palette, independently
 of account appearance settings. Administrators can open **Admin > Shared links**
-to browse accessible generated links, 50 per page, with the song, source playlist,
+to browse accessible generated links, 50 per page, with the song or playlist, source job,
 creator, and unique link ID. Use the delete icon and confirm to revoke a link.
 Links to another owner's private media are omitted, even for administrators.
 This blocks subsequent metadata, streaming, and download requests for that link;
@@ -145,6 +164,7 @@ Existing public URLs cannot be recovered because only token hashes are stored.
 The admin-only API is `GET /api/admin/media-shares?page=1` and
 `DELETE /api/admin/media-shares/:id`, using the ID returned by the listing.
 Deletion returns HTTP 204, or 404 if the link is already gone.
+Playlist rows include `kind: "playlist"` and use the same listing and deletion API.
 
 `GET /api/public/media/:token` returns flat song metadata plus `name`,
 `sizeBytes`, `streamUrl`, and `downloadUrl`; streaming supports HTTP ranges and
@@ -1051,10 +1071,12 @@ Existing jobs receive readable titles derived from their folder or song names;
 their output folders and download archives are not renamed or moved.
 Owners and administrators can use the pencil beside **Playlist Title** in job
 details to rename an idle job, or use the pencil beside a playlist in the Music
-sidebar without selecting it. Row pencils are available outside reorder mode;
-the selected playlist's details also retain **Rename playlist**. On mobile,
-renaming keeps the Playlists view open. Save the new name or cancel
-to leave it unchanged. Contributors cannot rename playlists, and the permanent
+sidebar without selecting it. **Edit playlist** groups the name, **Make private**,
+**Location**, **Open job details**, and **Share Playlist** controls. Row pencils are
+available outside reorder mode. Privacy remains owner-only, and linked playlists
+can be moved within your own library without granting permission to rename them.
+On mobile, editing keeps the Playlists view open. Save changes or cancel to leave
+the pending edits unchanged. Contributors cannot rename playlists, and the permanent
 **Individual Songs** playlist cannot be renamed. Custom titles
 survive reruns and never rename output directories. The API is
 `PATCH /api/jobs/:id/title` with `{ "playlistTitle": "My favorites" }`;
@@ -1145,11 +1167,13 @@ full video playlists keep their own playlist entries.
 
 Use **New playlist folder** to create a folder. A selected folder becomes the
 default location for new subfolders. Folders support nesting up to 32 levels.
-The selected item's **Location** menu moves it to any valid folder or back to
-the library root. Drag a playlist onto the center of a folder to move it inside,
+Open the pencil beside a playlist or folder to edit it. The dialog's **Location**
+menu moves it to any valid folder or back to the library root; folder dialogs exclude
+the folder itself and its descendants. Drag a playlist onto the center of a folder to move it inside,
 or onto the upper/lower half of another playlist to place it before/after that
-playlist. Folders can be renamed; deleting a folder moves its
-immediate contents to its parent without deleting any music.
+playlist. **Edit folder** also includes **Delete folder**, with confirmation;
+deleting a folder moves its immediate contents to its parent without deleting any music.
+These controls no longer occupy a separate organize section beneath the playlist tree.
 
 Use **Select playlists** beside the Playlists heading to select several playlists,
 then **Move selected playlists to folder** to move them together to a folder or
@@ -1564,15 +1588,25 @@ including imported media and NoVocals audio. Playlist links and repeated referen
 to the same file path count once; separate stored copies count separately. Metadata,
 artwork, archives, incomplete downloads, and missing files are excluded.
 
-A scan starts at server startup and every hour afterward, even with Health closed.
+A scan starts at server startup and every 24 hours afterward, even with Health closed.
 Health refreshes read the cached result without starting another scan. **Last scanned**
 shows the last successful scan's completion date and time in your browser's local
 time zone. During a scan, the previous result remains visible. A failed scan retains
-that result and its timestamp, shows an error, and retries at the next hourly scan.
+that result and its timestamp, shows an error, and retries at the next daily scan.
 The cache is in memory and resets on restart. `GET /api/health` includes
-`media: { totalFiles, scannedAt, scanning, error }`; `totalFiles` and the ISO timestamp
+`media: { totalFiles, totalBytes, scannedAt, scanning, error }`; the totals and ISO timestamp
 `scannedAt` are `null` until the first successful scan. Untracked files outside the
 job inventory are not included. Live system metrics still refresh every three seconds.
+
+**Admin > All users** shows each user's **Song files** (audio only) and **Storage**
+(audio and video bytes) from the same daily scan, with its status and last successful
+completion time. Usage belongs to the job's initiating user, not contributors or
+users with linked-library access. Repeated file references count once per owner.
+Users without owned media show zero after a successful scan; before then, values
+are unavailable. The admin-only `GET /api/admin/users` response adds
+`users[].mediaUsage: { totalFiles, songFiles, totalBytes }` and
+`mediaScan: { scannedAt, scanning, error }`. `mediaUsage` is `null` until a scan succeeds;
+the non-admin health response does not expose the per-user breakdown.
 
 The server probes `TRANSCRIPTION_ENDPOINT` with
 a HEAD request and a two-second timeout on each health refresh; no audio is sent.

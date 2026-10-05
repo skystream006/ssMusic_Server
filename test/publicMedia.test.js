@@ -8,6 +8,8 @@ import { createServer } from 'vite';
 let server;
 let PublicMedia;
 let PublicMediaView;
+let PublicPlaylist;
+let PublicPlaylistView;
 let seekPublicAudio;
 let AdminMediaSharesView;
 let AdminArtworkThumbnails;
@@ -19,7 +21,7 @@ let appIcon;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ default: PublicMedia, PublicMediaView, seekPublicAudio } = await server.ssrLoadModule('/src/PublicMedia.jsx'));
+  ({ default: PublicMedia, PublicMediaView, PublicPlaylist, PublicPlaylistView, seekPublicAudio } = await server.ssrLoadModule('/src/PublicMedia.jsx'));
   ({ AdminMediaSharesView, AdminArtworkThumbnails, AdminArtworkThumbnailsView, watchArtworkThumbnails } = await server.ssrLoadModule('/src/AdminMediaShares.jsx'));
   ({ default: LyricTimeline, scrollToActiveLyric } = await server.ssrLoadModule('/src/LyricTimeline.jsx'));
   ({ default: appIcon } = await server.ssrLoadModule('/src/assets/ic_launcher.png'));
@@ -39,6 +41,43 @@ const media = {
 function render(props = {}) {
   return renderToStaticMarkup(createElement(PublicMediaView, { media, ...props }));
 }
+
+test('public playlists render ordered read-only songs, downloads and bounded page controls', () => {
+  const playlist = { title: 'Evening collection', page: 1, pageSize: 50, total: 51, totalPages: 2,
+    tracks: [{ id: 'first', name: 'Evening.mp3', title: 'Evening', artist: 'Quartet', downloadUrl: '/api/public/playlists/token/tracks/first/download' }] };
+  const html = renderToStaticMarkup(createElement(PublicPlaylistView, { playlist, selectedId: 'first' },
+    createElement(PublicMediaView, { media, embedded: true })));
+  assert.match(html, /Shared playlist/);
+  assert.match(html, /Evening collection/);
+  assert.match(html, /aria-label="Play Evening"/);
+  assert.match(html, /aria-current="true"/);
+  assert.match(html, /download="Evening.mp3"/);
+  assert.match(html, /aria-label="Previous playlist page" disabled=""/);
+  assert.doesNotMatch(html.match(/<button[^>]*aria-label="Next playlist page"[^>]*>/)[0], /disabled/);
+  assert.equal((html.match(/<main\b/g) || []).length, 1);
+  assert.equal((html.match(/<audio\b/g) || []).length, 1);
+  assert.equal((html.match(/public-media-brand/g) || []).length, 1);
+  assert.doesNotMatch(html, /autoPlay|autoplay|Edit playlist|Make private|\/api\/auth|<form\b/);
+});
+
+test('public playlist loading, empty and revoked states do not require authentication', () => {
+  const loading = renderToStaticMarkup(createElement(PublicPlaylist, { token: 'token', request() { assert.fail('SSR does not fetch'); } }));
+  assert.match(loading, /Loading shared playlist/);
+  const empty = renderToStaticMarkup(createElement(PublicPlaylistView, { playlist: { title: 'Empty', total: 0, tracks: [] } }));
+  assert.match(empty, /No public songs/);
+  const unavailable = renderToStaticMarkup(createElement(PublicPlaylistView, { error: 'Revoked' }));
+  assert.match(unavailable, /role="alert"/);
+  assert.match(unavailable, /Playlist unavailable/);
+  assert.doesNotMatch(unavailable, /Sign in|Log in|<audio/);
+});
+
+test('admin shared links identify playlist capabilities, including playlists without a backing job', () => {
+  const html = renderToStaticMarkup(createElement(AdminMediaSharesView, { data: { page: 1, totalPages: 1, total: 1,
+    shares: [{ id: 'a'.repeat(64), kind: 'playlist', name: 'Individual Songs', jobId: null, creatorName: 'Owner' }] } }));
+  assert.match(html, /Playlist link/);
+  assert.match(html, /aria-label="Delete shared link for Individual Songs"/);
+  assert.doesNotMatch(html, /href="\/job\/null"/);
+});
 
 test('browser and touch icons use the bundled app logo', async () => {
   const html = await fs.readFile(new URL('../frontend/index.html', import.meta.url), 'utf8');

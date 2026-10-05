@@ -399,10 +399,28 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(mediaHealth.status, 200, mediaHealth.text);
   assert.equal(mediaHealth.headers['cache-control'], 'no-store');
   assert.equal(mediaHealth.body.media.totalFiles, 9);
+  assert.equal(mediaHealth.body.media.totalBytes, 32 + taggedAudio.byteLength);
+  assert.equal(Object.hasOwn(mediaHealth.body.media, 'byUser'), false);
   assert.equal(mediaHealth.body.media.scanning, false);
   assert.equal(mediaHealth.body.media.error, null);
   assert.ok(Number.isFinite(Date.parse(mediaHealth.body.media.scannedAt)));
   assert.deepEqual((await call('/api/health', 'GET', credentials.Owner[1])).body.media, mediaHealth.body.media);
+  for (const headers of credentials.Admin) {
+    const accounts = await call('/api/admin/users', 'GET', headers);
+    assert.equal(accounts.status, 200, accounts.text);
+    assert.equal(accounts.headers['cache-control'], 'no-store');
+    assert.deepEqual(accounts.body.mediaScan, { scannedAt: mediaHealth.body.media.scannedAt, scanning: false, error: null });
+    assert.deepEqual(accounts.body.users.find((user) => user.id === users.Owner.id).mediaUsage,
+      { totalFiles: 7, songFiles: 7, totalBytes: 24 + taggedAudio.byteLength });
+    for (const name of ['Admin', 'Other', 'Pending', 'Revoked']) {
+      assert.deepEqual(accounts.body.users.find((user) => user.id === users[name].id).mediaUsage,
+        { totalFiles: 0, songFiles: 0, totalBytes: 0 });
+    }
+  }
+  assert.equal((await call('/api/admin/users')).status, 401);
+  for (const headers of [...credentials.Owner, ...credentials.Other]) {
+    assert.equal((await call('/api/admin/users', 'GET', headers)).status, 403);
+  }
   for (const route of ['/api/jobs', '/api/jobs/music/files', '/api/library', '/api/library/tracks', '/api/preferences']) {
     assert.equal((await call(route, 'GET', mobileHeaders.Owner)).status, 200);
   }

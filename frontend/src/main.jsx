@@ -49,7 +49,7 @@ import {
 import './styles.css';
 import appIcon from './assets/ic_launcher.png';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
-import PublicMedia from './PublicMedia.jsx';
+import PublicMedia, { PublicPlaylist } from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
 import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
 import { LibraryAccessList, LinkedUsers, OrganizedSharedUsers, OrganizerControl, SettingsTabs, SharedRegistrationFields, UsernameForm } from './AccountSettings.jsx';
@@ -1038,7 +1038,7 @@ function HealthMetrics() {
           value={Number.isInteger(health.media?.totalFiles) ? health.media.totalFiles.toLocaleString() : '-'}
           detail={<>Songs and videos across all users<br />
             {health.media?.scannedAt ? <>Last scanned: <time dateTime={health.media.scannedAt}>{new Date(health.media.scannedAt).toLocaleString()}</time></> : 'No completed scan'}
-            <br />{health.media?.scanning ? 'Scanning...' : health.media?.error || 'Hourly scan'}
+            <br />{health.media?.scanning ? 'Scanning...' : health.media?.error || 'Daily scan'}
           </>} />
       </section>
     </>}
@@ -1421,6 +1421,7 @@ function AdminSharedLinksPage() {
 function AdminPage() {
   const { user: currentUser } = useContext(AuthContext);
   const [users, setUsers] = useState([]);
+  const [mediaScan, setMediaScan] = useState(null);
   const [error, setError] = useState('');
   const [updating, setUpdating] = useState('');
   const { confirm, dialog } = useConfirmation();
@@ -1429,15 +1430,14 @@ function AdminPage() {
     try {
       const result = await request('/api/admin/users');
       setUsers(result.users);
+      setMediaScan(result.mediaScan);
       setError('');
     } catch (loadError) {
       setError(loadError.message);
     }
   }
 
-  useEffect(() => {
-    loadUsers();
-  }, []);
+  usePolling(loadUsers, mediaScan?.scanning ? POLL_INTERVAL : 60_000);
 
   async function changeUser(userId, changes) {
     setUpdating(userId);
@@ -1493,8 +1493,18 @@ function AdminPage() {
     </section>
     <section className="users-section">
       <div className="section-title"><div><span>02</span><h2>All users</h2></div><strong>{users.length}</strong></div>
-      <div className="user-list">{users.map((user) => <article className="user-row" key={user.id}>
+      <div className="user-scan-status" role="status">
+        <span>{mediaScan?.scanning ? <RefreshCw size={14} className="spin" aria-hidden="true" /> : <Clock3 size={14} aria-hidden="true" />}
+          {mediaScan?.scanning ? 'Scanning media...' : mediaScan?.error || (mediaScan?.scannedAt ? 'Daily media scan' : 'Awaiting media scan')}
+        </span>
+        {mediaScan?.scannedAt && <span>Last scan: <time dateTime={mediaScan.scannedAt}>{formatDate(mediaScan.scannedAt)}</time></span>}
+      </div>
+      <div className="user-list">{users.map((user) => <article className="user-row user-usage-row" key={user.id}>
         <a className="user-details-link" href={`/admin/users/${encodeURIComponent(user.id)}`} aria-label={`View ${user.name} details`}><UserIdentity user={user} /><ExternalLink size={16} /></a>
+        <dl className="user-media-usage" aria-label={`Media usage for ${user.name}`}>
+          <div><dt>Song files</dt><dd>{Number.isInteger(user.mediaUsage?.songFiles) ? user.mediaUsage.songFiles.toLocaleString() : '-'}</dd></div>
+          <div><dt>Storage</dt><dd title={user.mediaUsage ? `${user.mediaUsage.totalBytes.toLocaleString()} bytes in ${user.mediaUsage.totalFiles.toLocaleString()} audio and video files` : 'No completed scan'}>{formatBytes(user.mediaUsage?.totalBytes)}</dd></div>
+        </dl>
         <div className="user-role-controls">
           <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option><option value="shared">Shared</option></select></label>
           <OrganizerControl user={user} users={users} disabled={Boolean(updating)} confirm={confirm}
@@ -1612,7 +1622,9 @@ function App() {
 }
 
 initializeTouchControls();
+const publicPlaylistMatch = window.location.pathname.match(/^\/share\/playlist\/([^/]+)\/?$/);
 const publicMediaMatch = window.location.pathname.match(/^\/share\/([^/]+)\/?$/);
-createRoot(document.getElementById('root')).render(<StrictMode>{publicMediaMatch
+createRoot(document.getElementById('root')).render(<StrictMode>{publicPlaylistMatch
+  ? <PublicPlaylist key={publicPlaylistMatch[1]} token={publicPlaylistMatch[1]} request={request} /> : publicMediaMatch
   ? <PublicMedia token={publicMediaMatch[1]} request={request} />
   : window.location.pathname === '/app-login' ? <LoginPage appLogin /> : <App />}</StrictMode>);

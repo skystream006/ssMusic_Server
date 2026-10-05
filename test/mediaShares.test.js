@@ -231,6 +231,113 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     assert.equal(clamped.page, 1);
     assert.equal(clamped.totalPages, 1);
   });
+  await context.test('playlist links preserve membership, privacy and permissions across library edits and restarts', async (subcontext) => {
+    subcontext.after(async () => {
+      await database.prepare('DELETE FROM playlist_shares WHERE playlist_id IN ($1, $2)').run('public-playlist', 'paged-playlist');
+      await stopServer();
+      await startServer();
+    });
+    const creator = await store.registerUser('Playlist creator', 'Playlist creator', { id: 'Playlist creator', publicKey: Buffer.from('playlist'), counter: 0 });
+    await store.updateUser(creator.id, { status: 'approved' }, users.Admin.id);
+    const session = await store.createSession(creator.id);
+    const pat = await store.createPrivateAccessToken(creator.id, 'Playlist share');
+    const ownerHeaders = { Cookie: `ssmusic_session=${session.token}` };
+    const playlist = await seedJob('public-playlist', creator, ['First.mp3', 'Second.mp3', 'Hidden.mp3', 'Movie.mp4'],
+      [{ id: users.Contributor.id, name: users.Contributor.name }]);
+    await writeJob(database, { ...playlist, privateFiles: ['Hidden.mp3'] });
+    await database.prepare(`INSERT INTO library_memberships (user_id, playlist_id, job_id, name, position)
+      VALUES ($1, $2, $3, $4, 99)`).run(creator.id, playlist.id, job.id, songName);
+    const endpoint = `/api/library/playlists/${playlist.id}/share`;
+    const tokens = [];
+    for (const headers of [ownerHeaders, { Authorization: `Bearer ${session.token}` }, { 'X-PAT': pat.token }, credentials.Contributor[0]]) {
+      const response = await call(endpoint, 'POST', headers);
+      assert.equal(response.status, 201, response.text);
+      assert.match(response.body.url, /^\/share\/playlist\/[A-Za-z0-9_-]{43}$/);
+      tokens.push(response.body.url.split('/').at(-1));
+    }
+    const token = tokens[0];
+    const endpointPublic = `/api/public/playlists/${token}`;
+    const shareRows = await database.prepare('SELECT * FROM playlist_shares WHERE creator_id = $1').all(creator.id);
+    assert.ok(shareRows.some((row) => row.token_hash === hash(token)));
+    assert.ok(!JSON.stringify(shareRows).includes(token));
+    assert.equal((await call(endpoint, 'POST')).status, 401);
+    assert.equal((await call(endpoint, 'POST', credentials.Reader[0])).status, 403);
+    assert.equal((await call(endpoint, 'POST', credentials.Other[0])).status, 404);
+    const listing = await call(endpointPublic, 'GET', { Authorization: 'Bearer invalid' });
+    assert.equal(listing.status, 200, listing.text);
+    privacyHeaders(listing);
+    assert.deepEqual(listing.body.tracks.map((track) => track.name), ['First.mp3', 'Second.mp3']);
+    assert.equal(listing.body.total, 2);
+    assert.ok(!listing.body.tracks.some((track) => track.name === songName));
+    const adminLinks = await call('/api/admin/media-shares', 'GET', credentials.Admin[0]);
+    assert.equal(adminLinks.status, 200, adminLinks.text);
+    const playlistLink = adminLinks.body.shares.find((item) => item.id === hash(token));
+    assert.equal(playlistLink.kind, 'playlist');
+    assert.equal(playlistLink.creatorId, creator.id);
+    assert.equal(playlistLink.name, playlist.playlistTitle);
+    assert.equal((await call(`/api/admin/media-shares/${hash(tokens[1])}`, 'DELETE', ownerHeaders)).status, 403);
+    assert.equal((await call(`/api/admin/media-shares/${hash(tokens[1])}`, 'DELETE', credentials.Admin[0])).status, 204);
+    assert.equal((await call(`/api/public/playlists/${tokens[1]}`)).status, 404);
+    assert.equal((await call(endpointPublic)).status, 200);
+    const track = listing.body.tracks[0];
+    assert.match(track.id, /^[a-f0-9]{64}$/);
+    assert.equal(Object.hasOwn(track, 'jobId'), false);
+    const metadata = await call(track.metadataUrl);
+    assert.equal(metadata.status, 200, metadata.text);
+    assert.equal(metadata.body.title, 'Shared song');
+    assert.deepEqual((await call(track.downloadUrl)).buffer, audio);
+    const partial = await call(track.streamUrl, 'GET', { Range: 'bytes=0-4' });
+    assert.equal(partial.status, 206);
+    assert.deepEqual(partial.buffer, audio.subarray(0, 5));
+    assert.equal((await call(`${endpointPublic}/tracks/${'0'.repeat(64)}/stream`)).status, 404);
+    assert.equal((await call(`${endpointPublic}?page=0`)).status, 400);
+    assert.equal((await call(endpointPublic, 'POST', {}, {})).status, 404);
+    assert.equal((await call(`/share/playlist/${token}`)).status, 200);
+    const library = (await call('/api/library', 'GET', ownerHeaders)).body;
+    const folderId = `folder-${crypto.randomUUID()}`;
+    const folder = await call('/api/library/entries', 'POST', ownerHeaders,
+      { version: library.version, action: 'create-folder', id: folderId, name: 'Shared collection', parentId: null });
+    assert.equal(folder.status, 200, folder.text);
+    const moved = await call('/api/library/entries', 'POST', ownerHeaders,
+      { version: folder.body.version, action: 'move', id: playlist.id, parentId: folderId, targetId: null, after: false });
+    assert.equal(moved.status, 200, moved.text);
+    assert.equal((await call(`/api/jobs/${playlist.id}/title`, 'PATCH', ownerHeaders, { playlistTitle: 'Renamed collection' })).status, 200);
+    assert.equal((await call(endpointPublic)).body.title, 'Renamed collection');
+    await stopServer();
+    await startServer();
+    assert.equal((await call(track.streamUrl)).status, 200);
+    const privacyPath = `/api/library/playlists/${playlist.id}/privacy`;
+    assert.equal((await call(privacyPath, 'PATCH', ownerHeaders, { private: true })).status, 200);
+    assert.equal((await call(endpointPublic)).status, 404);
+    assert.equal((await call(track.streamUrl)).status, 404);
+    assert.equal((await call(endpoint, 'POST', ownerHeaders)).status, 404);
+    const privateLinks = (await call('/api/admin/media-shares', 'GET', credentials.Admin[0])).body;
+    assert.ok(!privateLinks.shares.some((item) => item.id === hash(token)));
+    assert.equal((await call(privacyPath, 'PATCH', ownerHeaders, { private: false })).status, 200);
+    assert.equal((await call(endpointPublic)).status, 200);
+    assert.equal((await call(`/api/jobs/${playlist.id}/contributors`, 'PUT', ownerHeaders, { userIds: [] })).status, 200);
+    assert.equal((await call(`/api/public/playlists/${tokens.at(-1)}`)).status, 404);
+    await seedJob('paged-playlist', creator, Array.from({ length: 53 }, (_, index) => `Track ${index + 1}.mp3`));
+    const paged = await call('/api/library/playlists/paged-playlist/share', 'POST', ownerHeaders);
+    assert.equal(paged.status, 201, paged.text);
+    const pagedUrl = `/api/public/playlists/${paged.body.url.split('/').at(-1)}`;
+    const firstPage = (await call(pagedUrl)).body;
+    const lastPage = (await call(`${pagedUrl}?page=999`)).body;
+    assert.equal(firstPage.tracks.length, 50);
+    assert.equal(firstPage.total, 53);
+    assert.equal(firstPage.totalPages, 2);
+    assert.equal(lastPage.page, 2);
+    assert.equal(lastPage.tracks.length, 3);
+    assert.equal(new Set([...firstPage.tracks, ...lastPage.tracks].map((track) => track.id)).size, 53);
+    assert.equal((await call('/api/jobs/paged-playlist', 'DELETE', credentials.Admin[0])).status, 204);
+    assert.equal((await call(pagedUrl)).status, 404);
+    assert.equal(await database.prepare('SELECT 1 FROM playlist_shares WHERE token_hash = $1').get(hash(paged.body.url.split('/').at(-1))), undefined);
+    await seedJob('paged-playlist', creator, ['Restored.mp3']);
+    assert.equal((await call(pagedUrl)).status, 404);
+    await store.updateUser(creator.id, { status: 'revoked' }, users.Admin.id);
+    assert.equal((await call(endpointPublic)).status, 404);
+    assert.equal((await call(track.downloadUrl)).status, 404);
+  });
   await context.test('public metadata is a flat allowlist and ignores missing, expired, malformed or shared authentication', async () => {
     await database.prepare('UPDATE sessions SET expires_at = $1 WHERE user_id = $2')
       .run('2000-01-01T00:00:00.000Z', users.Other.id);

@@ -18,7 +18,8 @@ export function AdminMediaSharesView({ data, loading, error, deleting, onRefresh
       {data?.shares.length > 0 && <ul className="admin-share-list">
         {data.shares.map((share) => <li key={share.id} className="admin-share-row">
           <div className="admin-share-song"><strong>{share.name}</strong>
-            <a href={`/job/${encodeURIComponent(share.jobId)}`}><ExternalLink size={13} />{share.playlistTitle || share.jobId}</a>
+            {share.kind === 'playlist' && <small>Playlist link</small>}
+            {share.jobId && <a href={`/job/${encodeURIComponent(share.jobId)}`}><ExternalLink size={13} />{share.playlistTitle || share.jobId}</a>}
             <details><summary>Link ID</summary><code>{share.id}</code></details>
           </div>
           <div className="admin-share-creator"><span>Created by</span><strong>{share.creatorName || 'Deleted user'}</strong></div>
@@ -63,7 +64,7 @@ export default function AdminMediaShares({ request, confirm }) {
     deletingRef.current = true;
     try {
       if (!await confirm({ title: 'Delete shared link?', action: 'delete', label: 'Delete shared link',
-        message: `Revoke the shared link for "${share.name}" created by ${share.creatorName || 'a deleted user'}? New playback and download requests through this link will stop working. The media file and other shared links will remain. Already downloaded copies cannot be revoked.` })) return;
+        message: `Revoke the shared link for "${share.name}" created by ${share.creatorName || 'a deleted user'}? New playback and download requests through this link will stop working. ${share.kind === 'playlist' ? 'The playlist, its songs,' : 'The media file'} and other shared links will remain. Already downloaded copies cannot be revoked.` })) return;
       setDeleting(share.id);
       setError('');
       try { await request(`/api/admin/media-shares/${encodeURIComponent(share.id)}`, { method: 'DELETE' }); }
