@@ -171,7 +171,8 @@ export async function readPostgresLibrary(database, userId, viewerId = userId) {
     transcriptionPending: job.transcriptionPending }));
   const jobMap = new Map(jobs.map((job) => [job.id, job]));
   for (const entry of entries) {
-    if (jobMap.has(entry.id)) entry.private = jobMap.get(entry.id).private === true;
+    if (jobMap.get(entry.id)?.private === true) entry.private = true;
+    else if (jobMap.has(entry.id)) delete entry.private;
   }
   const counts = new Map(entryRows.map((row) => [row.id, row.song_count]));
   const { count } = await database.prepare(`SELECT count(DISTINCT (membership.job_id, membership.name)) AS count

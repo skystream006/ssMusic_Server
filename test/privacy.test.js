@@ -8,7 +8,8 @@ import { writeJob, writeUser } from '../src/database.js';
 import { createPostgresDatabase } from '../src/postgres.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresJob, readPostgresLibrary, readPostgresJobs } from '../src/postgresCatalog.js';
 import { canReadAllFiles, canReadFile, canReadJob, fileVisibilitySql, visibleJob } from '../src/privacy.js';
-import { addLibraryJobFiles, getLibrary, linkLibraryJob, setLibrary, setLibraryPlaylistPrivacy } from '../src/libraryStore.js';
+import { addLibraryJobFiles, getLibrary, linkLibraryJob, moveLibrarySong, mutateLibraryEntry, removeLibrarySongLink, setLibrary, setLibraryPlaylistPrivacy } from '../src/libraryStore.js';
+import { songKey } from '../src/library.js';
 import { canReadLibrarySong, canReadSharedSong, libraryReaderId } from '../src/sharedAccess.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
@@ -145,6 +146,11 @@ test('privacy survives persistence, filters SQL before paging and protects alias
   });
 
   await context.test('nonowners cannot mutate private files or whole jobs but unrelated public edits remain allowed', async () => {
+    const pendingDelete = manager.deleteJobFile(source.id, 'Secret.mp3', owner);
+    await Promise.all([
+      assert.rejects(pendingDelete, { statusCode: 409 }),
+      assert.rejects(manager.deleteJobFile(source.id, 'Secret.mp3', admin), { statusCode: 403 })
+    ]);
     for (const user of [admin, contributor]) {
       await assert.rejects(manager.setSongMetadata(source.id, 'Secret.mp3', { title: 'Blocked' }, user), { statusCode: 403 });
       await assert.rejects(manager.deleteJobFile(source.id, 'Secret.mp3', user), { statusCode: 403 });
@@ -209,5 +215,61 @@ test('privacy survives persistence, filters SQL before paging and protects alias
     assert.equal(alternate.files[0].playlistId, destination.id);
     await setLibraryPlaylistPrivacy(owner.id, 'individual-songs', false, jobs);
     assert.equal((await pagePostgresTracks(database, owner.id, { viewerId: contributor.id, search: 'Single' })).total, 1);
+  });
+
+  await context.test('public library edits preserve hidden placements and filtered saves fail without data loss', async () => {
+    const hiddenSource = { ...source, id: 'preserve-source', url: 'import:preserve-source', outputDir: null,
+      files: ['Hidden.mp3', 'Visible.mp3', 'Removed.mp3'], transcriptions: {} };
+    const target = { ...destination, id: 'preserve-target', url: 'import:preserve-target' };
+    await writeJob(database, hiddenSource);
+    await writeJob(database, target);
+    let available = await readPostgresJobs(database, contributor.id);
+    let current = await getLibrary(contributor.id, available);
+    const hidden = { jobId: hiddenSource.id, name: 'Hidden.mp3' };
+    const removed = { jobId: hiddenSource.id, name: 'Removed.mp3' };
+    current = await setLibrary(contributor.id, { ...current,
+      entries: [{ id: 'folder-preserved', type: 'folder', name: 'Preserved', parentId: null },
+        ...current.entries.map((entry) => entry.id === hiddenSource.id ? { ...entry, parentId: 'folder-preserved' } : entry)],
+      songMoves: [{ ...hidden, playlistId: target.id }],
+      songAdds: [{ ...hidden, playlistId: hiddenSource.id }],
+      songOrder: { [hiddenSource.id]: ['Visible.mp3', 'Hidden.mp3', 'Removed.mp3'] },
+      playlistSongOrder: {
+        [target.id]: [songKey(hidden)],
+        [hiddenSource.id]: [songKey(removed), songKey(hidden), songKey({ jobId: hiddenSource.id, name: 'Visible.mp3' })]
+      }
+    }, available);
+    assert.equal(await removeLibrarySongLink(contributor.id, { ...removed, version: current.version, playlistId: hiddenSource.id },
+      available, await readPostgresJobs(database)), true);
+    await manager.setJobPrivacy(hiddenSource.id, true, owner);
+    available = await readPostgresJobs(database, contributor.id);
+    const before = await getLibrary(contributor.id, available);
+    current = await mutateLibraryEntry(contributor.id, { version: before.version, action: 'create-folder',
+      id: 'folder-public-edit', name: 'Public edit', parentId: null }, available);
+    const filteredJobs = available.map((job) => visibleJob(job, contributor)).filter(Boolean);
+    await assert.rejects(mutateLibraryEntry(contributor.id, { version: current.version, action: 'create-folder',
+      id: 'folder-filtered-edit', name: 'Filtered edit', parentId: null }, filteredJobs), { statusCode: 409 });
+    const filtered = await getLibrary(contributor.id, filteredJobs);
+    await assert.rejects(setLibrary(contributor.id, filtered, available), { statusCode: 409 });
+    await manager.setJobPrivacy(hiddenSource.id, false, owner);
+    const restored = await getLibrary(contributor.id, await readPostgresJobs(database, contributor.id));
+    assert.equal(restored.entries.find((entry) => entry.id === hiddenSource.id).parentId, 'folder-preserved');
+    assert.equal(restored.entries.some((entry) => entry.id === 'folder-public-edit'), true);
+    assert.equal(restored.entries.some((entry) => entry.id === 'folder-filtered-edit'), false);
+    for (const field of ['songMoves', 'songAdds', 'songRemovals', 'songOrder', 'playlistSongOrder']) {
+      assert.deepEqual(restored[field], before[field]);
+    }
+    await manager.setJobFilePrivacy(hiddenSource.id, hidden.name, true, owner);
+    await manager.setJobFilePrivacy(hiddenSource.id, removed.name, true, owner);
+    available = await readPostgresJobs(database, contributor.id);
+    const moved = await moveLibrarySong(contributor.id, { version: restored.version, jobId: hiddenSource.id, name: 'Visible.mp3',
+      sourcePlaylistId: hiddenSource.id, playlistId: target.id }, available);
+    const filteredFiles = available.map((job) => visibleJob(job, contributor)).filter(Boolean);
+    await assert.rejects(setLibrary(contributor.id, await getLibrary(contributor.id, filteredFiles), available), { statusCode: 409 });
+    await manager.setJobFilePrivacy(hiddenSource.id, hidden.name, false, owner);
+    await manager.setJobFilePrivacy(hiddenSource.id, removed.name, false, owner);
+    const restoredFiles = await getLibrary(contributor.id, await readPostgresJobs(database, contributor.id));
+    for (const field of ['songMoves', 'songAdds', 'songRemovals', 'songOrder', 'playlistSongOrder']) {
+      assert.deepEqual(restoredFiles[field], moved[field]);
+    }
   });
 });

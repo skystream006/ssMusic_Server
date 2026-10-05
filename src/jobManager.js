@@ -803,6 +803,13 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   }
 }
 
+function preservePrivateCompanion(job, fileName) {
+  const companion = job.transcriptions?.[fileName]?.noVocalsName;
+  if (job.privateFiles?.includes(fileName) && companion && job.files.includes(companion)) {
+    job.privateFiles = [...new Set([...job.privateFiles, companion])];
+  }
+}
+
 async function executeTranscription(job, fileName, options, transcription, user) {
   try {
     const filePath = getFilePath(job, fileName);
@@ -824,6 +831,9 @@ async function executeTranscription(job, fileName, options, transcription, user)
     }
     await mutateJobFiles(job.id, () => replaceTranscribedFiles(job, fileName, replacements, async (updatedJob) => {
       const noVocals = results.find((result) => !result.original);
+      if (noVocals && `[NoVocals]/${noVocals.name}` !== updatedJob.transcriptions[fileName]?.noVocalsName) {
+        preservePrivateCompanion(updatedJob, fileName);
+      }
       updatedJob.transcriptions[fileName] = {
         ...transcription, status: 'transcribed', completedAt: new Date().toISOString(),
         noVocalsName: noVocals ? `[NoVocals]/${noVocals.name}` : updatedJob.transcriptions[fileName]?.noVocalsName
@@ -977,12 +987,30 @@ export async function replaceJobFile(id, fileName, user, receiveFile) {
 }
 
 export async function deleteJobFile(id, fileName, user = null, membership = null) {
+  const pending = deletingFiles.get(id) || new Set();
+  if (pending.has(fileName)) {
+    const job = await getJob(id);
+    if (!job) return null;
+    await assertCanModifyJob(job, user, true, fileName);
+    throw Object.assign(new Error('Another change to this song is in progress'), { statusCode: 409 });
+  }
+  pending.add(fileName);
+  deletingFiles.set(id, pending);
+  try {
+    return await deleteReservedJobFile(id, fileName, user, membership);
+  } finally {
+    pending.delete(fileName);
+    if (pending.size === 0) deletingFiles.delete(id);
+  }
+}
+
+async function deleteReservedJobFile(id, fileName, user, membership) {
   const job = (await getJob(id));
   if (!job) return null;
 
   (await assertCanModifyJob(job, user, true, fileName));
   assertJobIsIdle(job, 'remove files from', true);
-  if (transcriptionQueues.get(id)?.files.has(fileName) || deletingFiles.get(id)?.has(fileName)) {
+  if (transcriptionQueues.get(id)?.files.has(fileName)) {
     throw Object.assign(new Error('Another change to this song is in progress'), { statusCode: 409 });
   }
   if (!isValidJobFileName(fileName)) {
@@ -1002,9 +1030,6 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
     throw error;
   }
 
-  const pending = deletingFiles.get(id) || new Set();
-  pending.add(fileName);
-  deletingFiles.set(id, pending);
   let unlock = () => {};
   try {
     return await mutateJobFiles(id, async () => {
@@ -1024,6 +1049,7 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
       });
       await removeSongThumbnail(thumbnailPath);
       const currentJob = transcriptionQueues.get(id)?.job || (await getJob(id));
+      preservePrivateCompanion(currentJob, fileName);
       currentJob.files = currentJob.files.filter((name) => name !== fileName);
       if (currentJob.transcriptions) delete currentJob.transcriptions[fileName];
       if (currentJob.songMetadata) delete currentJob.songMetadata[fileName];
@@ -1033,8 +1059,6 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
     });
   } finally {
     unlock();
-    pending.delete(fileName);
-    if (pending.size === 0) deletingFiles.delete(id);
   }
 }
 

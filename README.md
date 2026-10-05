@@ -42,6 +42,7 @@ files are accessible only to that owner, not contributors, linked users, Shared
 accounts, other administrators, public-link recipients, or search API keys.
 A private file remains private when linked into another playlist; generated
 no-vocals versions cannot bypass the original file's privacy.
+Retained no-vocals files stay private when their private original is deleted.
 
 Use the owner-only privacy actions in Jobs or Music Library to mark a playlist
 or file private, or make it nonprivate again. The **Individual Songs** and
@@ -134,8 +135,9 @@ share URLs in proxy logs or analytics.
 
 Public shared-media pages always use the midnight-blue dark palette, independently
 of account appearance settings. Administrators can open **Admin > Shared links**
-to browse all generated links, 50 per page, with the song, source playlist,
+to browse accessible generated links, 50 per page, with the song, source playlist,
 creator, and unique link ID. Use the delete icon and confirm to revoke a link.
+Links to another owner's private media are omitted, even for administrators.
 This blocks subsequent metadata, streaming, and download requests for that link;
 the source file, other links, and already downloaded copies are unaffected.
 Existing public URLs cannot be recovered because only token hashes are stored.

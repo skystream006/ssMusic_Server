@@ -1,5 +1,5 @@
 import { openDatabase, withTransaction } from './database.js';
-import { rebuildPostgresLibrary } from './postgresCatalog.js';
+import { readPostgresJobs, rebuildPostgresLibrary } from './postgresCatalog.js';
 import path from 'node:path';
 import { getPlaylistTracks, individualPlaylistNames, jobPlaylistId, orderFiles, reconcileLibrary, songKey, themes } from './library.js';
 import { isPlayableFile } from './media.js';
@@ -71,7 +71,8 @@ function validateLibrary(value, jobs, current, userId) {
       if (!current.entries.some((item) => item.id === entry.id)) invalid('Individual playlists are created when a matching job is linked');
       result.name = individualPlaylistNames[entry.id];
       result.protected = true;
-      result.private = current.entries.find((item) => item.id === entry.id)?.private === true;
+      const saved = current.entries.find((item) => item.id === entry.id);
+      if (Object.hasOwn(saved, 'private')) result.private = saved.private === true;
     } else if (!jobMap.has(entry.id)) invalid('Playlist is no longer available');
     entryMap.set(entry.id, result);
     return result;
@@ -143,7 +144,41 @@ function validateLibrary(value, jobs, current, userId) {
   return library;
 }
 
+function hiddenLibraryState(library, jobs, userId) {
+  const jobMap = new Map(jobs.map((job) => [job.id, job]));
+  const hiddenPlaylist = (id) => jobMap.has(id) && !canReadJob(jobMap.get(id), userId);
+  const hiddenTrack = (track) => hiddenPlaylist(track.playlistId)
+    || jobMap.has(track.jobId) && !canReadFile(jobMap.get(track.jobId), track.name, userId);
+  const orders = (value, hidden) => Object.entries(value || {}).map(([id, names]) => [id, names.filter((name) => hidden(id, name))])
+    .filter(([, names]) => names.length).sort(([left], [right]) => left.localeCompare(right));
+  return {
+    entries: library.entries.filter((entry) => hiddenPlaylist(entry.id)).map((entry) => [entry.id, entry.parentId]),
+    placements: ['songMoves', 'songAdds', 'songRemovals'].map((field) => (library[field] || []).filter(hiddenTrack)
+      .map((track) => JSON.stringify([track.jobId, track.name, track.playlistId])).sort()),
+    songOrder: orders(library.songOrder, (jobId, name) => hiddenTrack({ jobId, name })),
+    playlistSongOrder: orders(library.playlistSongOrder, (playlistId, key) => {
+      const [jobId, name] = JSON.parse(key);
+      return hiddenTrack({ playlistId, jobId, name });
+    })
+  };
+}
+
+async function preserveHiddenLibraryState(userId, library) {
+  const database = openDatabase();
+  const restrictions = await database.prepare(`SELECT 1 FROM jobs
+    WHERE (data->'initiatedBy'->>'id') IS DISTINCT FROM $1 AND (
+      data->'private' = 'true'::jsonb OR jsonb_array_length(COALESCE(data->'privateFiles', '[]'::jsonb)) > 0)
+    LIMIT 1`).get(userId);
+  if (!restrictions) return;
+  const jobs = await readPostgresJobs(database, userId);
+  const current = await getLibrary(userId, jobs);
+  if (JSON.stringify(hiddenLibraryState(current, jobs, userId)) !== JSON.stringify(hiddenLibraryState(library, jobs, userId))) {
+    invalid('This change would alter hidden library items. Refresh and try again.', 409);
+  }
+}
+
 async function writeLibrary(userId, library, version) {
+  await preserveHiddenLibraryState(userId, library);
   (await openDatabase().prepare(`INSERT INTO user_preferences (user_id, library, library_version) VALUES ($1, $2, $3)
     ON CONFLICT(user_id) DO UPDATE SET library = excluded.library, library_version = excluded.library_version`)
     .run(userId, JSON.stringify(library), version));

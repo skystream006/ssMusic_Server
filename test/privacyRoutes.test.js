@@ -196,6 +196,20 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal((await call('/api/songs/search', keyHeaders)).body.total, 4);
   });
 
+  await context.test('deleting a private original does not publish a retained, differently named companion', async () => {
+    const outputDir = path.join(outputRoot, 'retained');
+    const companion = '[NoVocals]/different.mp3';
+    await fs.mkdir(path.join(outputDir, '[NoVocals]'), { recursive: true });
+    for (const name of ['original.mp3', companion]) await fs.writeFile(path.join(outputDir, name), 'audio');
+    await writeJob(database, { id: 'retained', url: 'import:retained', status: 'completed',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), initiatedBy: { id: users.Owner.id },
+      outputDir, files: ['original.mp3', companion], privateFiles: ['original.mp3'],
+      transcriptions: { 'original.mp3': { noVocalsName: companion } } });
+    assert.equal((await call('/api/jobs/retained/files/original.mp3', headers.Owner, 'DELETE')).status, 200);
+    assert.equal((await call(`/api/jobs/retained/stream/${encodeURIComponent(companion)}`, keyHeaders)).status, 404);
+    assert.equal((await call(`/api/jobs/retained/stream/${encodeURIComponent(companion)}`)).status, 200);
+  });
+
   await context.test('an unset key disables access, including formerly valid credentials', async () => {
     await stop();
     await start('');
