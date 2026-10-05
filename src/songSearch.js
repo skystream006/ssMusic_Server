@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { openDatabase } from './database.js';
-import { songMetadataFields } from './library.js';
+import { normalizeSearchText, songMetadataFields } from './library.js';
 import { songVisibilitySql } from './privacy.js';
 
 export function attachSearchKey(req, res, next) {
@@ -41,7 +41,7 @@ export async function searchSongs(req, res) {
     || (req.query.pageSize !== undefined && (!positiveInteger(req.query.pageSize) || Number(req.query.pageSize) > 100))) {
     return res.status(400).json({ error: 'Invalid search or pagination' });
   }
-  const search = (req.query.q || '').trim().toLowerCase().replace(/[\\%_]/g, '\\$&');
+  const search = normalizeSearchText((req.query.q || '').trim()).replace(/[\\%_]/g, '\\$&');
   const pageSize = Number(req.query.pageSize || 50);
   const database = openDatabase();
   const from = `FROM songs JOIN jobs ON jobs.id = songs.job_id
@@ -50,7 +50,7 @@ export async function searchSongs(req, res) {
   const { total } = await database.prepare(`SELECT count(*) AS total ${from}`).get(`%${search}%`);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Number(req.query.page || 1), totalPages);
-  const rows = await database.prepare(`SELECT songs.job_id, songs.name, songs.metadata,
+  const rows = await database.prepare(`SELECT songs.job_id, songs.name, songs.media_type, songs.metadata,
     jobs.data->>'playlistTitle' AS playlist_title ${from}
     ORDER BY songs.job_id, songs.file_order, songs.name LIMIT $2 OFFSET $3`)
     .all(`%${search}%`, pageSize, (page - 1) * pageSize);
@@ -62,7 +62,7 @@ export async function searchSongs(req, res) {
       ...Object.fromEntries([...songMetadataFields, 'rating'].filter((field) => metadata[field] !== undefined).map((field) => [field, metadata[field]])),
       jobId: row.job_id, name: row.name, playlistTitle: row.playlist_title, readOnly: true,
       streamUrl: `${base}/stream/${name}`, downloadUrl: `${base}/download/${name}`,
-      artworkUrl: /\.mp3$/i.test(row.name) ? `${base}/artwork/${name}` : null,
+      artworkUrl: `${base}/artwork/${name}${row.media_type === 'audio' ? '?fallback=1' : ''}`,
       lyricsUrl: `${base}/lyrics/${name}`
     };
   });

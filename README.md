@@ -79,8 +79,13 @@ request; keys in query strings, cookies, or `X-PAT` are not accepted.
 
 `GET /api/songs/search?q=artist&page=1&pageSize=50` searches audio and video
 across all libraries/source jobs, excluding private playlists and files. Search is
-case-insensitive literal substring matching over indexed filename, playlist
+case- and accent-insensitive literal substring matching over indexed filename, playlist
 title, title, artist, album, performer, genre, year, and track/disc metadata.
+For example, `yeu dung so dau` matches `Yêu Đừng Sợ Đau`; Vietnamese `đ` is matched
+as `d`. Accented and decomposed-Unicode queries work too. The same matching applies
+to library track searches. A one-time startup migration normalizes existing search
+indexes in batches without rereading media or changing displayed metadata; no
+reimport or redownload is needed.
 `q` is optional (empty lists accessible media), with a maximum of 200 characters.
 Pages start at 1; `pageSize` defaults to 50 and is limited to 100.
 
@@ -90,6 +95,19 @@ The response is `{ "files": [...], "page": 1, "pageSize": 50, "total": 42,
 `lyricsUrl` links. Send the same header when following these URLs; it is never
 embedded in a returned URL. Media streams support ranges and HEAD requests.
 Private media is rechecked on each request, including previously returned URLs.
+
+All song search results provide an `artworkUrl`. Audio URLs include `?fallback=1`:
+supported embedded MP3 artwork is preferred, and songs with no supported cover
+receive a bundled 96 by 96 WebP ssMusic thumbnail. Other artwork requests retain
+their existing missing-cover behavior unless the fallback is requested.
+
+Video results provide frame thumbnails (MP4, M4V, MOV, WebM, and OGV).
+Video thumbnails are 96 by 96 WebP images generated
+with FFmpeg on the first artwork request and reused from the disk thumbnail cache.
+Changing a video invalidates its cached image; deleting the video or job removes it.
+Search itself does not decode videos. Send `X-API-Key` when fetching a thumbnail,
+just as for the stream and download URLs. Private media remains protected even
+when a fallback thumbnail is requested.
 
 The key also permits:
 

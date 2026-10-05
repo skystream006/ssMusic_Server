@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createPostgresDatabase } from '../src/postgres.js';
 import { writeUser } from '../src/database.js';
-import { deletePostgresJob, pagePostgresTracks, readPostgresJob, readPostgresLibrary, updatePostgresSong, writePostgresJob } from '../src/postgresCatalog.js';
+import { deletePostgresJob, normalizePostgresSearchIndex, pagePostgresTracks, readPostgresJob, readPostgresLibrary, updatePostgresSong, writePostgresJob } from '../src/postgresCatalog.js';
 
 test('PostgreSQL bindings and async transactions preserve isolation and rollback', {
   skip: !process.env.TEST_POSTGRES_URL
@@ -103,6 +103,48 @@ test('PostgreSQL normalizes songs and pages searchable account-scoped catalog re
 });
 
 
+
+test('PostgreSQL search migration folds existing Vietnamese indexes in batches without changing metadata', {
+  skip: !process.env.TEST_POSTGRES_URL
+}, async (testContext) => {
+  const database = createPostgresDatabase(process.env.TEST_POSTGRES_URL);
+  const userId = crypto.randomUUID();
+  const jobId = crypto.randomUUID();
+  const migration = 'song-search-normalization-v1';
+  testContext.after(async () => {
+    await database.prepare('DELETE FROM jobs WHERE id = $1').run(jobId);
+    await database.prepare('DELETE FROM users WHERE id = $1').run(userId);
+    await database.prepare('DELETE FROM migrations WHERE name = $1').run(migration);
+    await database.close();
+  });
+  const title = 'Y\u00eau \u0110\u1eebng S\u1ee3 \u0110au';
+  const now = new Date().toISOString();
+  await writeUser(database, { id: userId, name: userId, userHandle: userId, role: 'user', status: 'approved',
+    credentials: [], createdAt: now, updatedAt: now });
+  const files = Array.from({ length: 505 }, (_, index) => `Song ${index}.mp3`);
+  const job = { id: jobId, url: 'import:accent-search', status: 'completed', createdAt: now,
+    initiatedBy: { id: userId }, playlistTitle: 'Catalog', files,
+    songMetadata: Object.fromEntries(files.map((name) => [name, { title }])) };
+  await writePostgresJob(database, job);
+  await database.prepare('UPDATE songs SET search_text = $1 WHERE job_id = $2').run(title.toLowerCase(), jobId);
+  await database.prepare('DELETE FROM migrations WHERE name = $1').run(migration);
+  assert.equal((await pagePostgresTracks(database, userId, { search: 'yeu dung so dau' })).total, 0);
+  await normalizePostgresSearchIndex(database);
+  for (const search of ['yeu dung so dau', title, title.normalize('NFD'), title.toUpperCase()]) {
+    const result = await pagePostgresTracks(database, userId, { search });
+    assert.equal(result.total, 505);
+    assert.equal(result.files[0].title, title);
+  }
+  assert.deepEqual((await readPostgresJob(database, jobId)).songMetadata, job.songMetadata);
+  assert.equal((await database.prepare('SELECT name FROM migrations WHERE name = $1').get(migration)).name, migration);
+  const prepare = database.prepare.bind(database);
+  testContext.mock.method(database, 'prepare', (sql) => {
+    assert.doesNotMatch(sql, /FROM songs/);
+    return prepare(sql);
+  });
+  await normalizePostgresSearchIndex(database);
+  testContext.mock.restoreAll();
+});
 
 test('PostgreSQL serves authenticated library, metadata, organization and duplicate-job HTTP workflows', {
   skip: !process.env.TEST_POSTGRES_URL, timeout: 30_000

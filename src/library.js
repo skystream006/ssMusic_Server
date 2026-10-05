@@ -30,9 +30,13 @@ export function jobPlaylistId(library, job) {
 
 export const songMetadataFields = ['title', 'artist', 'album', 'performerInfo', 'genre', 'year', 'trackNumber', 'partOfSet'];
 
+export function normalizeSearchText(value) {
+  return String(value ?? '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/\u0111/g, 'd');
+}
+
 export function songSearchText(track) {
-  return [...songMetadataFields, 'name', 'playlistTitle'].map((field) => track[field])
-    .filter((value) => typeof value === 'string' && value).join(' ').toLowerCase();
+  return normalizeSearchText([...songMetadataFields, 'name', 'playlistTitle'].map((field) => track[field])
+    .filter((value) => typeof value === 'string' && value).join(' '));
 }
 
 export function songKey(track) {

@@ -5,9 +5,9 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { isPlaylistUrl, normalizeJobUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob, withTransaction } from './database.js';
-import { deletePostgresJob, indexPostgresSongMetadata, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
+import { deletePostgresJob, indexPostgresSongMetadata, normalizePostgresSearchIndex, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
-import { isPlayableFile } from './media.js';
+import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary, updateSongMetadata } from './music.js';
 import { refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
 import { isNoVocals, songMetadataFields, songStem } from './library.js';
@@ -92,6 +92,7 @@ await indexPostgresSongMetadata(database, async (job, name) => {
   await refreshSongMetadata(job, [name]);
   return job.songMetadata[name];
 });
+await normalizePostgresSearchIndex(database);
 
 async function refreshSongMetadata(job, names = job.files || []) {
   const outputDir = job.outputDir && await fs.realpath(job.outputDir).catch(() => null);
@@ -387,7 +388,7 @@ async function removeJobOutput(job) {
     const thumbnailFiles = [];
     const outputDir = await fs.realpath(job.outputDir).catch(() => null);
     for (const name of job.files || []) {
-      if (!outputDir || !isValidJobFileName(name) || !/\.mp3$/i.test(name)) continue;
+      if (!outputDir || !isValidJobFileName(name) || (!/\.mp3$/i.test(name) && mediaType(name) !== 'video')) continue;
       const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
       if (filePath && isFileInsideJobFolder({ outputDir }, filePath)) thumbnailFiles.push(filePath);
     }

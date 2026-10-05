@@ -3,7 +3,7 @@ import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, Chevron
 import { getFilePrivacy, ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory } from './navigation.js';
-import { findNoVocals, isNoVocals, songKey, songSearchText } from '../../src/library.js';
+import { findNoVocals, isNoVocals, normalizeSearchText, songKey, songSearchText } from '../../src/library.js';
 import { mediaType } from '../../src/media.js';
 import { buildLyricsUpdate, formatSyltForEdit } from './lyricsEditing.js';
 import LyricTimeline from './LyricTimeline.jsx';
@@ -455,7 +455,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   if (libraryView || dockOnly) {
     const tracks = libraryView?.tracks || [];
     const trackSearch = libraryView?.search ?? search;
-    const visibleTracks = libraryView?.pagination ? tracks : tracks.filter((track) => songSearchText(track).includes(trackSearch.trim().toLowerCase()));
+    const visibleTracks = libraryView?.pagination ? tracks : tracks.filter((track) => songSearchText(track).includes(normalizeSearchText(trackSearch.trim())));
     const totalTracks = libraryView?.pagination?.total ?? tracks.length;
     const selection = libraryView?.songSelection;
     const selectedVisible = visibleTracks.filter((track) => selection?.keys.has(songKey(track))).length;
@@ -623,11 +623,11 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <div className="section-title"><div><ListMusic size={18} /><h2>Queue</h2></div></div>
           <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search songs" placeholder="Search songs" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
           <div className="queue-tracks">
-            <SongGroups key={id} tracks={songs.filter((track) => songSearchText(track).includes(search.trim().toLowerCase()))}>{(group) => <ol>{group.map((track) => <li key={songKey(track)}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>
+            <SongGroups key={id} tracks={songs.filter((track) => songSearchText(track).includes(normalizeSearchText(search.trim())))}>{(group) => <ol>{group.map((track) => <li key={songKey(track)}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>
                   <Music2 size={17} /><span>{track.name.split('/').at(-1)}</span>
                   {songKey(track) === selected && <span className="queue-indicator" aria-label={playing ? 'Playing' : 'Selected'} />}
                 </button><KaraokeButton track={track} tracks={songs} onPlay={playKaraoke} /></li>)}</ol>}</SongGroups>
-            {!songs.some((track) => songSearchText(track).includes(search.trim().toLowerCase())) && <p className="music-empty">No matching songs.</p>}
+            {!songs.some((track) => songSearchText(track).includes(normalizeSearchText(search.trim()))) && <p className="music-empty">No matching songs.</p>}
           </div>
         </section>
         {lyricsPanel}

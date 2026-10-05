@@ -579,8 +579,8 @@ app.get('/api/jobs/:id/stream/:name', async (req, res) => {
 app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
   res.set('Cache-Control', 'private, no-cache');
   try {
-    const filePath = await resolveRequestedFile(req, isSongFile);
-    const artwork = await readSongThumbnail(filePath);
+    const filePath = await resolveRequestedFile(req, isPlayableFile);
+    const artwork = await readSongThumbnail(filePath, { fallback: req.query.fallback === '1' });
     if (!artwork) return res.status(404).end();
     return res.type('image/webp').send(artwork);
   } catch (error) {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import https from 'node:https';
@@ -39,6 +39,10 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
   const key = randomBytes(32).toString('hex');
   const keyHeaders = { 'X-API-Key': key };
   const outputRoot = path.join(directory, 'output');
+  const ffmpegLocation = path.resolve(process.env.FFMPEG_PATH || path.join('runtime', 'ffmpeg', 'bin'));
+  const ffmpegPath = /^ffmpeg(?:\.exe)?$/i.test(path.basename(ffmpegLocation)) ? ffmpegLocation
+    : path.join(ffmpegLocation, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  const canGenerateVideo = await fs.access(ffmpegPath).then(() => true, () => false);
   for (const id of ['playlist', 'other']) {
     const outputDir = path.join(outputRoot, id);
     await fs.mkdir(outputDir, { recursive: true });
@@ -53,6 +57,10 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       outputDir, files, playlistTitle: id === 'playlist' ? 'Owner playlist' : 'Other library',
       output: 'Downloaded secret-file.mp3', songMetadata: { 'open.mp3': { title: 'A 100% song', artist: 'Test Artist' } } });
   }
+  if (canGenerateVideo) {
+    execFileSync(ffmpegPath, ['-nostdin', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=5',
+      '-frames:v', '1', '-c:v', 'mpeg4', '-threads', '1', path.join(outputRoot, 'playlist', 'clip.mp4')]);
+  }
   const listeners = [net.createServer(), net.createServer()];
   await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve))));
   const [httpPort, httpsPort] = listeners.map((listener) => listener.address().port);
@@ -60,7 +68,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
   async function start(searchKey = key) {
     server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
       '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
-      cwd: directory, env: { ...process.env, SEARCH_API_KEY: searchKey, YTDLP_OUTPUT_ROOT: outputRoot,
+      cwd: directory, env: { ...process.env, SEARCH_API_KEY: searchKey, YTDLP_OUTPUT_ROOT: outputRoot, FFMPEG_PATH: ffmpegLocation,
         LIBRARY_BACKUP_ROOT: path.join(directory, 'backups'), HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '',
         PASSKEY_RP_ID: 'localhost', PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: '' },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -133,7 +141,22 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal(video.readOnly, true);
     assert.equal(video.streamUrl, '/api/jobs/playlist/stream/clip.mp4');
     assert.equal(video.downloadUrl, '/api/jobs/playlist/download/clip.mp4');
-    assert.equal(video.artworkUrl, null);
+    assert.equal(video.artworkUrl, '/api/jobs/playlist/artwork/clip.mp4');
+    assert.equal((await call(video.artworkUrl, {})).status, 401);
+    assert.equal((await call(video.artworkUrl, { 'X-API-Key': 'wrong' })).status, 401);
+    if (canGenerateVideo) {
+      const thumbnail = await call(video.artworkUrl, keyHeaders);
+      assert.equal(thumbnail.status, 200, thumbnail.text);
+      assert.match(thumbnail.headers['content-type'], /^image\/webp/);
+      assert.equal(thumbnail.buffer.toString('ascii', 0, 4), 'RIFF');
+      assert.equal(thumbnail.buffer.toString('ascii', 8, 12), 'WEBP');
+      assert.ok(thumbnail.buffer.length <= 64 * 1024);
+      assert.deepEqual((await call(video.artworkUrl, keyHeaders)).buffer, thumbnail.buffer);
+      const head = await call(video.artworkUrl, keyHeaders, 'HEAD');
+      assert.equal(head.status, 200);
+      assert.match(head.headers['content-type'], /^image\/webp/);
+      assert.equal(head.buffer.length, 0);
+    }
     assert.equal((await call(video.streamUrl, keyHeaders)).status, 200);
     assert.equal((await call(video.downloadUrl, keyHeaders)).status, 200);
     const paginated = await call('/api/songs/search?pageSize=1&page=5', keyHeaders);
@@ -147,8 +170,85 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal(hidden.status, 200, hidden.text);
     assert.equal(hidden.body.total, 0);
     assert.deepEqual(hidden.body.files, []);
+    for (const auth of [keyHeaders, headers.Admin, headers.Contributor, headers.Linked, headers.Reader]) {
+      for (const method of ['GET', 'HEAD']) {
+        assert.ok([403, 404].includes((await call(video.artworkUrl, auth, method)).status));
+      }
+    }
+    if (canGenerateVideo) assert.equal((await call(video.artworkUrl, headers.Owner)).status, 200);
     assert.equal((await call('/api/jobs/playlist/files/clip.mp4/privacy', headers.Owner, 'PATCH', { private: false })).status, 200);
     assert.deepEqual((await call('/api/songs/search?q=clip', keyHeaders)).body.files.map((file) => file.name), ['clip.mp4']);
+    if (canGenerateVideo) assert.equal((await call(video.artworkUrl, keyHeaders)).status, 200);
+  });
+
+  await context.test('deleting a video job removes its generated thumbnail cache', { skip: !canGenerateVideo }, async () => {
+    const outputDir = path.join(outputRoot, 'video-thumbnail-cleanup');
+    const filePath = path.join(outputDir, 'Preview.mp4');
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.copyFile(path.join(outputRoot, 'playlist', 'clip.mp4'), filePath);
+    await writeJob(database, { id: 'video-thumbnail-cleanup', url: 'import:video-thumbnail-cleanup', status: 'completed',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), isPlaylist: true,
+      initiatedBy: { id: users.Owner.id }, outputDir, files: ['Preview.mp4'], playlistTitle: 'Video thumbnail cleanup' });
+    assert.equal((await call('/api/jobs/video-thumbnail-cleanup/artwork/Preview.mp4', keyHeaders)).status, 200);
+    const cache = path.join(directory, 'data', 'artwork-thumbnails', createHash('sha256').update(await fs.realpath(filePath)).digest('hex'));
+    assert.ok((await fs.readdir(cache)).some((name) => name.endsWith('.webp')));
+    assert.equal((await call('/api/jobs/video-thumbnail-cleanup', headers.Owner, 'DELETE')).status, 204);
+    await assert.rejects(fs.access(cache), { code: 'ENOENT' });
+  });
+
+  await context.test('accentless song search upgrades existing indexes and provides protected audio thumbnails', async (subcontext) => {
+    const jobId = 'accent-search';
+    subcontext.after(async () => { await call(`/api/jobs/${jobId}`, headers.Owner, 'DELETE'); });
+    const title = 'Y\u00eau \u0110\u1eebng S\u1ee3 \u0110au';
+    const outputDir = path.join(outputRoot, jobId);
+    await fs.mkdir(outputDir, { recursive: true });
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+    await fs.writeFile(path.join(outputDir, 'Covered.MP3'), NodeID3.write({ title,
+      image: { mime: 'image/png', type: { id: 3 }, imageBuffer: png } }, Buffer.from('audio fixture')));
+    await fs.writeFile(path.join(outputDir, 'Uncovered.mp3'), 'audio without art');
+    await fs.writeFile(path.join(outputDir, 'Other.flac'), 'audio fixture');
+    await writeJob(database, { id: jobId, url: `import:${jobId}`, status: 'completed', isPlaylist: true,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), initiatedBy: { id: users.Owner.id },
+      outputDir, files: ['Covered.MP3', 'Uncovered.mp3', 'Other.flac'], playlistTitle: 'Accent fixture', songMetadata: { 'Covered.MP3': { title } } });
+    await database.prepare('UPDATE songs SET search_text = $1 WHERE job_id = $2 AND name = $3')
+      .run(`${title.toLowerCase()} accent fixture covered.mp3`, jobId, 'Covered.MP3');
+    await database.prepare('DELETE FROM migrations WHERE name = $1').run('song-search-normalization-v1');
+    await stop();
+    await start();
+    for (const query of ['yeu dung so dau', title, title.toUpperCase(), title.normalize('NFD')]) {
+      const response = await call(`/api/songs/search?${new URLSearchParams({ q: query })}`, keyHeaders);
+      assert.equal(response.status, 200, response.text);
+      assert.equal(response.body.total, 1);
+      assert.equal(response.body.files[0].title, title);
+      assert.equal(response.body.files[0].artworkUrl, `/api/jobs/${jobId}/artwork/Covered.MP3?fallback=1`);
+    }
+    const librarySearch = await call(`/api/library/tracks?${new URLSearchParams({ userId: users.Owner.id, search: 'yeu dung so dau' })}`, keyHeaders);
+    assert.equal(librarySearch.status, 200, librarySearch.text);
+    assert.equal(librarySearch.body.files[0].title, title);
+    const results = (await call('/api/songs/search?q=accent%20fixture', keyHeaders)).body.files;
+    assert.equal(results.length, 3);
+    const fallback = await fs.readFile(new URL('../src/assets/audio-thumbnail.webp', import.meta.url));
+    for (const song of results) {
+      assert.ok(song.artworkUrl.endsWith('?fallback=1'));
+      if (song.name === 'Covered.MP3' && !canGenerateVideo) continue;
+      const thumbnail = await call(song.artworkUrl, keyHeaders);
+      assert.equal(thumbnail.status, 200, thumbnail.text);
+      assert.match(thumbnail.headers['content-type'], /^image\/webp/);
+      if (song.name === 'Covered.MP3') assert.notDeepEqual(thumbnail.buffer, fallback);
+      else assert.deepEqual(thumbnail.buffer, fallback);
+      assert.equal((await call(song.artworkUrl, keyHeaders, 'HEAD')).status, 200);
+      assert.equal((await call(song.artworkUrl, {})).status, 401);
+    }
+    assert.equal((await call(`/api/jobs/${jobId}/artwork/Uncovered.mp3`, keyHeaders)).status, 404);
+    assert.equal((await call(`/api/jobs/${jobId}/files/Uncovered.mp3/privacy`, headers.Owner, 'PATCH', { private: true })).status, 200);
+    for (const method of ['GET', 'HEAD']) {
+      assert.equal((await call(`/api/jobs/${jobId}/artwork/Uncovered.mp3?fallback=1`, keyHeaders, method)).status, 404);
+    }
+    const hidden = await call('/api/songs/search?q=uncovered', keyHeaders);
+    assert.equal(hidden.body.total, 0);
+    await stop();
+    await start();
+    assert.equal((await call('/api/songs/search?q=yeu%20dung%20so%20dau', keyHeaders)).body.total, 1);
   });
 
   let share;

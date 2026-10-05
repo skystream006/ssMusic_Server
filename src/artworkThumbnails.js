@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readSongArtwork } from './music.js';
+import { mediaType } from './media.js';
 
 const thumbnailVersion = '96-webp-v1';
 const maxThumbnailBytes = 64 * 1024;
@@ -10,18 +11,17 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 const signature = (stat) => hash(`${thumbnailVersion}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`);
 const isWebp = (buffer) => buffer.length >= 12 && buffer.length <= maxThumbnailBytes
   && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
+let audioFallback;
 
-export function encodeThumbnail(image) {
+function encodeThumbnailSource(inputArguments, imageBuffer, video = false) {
   const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
   const directory = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
   const executable = path.join(directory, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
-  const format = { 'image/jpeg': 'mjpeg', 'image/png': 'png', 'image/webp': 'webp' }[image.mime];
-  if (!format) throw new Error('Unsupported artwork image');
   return new Promise((resolve, reject) => {
     const child = execFile(executable, ['-nostdin', '-v', 'error', '-max_alloc', '33554432',
-      '-protocol_whitelist', 'pipe', '-f', 'image2pipe', '-c:v', format, '-max_pixels', '16777216',
-      '-threads', '1', '-i', 'pipe:0',
-      '-vf', 'scale=96:96:force_original_aspect_ratio=decrease,pad=96:96:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
+      ...inputArguments,
+      '-vf', ['scale=96:96:force_original_aspect_ratio=decrease', ...(video ? ['thumbnail=30'] : []),
+        'pad=96:96:(ow-iw)/2:(oh-ih)/2:color=0x00000000'].join(','),
       '-frames:v', '1', '-threads', '1', '-c:v', 'libwebp', '-quality', '70', '-compression_level', '4',
       '-f', 'webp', 'pipe:1'], { encoding: 'buffer', timeout: 15_000, maxBuffer: maxThumbnailBytes, windowsHide: true },
     (error, output) => {
@@ -32,12 +32,28 @@ export function encodeThumbnail(image) {
       resolve(output);
     });
     child.stdin.on('error', () => {});
-    child.stdin.end(image.imageBuffer);
+    child.stdin.end(imageBuffer);
   });
 }
 
+export function encodeThumbnail(image) {
+  const format = { 'image/jpeg': 'mjpeg', 'image/png': 'png', 'image/webp': 'webp' }[image.mime];
+  if (!format) throw new Error('Unsupported artwork image');
+  return encodeThumbnailSource(['-protocol_whitelist', 'pipe', '-f', 'image2pipe', '-c:v', format,
+    '-max_pixels', '16777216', '-threads', '1', '-i', 'pipe:0'], image.imageBuffer);
+}
+
+export function encodeVideoThumbnail(filePath) {
+  const format = { '.mp4': 'mov', '.m4v': 'mov', '.mov': 'mov', '.webm': 'matroska', '.ogv': 'ogg' }[path.extname(filePath).toLowerCase()];
+  if (!format) throw new Error('Unsupported thumbnail video');
+  return encodeThumbnailSource(['-protocol_whitelist', 'file,pipe', '-f', format,
+    ...(format === 'mov' ? ['-enable_drefs', '0', '-use_absolute_path', '0'] : []),
+    '-probesize', '1048576', '-analyzeduration', '1000000', '-max_pixels', '16777216', '-threads', '1',
+    '-i', path.resolve(filePath), '-map', '0:v:0', '-an', '-sn', '-dn'], undefined, true);
+}
+
 export function createThumbnailCache({ root = path.resolve('data', 'artwork-thumbnails'),
-  readArtwork = readSongArtwork, encode = encodeThumbnail } = {}) {
+  readArtwork = readSongArtwork, encode = encodeThumbnail, encodeVideo = encodeVideoThumbnail } = {}) {
   const pending = new Map();
   const waiting = [];
   let running = 0;
@@ -64,8 +80,12 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
           const cached = await readCached(target);
           if (cached) return cached.length ? cached : null;
         }
-        const image = await readArtwork(filePath);
-        const thumbnail = image ? await encode(image) : Buffer.alloc(0);
+        let thumbnail;
+        if (mediaType(filePath) === 'video') thumbnail = await encodeVideo(filePath);
+        else {
+          const image = await readArtwork(filePath);
+          thumbnail = image ? await encode(image) : Buffer.alloc(0);
+        }
         if (signature(await fs.stat(filePath)) !== revision) continue;
         await fs.mkdir(directory, { recursive: true, mode: 0o700 });
         const temporary = path.join(directory, `${randomUUID()}.tmp`);
@@ -87,8 +107,8 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
     }
   }
 
-  async function read(filePath, { force = false } = {}) {
-    if (!/\.mp3$/i.test(filePath)) return null;
+  async function readSource(filePath, { force = false } = {}) {
+    if (!/\.mp3$/i.test(filePath) && mediaType(filePath) !== 'video') return null;
     const realPath = await fs.realpath(filePath);
     if (!force) {
       const revision = signature(await fs.stat(realPath));
@@ -98,12 +118,19 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
     const existing = pending.get(realPath);
     if (existing) {
       await existing;
-      return read(realPath, { force });
+      return readSource(realPath, { force });
     }
     const operation = generate(realPath, force);
     pending.set(realPath, operation);
     try { return await operation; }
     finally { if (pending.get(realPath) === operation) pending.delete(realPath); }
+  }
+
+  async function read(filePath, options = {}) {
+    const thumbnail = await readSource(filePath, options);
+    if (thumbnail || options.fallback !== true || mediaType(filePath) !== 'audio') return thumbnail;
+    audioFallback ??= fs.readFile(new URL('./assets/audio-thumbnail.webp', import.meta.url));
+    return audioFallback;
   }
 
   async function remove(filePath) {

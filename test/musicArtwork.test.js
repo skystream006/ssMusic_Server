@@ -6,7 +6,8 @@ import test from 'node:test';
 import NodeID3 from 'node-id3';
 import { execFileSync } from 'node:child_process';
 import { readSongArtwork, readSongSummary } from '../src/music.js';
-import { createThumbnailCache, encodeThumbnail } from '../src/artworkThumbnails.js';
+import { createThumbnailCache, encodeThumbnail, encodeVideoThumbnail } from '../src/artworkThumbnails.js';
+import { audioExtensions, videoExtensions } from '../src/media.js';
 import { createThumbnailMaintenance, thumbnailSongs } from '../src/thumbnailMaintenance.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
@@ -100,6 +101,54 @@ test('thumbnail cache persists images, avoids repeated tag reads and invalidates
   assert.deepEqual(await fs.readdir(root), []);
 });
 
+test('song thumbnails optionally use a bundled fallback without replacing supported embedded artwork', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-audio-thumbnail-fallback-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const fallback = await fs.readFile(new URL('../src/assets/audio-thumbnail.webp', import.meta.url));
+  const embedded = Buffer.from('RIFF0000WEBPembedded');
+  const cache = createThumbnailCache({ root: path.join(directory, 'cache'),
+    readArtwork: async (filePath) => path.basename(filePath) === 'Covered.mp3' ? { mime: 'image/png', imageBuffer: png } : null,
+    encode: async () => embedded });
+  for (const extension of audioExtensions) {
+    const filePath = path.join(directory, `Uncovered${extension.toUpperCase()}`);
+    await fs.writeFile(filePath, 'audio');
+    assert.equal(await cache.read(filePath), null);
+    assert.deepEqual(await cache.read(filePath, { fallback: true }), fallback);
+    assert.equal(await cache.read(filePath), null);
+  }
+  const covered = path.join(directory, 'Covered.mp3');
+  await fs.writeFile(covered, 'audio with cover');
+  assert.deepEqual(await cache.read(covered, { fallback: true }), embedded);
+  assert.equal(await cache.read(path.join(directory, 'Not a song.txt'), { fallback: true }), null);
+});
+
+test('video thumbnails use the shared persistent cache and invalidate changed videos without reading audio tags', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-video-thumbnails-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const root = path.join(directory, 'cache');
+  const encoded = [];
+  const thumbnail = Buffer.from('RIFF0000WEBPvideo');
+  const options = { root, readArtwork: () => assert.fail('Video thumbnails must not read audio tags'),
+    encodeVideo: async (filePath) => { encoded.push(filePath); return thumbnail; } };
+  const cache = createThumbnailCache(options);
+  for (const extension of videoExtensions) {
+    const filePath = path.join(directory, `Clip${extension.toUpperCase()}`);
+    await fs.writeFile(filePath, 'video fixture');
+    const results = await Promise.all(Array.from({ length: 5 }, () => cache.read(filePath)));
+    assert.ok(results.every((result) => result.equals(thumbnail)));
+    assert.equal(encoded.filter((file) => file === filePath).length, 1);
+    assert.deepEqual(await createThumbnailCache(options).read(filePath), thumbnail);
+    assert.equal(encoded.filter((file) => file === filePath).length, 1);
+    await fs.writeFile(filePath, 'replacement video fixture');
+    assert.deepEqual(await cache.read(filePath), thumbnail);
+    assert.equal(encoded.filter((file) => file === filePath).length, 2);
+    await cache.remove(filePath);
+    assert.deepEqual(await cache.read(filePath), thumbnail);
+    assert.equal(encoded.filter((file) => file === filePath).length, 3);
+  }
+  assert.equal(await cache.read(path.join(directory, 'not-video.txt')), null);
+});
+
 test('thumbnail cache discards work when a source changes and retries transient encoding failures', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-thumbnails-'));
   context.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -126,16 +175,16 @@ test('thumbnail generation limits concurrent encoders to two', async (context) =
   context.after(() => fs.rm(directory, { recursive: true, force: true }));
   let running = 0;
   let maximum = 0;
+  const encode = async () => {
+    maximum = Math.max(maximum, ++running);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    running--;
+    return Buffer.from('RIFF0000WEBPthumbnail');
+  };
   const cache = createThumbnailCache({ root: path.join(directory, 'cache'),
-    readArtwork: async () => ({}),
-    async encode() {
-      maximum = Math.max(maximum, ++running);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      running--;
-      return Buffer.from('RIFF0000WEBPthumbnail');
-    } });
+    readArtwork: async () => ({}), encode, encodeVideo: encode });
   await Promise.all(Array.from({ length: 8 }, async (_, index) => {
-    const file = path.join(directory, `${index}.mp3`);
+    const file = path.join(directory, `${index}.${index % 2 ? 'mp4' : 'mp3'}`);
     await fs.writeFile(file, 'audio');
     await cache.read(file);
   }));
@@ -228,6 +277,38 @@ test('FFmpeg encodes bounded 96px WebP thumbnails without modifying original art
   assert.ok(thumbnail.length <= 64 * 1024);
   assert.deepEqual(source, original);
   await assert.rejects(encodeThumbnail({ mime: 'image/png', imageBuffer: Buffer.from('broken') }), /could not generate|Invalid artwork/);
+});
+
+test('FFmpeg extracts bounded video frames including short clips and rejects non-video containers', async (context) => {
+  const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
+  const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  const executable = path.join(bin, `ffmpeg${suffix}`);
+  try { await fs.access(executable); }
+  catch { context.skip('FFmpeg runtime is not installed'); return; }
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-video-frames-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  for (const extension of videoExtensions) {
+    const filePath = path.join(directory, `Clip${extension.toUpperCase()}`);
+    const codec = extension === '.webm' ? 'libvpx-vp9' : extension === '.ogv' ? 'libtheora' : 'mpeg4';
+    const container = extension === '.webm' ? 'webm' : extension === '.ogv' ? 'ogg' : 'mp4';
+    execFileSync(executable, ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=5',
+      '-frames:v', extension === '.webm' ? '35' : '1', '-c:v', codec, '-threads', '1', '-f', container, filePath]);
+    const original = await fs.readFile(filePath);
+    const thumbnail = await encodeVideoThumbnail(filePath);
+    const probe = JSON.parse(execFileSync(path.join(bin, `ffprobe${suffix}`), ['-v', 'error',
+      '-show_entries', 'stream=codec_name,width,height', '-of', 'json', 'pipe:0'], { input: thumbnail }));
+    assert.deepEqual(probe.streams, [{ codec_name: 'webp', width: 96, height: 96 }], extension);
+    assert.ok(thumbnail.length <= 64 * 1024);
+    const pixels = execFileSync(executable, ['-v', 'error', '-i', 'pipe:0', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { input: thumbnail });
+    assert.equal(pixels.length, 96 * 96 * 3);
+    assert.ok(new Set(pixels).size > 16, `${extension} thumbnail must contain the video frame, not a blank image`);
+    assert.deepEqual(await fs.readFile(filePath), original);
+  }
+  const filePath = path.join(directory, 'Not a video.mp4');
+  await fs.writeFile(filePath, '#EXTM3U\nhttp://127.0.0.1/private.mp4\n');
+  await assert.rejects(encodeVideoThumbnail(filePath), /could not generate|Invalid artwork/);
+  assert.throws(() => encodeVideoThumbnail(path.join(directory, 'playlist.m3u8')), /Unsupported thumbnail video/);
 });
 
 test('thumbnail maintenance is single-flight, reports progress, continues after errors and can run again', async (context) => {

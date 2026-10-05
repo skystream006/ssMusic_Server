@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { sortSelectOptions } from '../frontend/src/selectOptions.js';
+import { normalizeSearchText } from '../src/library.js';
 
 let server;
 let SongActions;
@@ -53,6 +54,15 @@ before(async () => {
 });
 
 after(async () => { await server?.close(); });
+
+test('song search normalization folds Vietnamese accents and crossed D without changing literal search characters', () => {
+  const title = 'Y\u00eau \u0110\u1eebng S\u1ee3 \u0110au';
+  for (const value of [title, title.normalize('NFD'), title.toUpperCase(), 'yeu dung so dau']) {
+    assert.equal(normalizeSearchText(value), 'yeu dung so dau');
+  }
+  assert.equal(normalizeSearchText('100%_\\'), '100%_\\');
+  assert.equal(normalizeSearchText(null), '');
+});
 
 test('dropdown options sort labels naturally without mutating inputs or changing values', () => {
   const options = Object.freeze([
@@ -693,9 +703,10 @@ test('track search matches artist, album and other song metadata in unpaged view
   const previousWindow = globalThis.window;
   globalThis.window = { location: { search: '' } };
   try {
-    const track = { jobId: 'job', name: 'Song.mp3', artist: 'Distinct artist', album: 'Distinct album',
+    const title = 'Y\u00eau \u0110\u1eebng S\u1ee3 \u0110au';
+    const track = { jobId: 'job', name: 'Song.mp3', title, artist: 'Distinct artist', album: 'Distinct album',
       performerInfo: 'Album ensemble', genre: 'Acoustic', year: '2026', trackNumber: '3/9', partOfSet: '1/2' };
-    for (const search of ['DISTINCT ARTIST', 'distinct album', 'Album ensemble', 'Acoustic', '2026', '3/9', '1/2']) {
+    for (const search of ['yeu dung so dau', title, title.normalize('NFD'), 'DISTINCT ARTIST', 'distinct album', 'Album ensemble', 'Acoustic', '2026', '3/9', '1/2']) {
       const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
         libraryView: { readOnly: true, search, tracks: [track], title: 'Playlist', selectedId: 'playlist',
           songState: () => ({ canModify: false, disabled: true }) }

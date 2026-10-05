@@ -1,4 +1,4 @@
-import { getPlaylistIds, getPlaylistTracks, individualPlaylistNames, isNoVocals, reconcileLibrary, songKey, songMetadataFields, songSearchText, songStem } from './library.js';
+import { getPlaylistIds, getPlaylistTracks, individualPlaylistNames, isNoVocals, normalizeSearchText, reconcileLibrary, songKey, songMetadataFields, songSearchText, songStem } from './library.js';
 import { mediaType } from './media.js';
 import { attachPrivacyAliases, canReadFile, entryVisibilitySql, fileVisibilitySql, jobVisibilitySql, visibleJob } from './privacy.js';
 
@@ -64,6 +64,26 @@ export async function indexPostgresSongMetadata(database, readMetadata) {
         (SELECT user_id FROM job_users WHERE job_id IN (SELECT jsonb_array_elements_text($1::jsonb)))`)
         .run(JSON.stringify([...new Set(rows.map((row) => row.job_id))]));
     });
+    cursor = rows.at(-1);
+  }
+  await database.prepare('INSERT INTO migrations (name) VALUES ($1) ON CONFLICT DO NOTHING').run(migration);
+}
+
+export async function normalizePostgresSearchIndex(database) {
+  const migration = 'song-search-normalization-v1';
+  if (await database.prepare('SELECT name FROM migrations WHERE name = $1').get(migration)) return;
+  let cursor = null;
+  while (true) {
+    const rows = await database.prepare(`SELECT job_id, name, search_text FROM songs
+      WHERE ($1::text IS NULL OR (job_id, name) > ($1, $2))
+      ORDER BY job_id, name LIMIT 500`).all(cursor?.job_id ?? null, cursor?.name ?? null);
+    if (!rows.length) break;
+    const updates = rows.map((row) => ({ ...row, previous_text: row.search_text, search_text: normalizeSearchText(row.search_text) }))
+      .filter((row) => row.search_text !== row.previous_text);
+    if (updates.length) await database.prepare(`UPDATE songs SET search_text = updated.search_text
+      FROM jsonb_to_recordset($1::jsonb) AS updated(job_id text, name text, previous_text text, search_text text)
+      WHERE songs.job_id = updated.job_id AND songs.name = updated.name AND songs.search_text = updated.previous_text`)
+      .run(JSON.stringify(updates));
     cursor = rows.at(-1);
   }
   await database.prepare('INSERT INTO migrations (name) VALUES ($1) ON CONFLICT DO NOTHING').run(migration);
@@ -214,7 +234,7 @@ export async function pagePostgresTracks(database, userId, { entryId = null, pag
   const parameters = [userId, JSON.stringify(selected), viewerId];
   const filter = `WHERE ${fileVisibilitySql('jobs', 'songs.name', '$3')}`
     + (search ? ` AND songs.search_text LIKE $${parameters.length + 1} ESCAPE '\\'` : '');
-  if (search) parameters.push(`%${search.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`);
+  if (search) parameters.push(`%${normalizeSearchText(search).replace(/[\\%_]/g, '\\$&')}%`);
   const from = `FROM (${source}) membership JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
     JOIN jobs ON jobs.id = songs.job_id`;
   const count = (await database.prepare(`SELECT count(*) AS count ${from} ${filter}`).get(...parameters)).count;
