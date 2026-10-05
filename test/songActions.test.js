@@ -25,6 +25,9 @@ let LyricsEditor;
 let ExportLibraryDialog;
 let ImportMusic;
 let canRunJobAction;
+let canChangePrivacy;
+let canChangePlaylistPrivacy;
+let getFilePrivacy;
 let MusicPlayer;
 let PlaybackProvider;
 let SharedLibraryAccess;
@@ -38,7 +41,7 @@ let OrganizerControl;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, PlaybackProvider, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -406,6 +409,106 @@ test('sharing explains unauthenticated read-only access before generating a link
   assert.match(html, /Generate public link/);
   assert.match(html, /Cancel/);
   assert.doesNotMatch(html, /Copy link|href="\/share\//);
+});
+
+test('privacy changes require ownership, never contributor, linked or administrator privileges', () => {
+  const job = { initiatedBy: { id: 'owner' }, contributors: [{ id: 'contributor' }] };
+  for (const role of ['user', 'admin']) {
+    assert.equal(canChangePrivacy({ id: 'owner', role }, job), true);
+    assert.equal(canChangePrivacy({ id: 'owner', role }, job, true), false);
+  }
+  for (const user of [
+    { id: 'admin', role: 'admin' }, { id: 'contributor', role: 'user' },
+    { id: 'linked', role: 'user', linkedUserIds: ['owner'] },
+    { id: 'shared', role: 'shared', sharedUserIds: ['owner'] },
+    { id: 'owner', role: 'shared' }, { role: 'user' }, null
+  ]) assert.equal(canChangePrivacy(user, job), false);
+  assert.equal(canChangePrivacy({ id: 'owner', role: 'user' }, null), false);
+  assert.equal(canChangePrivacy({ role: 'user' }, {}), false);
+  for (const id of ['individual-songs', 'individual-videos']) {
+    assert.equal(canChangePrivacy({ id: 'owner', role: 'user' }, { ...job, id, protected: true }), true);
+  }
+});
+
+test('file privacy distinguishes explicit restrictions from private source jobs', () => {
+  const file = { name: 'Song.mp3' };
+  assert.deepEqual(getFilePrivacy(file), { private: false, inherited: false });
+  assert.deepEqual(getFilePrivacy({ ...file, private: true }), { private: true, inherited: false });
+  assert.deepEqual(getFilePrivacy(file, { privateFiles: [file.name] }), { private: true, inherited: false });
+  assert.deepEqual(getFilePrivacy(file, { privateFiles: ['Other.mp3'] }), { private: false, inherited: false });
+  assert.deepEqual(getFilePrivacy(file, { private: true }), { private: true, inherited: true });
+  assert.deepEqual(getFilePrivacy({ ...file, private: false, sourceJob: { private: true } }), { private: true, inherited: true });
+  assert.deepEqual(getFilePrivacy({ ...file, job: { private: true } }), { private: true, inherited: true });
+  assert.deepEqual(getFilePrivacy({ ...file, sourceJob: { private: false }, job: { private: true } }), { private: false, inherited: false });
+  assert.deepEqual(getFilePrivacy({ name: '[NoVocals]/Song.mp3', private: true, sourceJob: { privateFiles: ['Song.mp3'] } }), { private: true, inherited: true });
+  assert.deepEqual(getFilePrivacy({ ...file, private: true, sourceJob: { privateFiles: [file.name] } }), { private: true, inherited: false });
+});
+
+test('Individual Songs and Videos privacy belongs to the library owner without a source job', () => {
+  const owner = { id: 'owner', role: 'user' };
+  for (const id of ['individual-songs', 'individual-videos']) {
+    const playlist = { id, protected: true };
+    assert.equal(canChangePlaylistPrivacy(owner, playlist, 'owner'), true);
+    assert.equal(canChangePlaylistPrivacy(owner, playlist, 'owner', true), false);
+    assert.equal(canChangePlaylistPrivacy({ id: 'admin', role: 'admin' }, playlist, 'owner'), false);
+    assert.equal(canChangePlaylistPrivacy({ ...owner, role: 'shared' }, playlist, 'owner'), false);
+    assert.equal(canChangePlaylistPrivacy(owner, playlist, 'someone-else'), false);
+    assert.equal(canChangePlaylistPrivacy(owner, playlist, undefined), false);
+  }
+  assert.equal(canChangePlaylistPrivacy(owner, { id: 'regular', protected: true }, 'owner'), false);
+  assert.equal(canChangePlaylistPrivacy(owner, { id: 'regular', initiatedBy: { id: 'someone-else' } }, 'owner'), false);
+  assert.equal(canChangePlaylistPrivacy(owner, { id: 'regular', initiatedBy: { id: 'owner' } }, 'owner'), true);
+});
+
+test('private files cannot generate a public link, including inherited source privacy', () => {
+  for (const privacy of [{ private: true }, { sourceJob: { private: true } }, { sourceJob: { privateFiles: ['Song.mp3'] } }]) {
+    const html = renderToStaticMarkup(createElement(ShareMediaDialog, {
+      file: { name: 'Song.mp3', ...privacy }, jobId: 'job', request() {}, onClose() {}
+    }));
+    assert.match(html, /Private files cannot be shared/);
+    assert.match(html, /<button class="primary-button" type="button" disabled=""/);
+    assert.doesNotMatch(html, /Copy link|href="\/share\//);
+  }
+});
+
+test('music file privacy controls reflect ownership, inherited privacy, read-only access and busy states', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    const job = { initiatedBy: { id: 'owner' } };
+    const render = ({ user = { id: 'owner', role: 'user' }, sourceJob = job, readOnly = false, saving = false, disabled = false, ...file } = {}) =>
+      renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+        libraryView: { tracks: [{ jobId: 'job', name: 'Song.mp3', sourceJob, ...file }], title: 'Playlist', selectedId: 'playlist',
+          readOnly, saving, playlistPrivate: sourceJob.private,
+          songState: () => ({ canModify: true, canChangePrivacy: canChangePrivacy(user, sourceJob), disabled }) }
+      })));
+    const privacyButton = (html) => html.match(/<button[^>]*aria-label="(?:Make file (?:public|private)|Inherited privacy): Song.mp3"[^>]*>/)?.[0];
+    assert.match(privacyButton(render()), /aria-label="Make file private: Song.mp3" aria-pressed="false"/);
+    assert.doesNotMatch(privacyButton(render()), /disabled/);
+    for (const options of [{ private: true }, { sourceJob: { ...job, privateFiles: ['Song.mp3'] } }]) {
+      const html = render(options);
+      assert.match(privacyButton(html), /Make file public: Song.mp3" aria-pressed="true"/);
+      assert.doesNotMatch(privacyButton(html), /disabled/);
+      assert.match(html, /Private file — owner only/);
+      assert.match(html, /<button[^>]*aria-label="Share Media Song.mp3"[^>]*disabled=""/);
+    }
+    const inherited = render({ sourceJob: { ...job, private: true } });
+    assert.match(privacyButton(inherited), /aria-label="Inherited privacy: Song.mp3" aria-pressed="true" disabled=""/);
+    assert.match(inherited, /Inherited privacy — owner only/);
+    assert.match(inherited, /Private playlist — owner only/);
+    assert.match(inherited, /<button[^>]*aria-label="Share Media Song.mp3"[^>]*disabled=""/);
+    const derivedFile = render({ name: '[NoVocals]/Song.mp3', private: true, sourceJob: { ...job, privateFiles: ['Song.mp3'] } });
+    assert.match(derivedFile, /aria-label="Inherited privacy: \[NoVocals\]\/Song.mp3" aria-pressed="true" disabled=""/);
+    for (const options of [{ saving: true }, { disabled: true }]) assert.match(privacyButton(render(options)), /disabled=""/);
+    for (const user of [{ id: 'admin', role: 'admin' }, { id: 'contributor', role: 'user' }, { id: 'linked', role: 'user' }, { id: 'owner', role: 'shared' }]) {
+      assert.equal(privacyButton(render({ user })), undefined);
+    }
+    assert.equal(privacyButton(render({ readOnly: true })), undefined);
+    assert.match(render({ name: 'Movie.mp4' }), /aria-label="Make file private: Movie.mp4"/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
 });
 
 test('share media dropdown actions respect audio formats, permissions and busy states', () => {

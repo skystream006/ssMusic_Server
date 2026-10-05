@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import AdmZip from 'adm-zip';
-import { closeDatabases, openDatabase, writeUser } from '../src/database.js';
+import { closeDatabases, openDatabase, writeJob, writeUser } from '../src/database.js';
 import { createLibraryBackupService, nextBackupTime } from '../src/libraryBackup.js';
 import { writeLibraryExport } from '../src/libraryExport.js';
 import { createTestDatabase } from '../test-support/postgres.js';
@@ -72,6 +72,24 @@ test('overlapping exports are rejected while an archive is being written', async
   release();
   await completion;
   assert.equal((await service.getStatus('owner')).running, false);
+});
+
+test('privacy changes invalidate old backups and reject in-flight exports for other users', async (context) => {
+  const { database, options, service } = await fixture(context);
+  const job = { id: 'privacy', url: 'import:privacy', status: 'completed', createdAt: '2026-01-01',
+    initiatedBy: { id: 'other' }, files: [] };
+  await writeJob(database, job);
+  await service.start('owner', { format: 'android' });
+  await writeJob(database, { ...job, private: true });
+  await assert.rejects(service.openLatest('owner'), { statusCode: 409 });
+  await service.start('owner', { format: 'android' });
+  const download = await service.openLatest('owner');
+  await download.release();
+  const changing = await createLibraryBackupService({ ...options, writeArchive: async (...args) => {
+    await writeLibraryExport(...args);
+    await writeJob(database, { ...job, private: false });
+  } });
+  await assert.rejects(changing.start('owner', { format: 'android' }), { statusCode: 409 });
 });
 
 test('backup progress counts unique archived songs, excludes documents and movies, and persists the completed total', async (context) => {

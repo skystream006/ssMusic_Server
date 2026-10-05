@@ -8,14 +8,14 @@ import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setSongMetadata, transcribeJobFile } from './jobManager.js';
+import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
 import { readSongThumbnail } from './artworkThumbnails.js';
 import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
-import { findNoVocals, individualPlaylistId, orderFiles, songKey } from './library.js';
-import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from './libraryStore.js';
+import { findNoVocals, individualPlaylistId, orderFiles, reconcileLibrary, songKey } from './library.js';
+import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setLibraryPlaylistPrivacy, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
 import { prepareLibraryExport } from './libraryExport.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles, resolveImportUser } from './libraryImport.js';
@@ -29,6 +29,8 @@ import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
 import { adminMediaSharesRouter, createMediaShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
+import { canReadFile, visibleJob } from './privacy.js';
+import { attachSearchKey, requireSearchKey, searchSongs } from './songSearch.js';
 
 const app = express();
 if (process.env.TRUST_PROXY) {
@@ -116,6 +118,7 @@ app.use(['/api/library/playlists/move', '/api/library/songs/transfer'], express.
 app.use(express.json({ limit: '128kb' }));
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 app.use(attachUser);
+app.use(attachSearchKey);
 app.use(restrictSharedAccess);
 registerAuthRoutes(app, authLimiters);
 app.use('/api/admin/media-shares', requireAdmin, mediaShareHeaders, adminMediaSharesRouter());
@@ -124,6 +127,11 @@ app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, r
   next();
 });
 app.use('/api/health', requireAuth);
+app.get('/api/songs/search', requireSearchKey, searchSongs);
+app.get('/api/libraries', requireSearchKey, async (_req, res) => {
+  const users = await openDatabase().prepare("SELECT id, name FROM users WHERE status = 'approved' AND role <> 'shared' ORDER BY lower(name), id").all();
+  res.json({ users });
+});
 
 const thumbnailMaintenance = createThumbnailMaintenance({
   songs: () => thumbnailSongs(openDatabase()),
@@ -162,8 +170,14 @@ async function getLibraryJobs(user) {
     || job.contributors?.some((contributor) => contributor.id === user.id));
 }
 
+async function mutateUserLibrary(user, operation) {
+  const jobs = await getLibraryJobs(user);
+  const result = await operation(jobs);
+  return { ...result, ...reconcileLibrary(result, jobs.map((job) => visibleJob(job, user)).filter(Boolean)) };
+}
+
 const libraryBackups = (await createLibraryBackupService({ async loadLibrary(userId) {
-  const jobs = (await getLibraryJobs({ id: userId }));
+  const jobs = (await getLibraryJobs({ id: userId })).map((job) => visibleJob(job, userId)).filter(Boolean);
   return { library: (await getLibrary(userId, jobs)), jobs };
 } }));
 
@@ -174,10 +188,10 @@ app.get('/api/library/shared-users', async (req, res) => {
 app.get('/api/library', async (req, res) => {
   try {
     const ownerId = await libraryReaderId(req.user, req.query.userId);
-    const library = await readPostgresLibrary(openDatabase(), ownerId);
+    const library = await readPostgresLibrary(openDatabase(), ownerId, req.user.id);
     const readOnly = req.user.role === 'shared' || ownerId !== req.user.id;
     if (readOnly) {
-      library.jobs = library.jobs.map(sharedJobSummary);
+      library.jobs = library.jobs.map((job) => sharedJobSummary(job, req.user));
       library.playlists = library.playlists.map(({ initiatedBy, contributors, ...playlist }) => playlist);
     }
     res.json({ ...library, ownerId, readOnly });
@@ -186,7 +200,7 @@ app.get('/api/library', async (req, res) => {
 
 app.put('/api/library', async (req, res) => {
   try {
-    return res.json((await setLibrary(req.user.id, req.body, (await getLibraryJobs(req.user)))));
+    return res.json(await mutateUserLibrary(req.user, (jobs) => setLibrary(req.user.id, req.body, jobs)));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -194,7 +208,21 @@ app.put('/api/library', async (req, res) => {
 
 app.post('/api/library/entries', async (req, res) => {
   try {
-    return res.json((await mutateLibraryEntry(req.user.id, req.body, (await getLibraryJobs(req.user)))));
+    return res.json(await mutateUserLibrary(req.user, (jobs) => mutateLibraryEntry(req.user.id, req.body, jobs)));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/library/playlists/:id/privacy', async (req, res) => {
+  try {
+    const job = await getJob(req.params.id);
+    if (job) {
+      await setJobPrivacy(job.id, req.body?.private, req.user);
+    } else {
+      await setLibraryPlaylistPrivacy(req.user.id, req.params.id, req.body?.private, await getLibraryJobs(req.user));
+    }
+    return res.json(await readPostgresLibrary(openDatabase(), req.user.id, req.user.id));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -247,8 +275,13 @@ app.get('/api/library/playlists/:id/download', async (req, res) => {
   try {
     const ownerId = await libraryReaderId(req.user, req.query.userId);
     if (!ownerId) return res.status(403).json({ error: 'Library access denied' });
-    const jobs = await getLibraryJobs({ id: ownerId });
+    const catalog = await readPostgresLibrary(openDatabase(), ownerId, req.user.id);
+    if (!catalog.entries.some((entry) => entry.id === req.params.id && entry.type === 'playlist')) {
+      return res.status(404).json({ error: 'Playlist not found' });
+    }
+    const jobs = (await getLibraryJobs({ id: ownerId })).map((job) => visibleJob(job, req.user)).filter(Boolean);
     const library = await getLibrary(ownerId, jobs);
+    library.entries = library.entries.filter((entry) => catalog.entries.some((visible) => visible.id === entry.id));
     const prepared = await prepareLibraryExport(library, jobs, { format: 'playlist', playlistId: req.params.id });
     if (res.destroyed) return;
     const title = library.entries.find((entry) => entry.id === req.params.id).name
@@ -277,7 +310,7 @@ app.post('/api/library/links', async (req, res) => {
     if (!job) return res.status(404).json({ error: 'Job not found' });
     const jobs = (await getLibraryJobs(req.user));
     if (!jobs.some((item) => item.id === job.id)) return res.status(403).json({ error: 'Only job owners and contributors can add this playlist' });
-    const library = (await linkLibraryJob(req.user.id, job, jobs));
+    const library = await mutateUserLibrary(req.user, (available) => linkLibraryJob(req.user.id, job, available));
     return res.json({ ...library, selectedId: job.isPlaylist === false ? individualPlaylistId(job) : job.id });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
@@ -291,7 +324,7 @@ app.post('/api/library/jobs/add', async (req, res) => {
     if (!job) return res.status(404).json({ error: 'Job not found' });
     const jobs = (await getLibraryJobs(req.user));
     if (!jobs.some((item) => item.id === job.id)) return res.status(403).json({ error: 'Only job owners and contributors can add these files' });
-    return res.json((await addLibraryJobFiles(req.user.id, req.body, jobs)));
+    return res.json(await mutateUserLibrary(req.user, (available) => addLibraryJobFiles(req.user.id, req.body, available)));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -299,7 +332,7 @@ app.post('/api/library/jobs/add', async (req, res) => {
 
 app.post('/api/library/songs/move', async (req, res) => {
   try {
-    return res.json((await moveLibrarySong(req.user.id, req.body, (await getLibraryJobs(req.user)))));
+    return res.json(await mutateUserLibrary(req.user, (jobs) => moveLibrarySong(req.user.id, req.body, jobs)));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -307,7 +340,7 @@ app.post('/api/library/songs/move', async (req, res) => {
 
 app.post('/api/library/songs/reorder', async (req, res) => {
   try {
-    return res.json((await reorderLibrarySong(req.user.id, req.body, (await getLibraryJobs(req.user)))));
+    return res.json(await mutateUserLibrary(req.user, (jobs) => reorderLibrarySong(req.user.id, req.body, jobs)));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -327,15 +360,15 @@ app.get('/api/library/tracks', async (req, res) => {
     const search = (req.query.search || '').trim().toLowerCase();
     const ownerId = await libraryReaderId(req.user, req.query.userId);
     const result = await pagePostgresTracks(openDatabase(), ownerId, { entryId: selectedId,
-      page: Number(req.query.page || 1), pageSize: paginated ? Number(req.query.pageSize || 50) : null, search });
-    const pageJobs = await postgresPageJobs(openDatabase(), result.files);
+      page: Number(req.query.page || 1), pageSize: paginated ? Number(req.query.pageSize || 50) : null, search, viewerId: req.user.id });
+    const pageJobs = await postgresPageJobs(openDatabase(), result.files, req.user.id);
     const available = new Map((await Promise.all([...pageJobs.values()].map(async (job) =>
       (await listJobFiles(job)).map((file) => [songKey({ jobId: job.id, name: file.name }), file])))).flat());
     result.files = result.files.filter((track) => available.has(songKey(track))).map((track) => ({ ...track, ...available.get(songKey(track)) }));
     const readOnly = req.user.role === 'shared' || ownerId !== req.user.id;
     if (readOnly) {
       result.files = await Promise.all(result.files.map(async ({ noVocalsName, noVocalsVersion, ...track }) => ({
-        ...readOnlyLibraryFile(track, ownerId), sourceJob: sharedJobSummary(track.sourceJob),
+        ...readOnlyLibraryFile(track, ownerId), sourceJob: sharedJobSummary(track.sourceJob, req.user),
         ...(noVocalsVersion && await canReadLibrarySong(req.user, ownerId, noVocalsVersion.jobId, noVocalsVersion.name)
           ? { noVocalsVersion: readOnlyLibraryFile(noVocalsVersion, ownerId) } : {})
       })));
@@ -347,12 +380,12 @@ app.get('/api/library/tracks', async (req, res) => {
 });
 
 app.post('/api/library/playlists/move', async (req, res) => {
-  try { res.json((await moveLibraryPlaylists(req.user.id, req.body, (await getLibraryJobs(req.user))))); }
+  try { res.json(await mutateUserLibrary(req.user, (jobs) => moveLibraryPlaylists(req.user.id, req.body, jobs))); }
   catch (error) { res.status(error.statusCode || 500).json({ error: error.message }); }
 });
 
 app.post('/api/library/songs/transfer', async (req, res) => {
-  try { res.json((await transferLibrarySongs(req.user.id, req.body, (await getLibraryJobs(req.user))))); }
+  try { res.json(await mutateUserLibrary(req.user, (jobs) => transferLibrarySongs(req.user.id, req.body, jobs))); }
   catch (error) { res.status(error.statusCode || 500).json({ error: error.message }); }
 });
 
@@ -362,7 +395,7 @@ app.post('/api/library/songs/remove', async (req, res) => {
       || typeof req.body?.playlistId !== 'string') return res.status(400).json({ error: 'Invalid song membership' });
     const result = await deleteJobFile(req.body.jobId, req.body.name, req.user, req.body);
     if (!result) return res.status(404).json({ error: 'Job not found' });
-    return res.json({ ...(await getLibrary(req.user.id, (await getLibraryJobs(req.user)))), fileDeleted: result.fileDeleted });
+    return res.json({ ...await mutateUserLibrary(req.user, (jobs) => getLibrary(req.user.id, jobs)), fileDeleted: result.fileDeleted });
   } catch (error) { return res.status(error.statusCode || 500).json({ error: error.message }); }
 });
 
@@ -371,7 +404,7 @@ app.post('/api/jobs/import', handleLibraryImport);
 app.get('/api/jobs/import/playlists', async (req, res) => {
   try {
     const owner = await resolveImportUser(req.user, req.query.userId);
-    const library = await readPostgresLibrary(openDatabase(), owner.id);
+    const library = await readPostgresLibrary(openDatabase(), owner.id, req.user.id);
     return res.json({ user: { id: owner.id, name: owner.name },
       playlists: library.playlists.filter((playlist) => !['running', 'queued'].includes(playlist.status))
         .map(({ id, playlistTitle, status }) => ({ id, playlistTitle, status })) });
@@ -390,13 +423,13 @@ app.get('/api/jobs/import/local', requireAdmin, async (_req, res) => {
 });
 
 app.get('/api/jobs', async (req, res) => {
-  const jobs = (await getJobs());
+  const jobs = (await getJobs()).map((job) => visibleJob(job, req.user)).filter(Boolean);
   const library = (await getLibrary(req.user.id, jobs));
   res.json(jobs.map((job) => ({ ...job, files: orderFiles(job.files || [], library.songOrder[job.id]) })));
 });
 
 app.get('/api/jobs/:id', async (req, res) => {
-  const job = (await getJob(req.params.id));
+  const job = visibleJob(await getJob(req.params.id), req.user);
   if (!job) {
     return res.status(404).json({ error: 'Job not found' });
   }
@@ -408,14 +441,34 @@ app.patch('/api/jobs/:id/title', async (req, res) => {
   try {
     const job = await setJobTitle(req.params.id, req.body?.playlistTitle, req.user);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    return res.json(job);
+    return res.json(visibleJob(job, req.user));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/jobs/:id/privacy', async (req, res) => {
+  try {
+    const job = await setJobPrivacy(req.params.id, req.body?.private, req.user);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    return res.json(visibleJob(job, req.user));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/jobs/:id/files/:name/privacy', async (req, res) => {
+  try {
+    const job = await setJobFilePrivacy(req.params.id, req.params.name, req.body?.private, req.user);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    return res.json(visibleJob(job, req.user));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
 app.get('/api/jobs/:id/files', async (req, res) => {
-  const job = (await getJob(req.params.id));
+  const job = visibleJob(await getJob(req.params.id), req.user);
   if (!job) {
     return res.status(404).json({ error: 'Job not found' });
   }
@@ -441,7 +494,7 @@ async function listJobFiles(job, order, names) {
       const version = findNoVocals({ name, jobId: job.id, noVocalsName: job.transcriptions?.[name]?.noVocalsName }, available);
       if (version) required.add(version.name);
     }
-    selectedNames = [...required];
+    selectedNames = [...required].filter((name) => job.files.includes(name));
   }
   for (const fileName of orderFiles(selectedNames, order)) {
     if (!isValidJobFileName(fileName)) continue;
@@ -455,6 +508,7 @@ async function listJobFiles(job, order, names) {
         ...job.songMetadata?.[fileName],
         ...metadata,
         name: fileName,
+        private: !canReadFile(job, fileName, { id: null }),
         noVocalsName: job.transcriptions?.[fileName]?.noVocalsName,
         sizeBytes: stat.size,
         downloadUrl: `/api/jobs/${job.id}/download/${encodeURIComponent(fileName)}`,
@@ -483,6 +537,7 @@ async function resolveRequestedFile(req, acceptsFile = null) {
   const job = (await getJob(req.params.id));
   if (!job) throw Object.assign(new Error('Job not found'), { statusCode: 404 });
   const name = req.params.name;
+  if (!canReadFile(job, name, req.user)) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
   if (!isValidJobFileName(name) || (acceptsFile && !acceptsFile(name))) {
     throw Object.assign(new Error('Invalid file path'), { statusCode: 400 });
   }
@@ -557,7 +612,8 @@ app.patch('/api/jobs/:id/files/:name/metadata', async (req, res) => {
   }
 });
 
-app.post('/api/jobs/:id/files/:name/replace', createReplaceFileHandler(listJobFiles));
+app.post('/api/jobs/:id/files/:name/replace', createReplaceFileHandler((job, order, names, user) =>
+  listJobFiles(visibleJob(job, user), order, names)));
 
 app.post('/api/jobs/:id/files/:name/share', createMediaShare);
 
@@ -565,14 +621,14 @@ app.post('/api/jobs/:id/files/:name/transcribe', async (req, res) => {
   try {
     const job = await transcribeJobFile(req.params.id, req.params.name, req.body || {}, req.user);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    return res.json(job);
+    return res.json(visibleJob(job, req.user));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
 app.get('/api/jobs/:id/download-all', async (req, res) => {
-  const job = (await getJob(req.params.id));
+  const job = visibleJob(await getJob(req.params.id), req.user);
   if (!job) {
     return res.status(404).json({ error: 'Job not found' });
   }
@@ -581,6 +637,8 @@ app.get('/api/jobs/:id/download-all', async (req, res) => {
   for (const fileName of job.files) {
     const filePath = getFilePath(job, fileName);
     if (!isFileInsideJobFolder(job, filePath)) continue;
+    const realPath = await fs.realpath(filePath).catch(() => null);
+    if (!realPath || !isFileInsideJobFolder({ outputDir: await fs.realpath(job.outputDir) }, realPath)) continue;
     const stat = await fs.stat(filePath).catch(() => null);
     if (stat?.isFile()) files.push({ fileName, filePath });
   }
@@ -645,7 +703,7 @@ app.put('/api/jobs/:id/contributors', async (req, res) => {
   try {
     const job = await setJobContributors(req.params.id, req.body?.userIds, req.user);
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    return res.json(job);
+    return res.json(visibleJob(job, req.user));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -657,7 +715,7 @@ app.post('/api/jobs/:id/rerun', async (req, res) => {
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
-    return res.status(202).json(job);
+    return res.status(202).json(visibleJob(job, req.user));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -669,7 +727,7 @@ app.delete('/api/jobs/:id/files/:name', async (req, res) => {
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
-    return res.json(job);
+    return res.json(visibleJob(job, req.user));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }

@@ -6,6 +6,7 @@ import { openDatabase } from './database.js';
 import { getFilePath, isFileInsideJobFolder, isValidJobFileName } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { readSongMetadata } from './music.js';
+import { fileVisibilitySql } from './privacy.js';
 
 const metadataFields = ['title', 'artist', 'album', 'performerInfo', 'genre', 'year',
   'trackNumber', 'partOfSet', 'rating', 'artwork', 'sylt', 'uslt'];
@@ -46,7 +47,8 @@ export async function createMediaShare(req, res) {
       const creator = await database.prepare('SELECT id, role, status FROM users WHERE id = $1').get(req.user.id);
       const record = await database.prepare(`SELECT jobs.data FROM jobs
         JOIN songs ON songs.job_id = jobs.id
-        WHERE jobs.id = $1 AND songs.name = $2 AND songs.media_type = 'audio'`)
+        WHERE jobs.id = $1 AND songs.name = $2 AND songs.media_type = 'audio'
+          AND ${fileVisibilitySql('jobs', 'songs.name', 'NULL')}`)
         .get(req.params.id, req.params.name);
       if (!record) throw unavailable();
       const job = JSON.parse(record.data);
@@ -74,7 +76,8 @@ async function resolveShare(token) {
     JOIN songs ON songs.job_id = shares.job_id AND songs.name = shares.name
     JOIN jobs ON jobs.id = songs.job_id
     JOIN users ON users.id = shares.creator_id
-    WHERE shares.token_hash = $1 AND songs.media_type = 'audio'`).get(hashToken(token));
+    WHERE shares.token_hash = $1 AND songs.media_type = 'audio'
+      AND ${fileVisibilitySql('jobs', 'songs.name', 'NULL')}`).get(hashToken(token));
   if (!record) throw unavailable();
   const job = JSON.parse(record.data);
   if (!canShare(job, record)) throw unavailable();
@@ -94,7 +97,9 @@ export function adminMediaSharesRouter() {
     }
     const result = await openDatabase().withTransaction(async () => {
       const database = openDatabase();
-      const { total } = await database.prepare('SELECT COUNT(*)::integer AS total FROM media_shares').get();
+      const { total } = await database.prepare(`SELECT COUNT(*)::integer AS total FROM media_shares shares
+        JOIN jobs ON jobs.id = shares.job_id
+        WHERE ${fileVisibilitySql('jobs', 'shares.name', '$1')}`).get(req.user.id);
       const pageSize = 50;
       const totalPages = Math.max(1, Math.ceil(total / pageSize));
       const page = Math.min(requestedPage, totalPages);
@@ -104,15 +109,18 @@ export function adminMediaSharesRouter() {
         FROM media_shares shares
         LEFT JOIN users ON users.id = shares.creator_id
         LEFT JOIN jobs ON jobs.id = shares.job_id
-        ORDER BY shares.token_hash LIMIT $1 OFFSET $2`).all(pageSize, (page - 1) * pageSize);
+        WHERE ${fileVisibilitySql('jobs', 'shares.name', '$3')}
+        ORDER BY shares.token_hash LIMIT $1 OFFSET $2`).all(pageSize, (page - 1) * pageSize, req.user.id);
       return { shares, page, pageSize, total, totalPages };
     });
     res.json(result);
   });
   router.delete('/:id', async (req, res) => {
     if (!/^[a-f0-9]{64}$/.test(req.params.id)) return res.status(404).json({ error: 'Shared link not found' });
-    const deleted = await openDatabase().prepare('DELETE FROM media_shares WHERE token_hash = $1 RETURNING token_hash')
-      .get(req.params.id);
+    const deleted = await openDatabase().prepare(`DELETE FROM media_shares shares USING jobs
+      WHERE shares.token_hash = $1 AND jobs.id = shares.job_id
+        AND ${fileVisibilitySql('jobs', 'shares.name', '$2')} RETURNING shares.token_hash`)
+      .get(req.params.id, req.user.id);
     if (!deleted) return res.status(404).json({ error: 'Shared link not found' });
     return res.status(204).end();
   });

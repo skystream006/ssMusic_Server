@@ -1,4 +1,5 @@
 import { openDatabase } from './database.js';
+import { entryVisibilitySql, fileVisibilitySql, visibleJob } from './privacy.js';
 
 export function restrictSharedAccess(req, res, next) {
   const pathname = req.path.replace(/\/+$/, '').toLowerCase();
@@ -49,8 +50,13 @@ export async function libraryReaderId(user, requestedId) {
 
 export async function canReadLibrarySong(user, ownerId, jobId, name) {
   const readerId = await libraryReaderId(user, ownerId);
-  return Boolean(await openDatabase().prepare('SELECT 1 FROM user_songs WHERE user_id = $1 AND job_id = $2 AND name = $3')
-    .get(readerId, jobId, name));
+  return Boolean(await openDatabase().prepare(`SELECT 1 FROM library_memberships membership
+    JOIN library_entries entry ON entry.user_id = membership.user_id AND entry.id = membership.playlist_id
+    JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
+    JOIN jobs ON jobs.id = songs.job_id
+    WHERE membership.user_id = $1 AND songs.job_id = $2 AND songs.name = $3
+      AND ${entryVisibilitySql('entry', '$4')} AND ${fileVisibilitySql('jobs', 'songs.name', '$4')} LIMIT 1`)
+    .get(readerId, jobId, name, user.id));
 }
 
 export function readOnlyLibraryFile(file, ownerId) {
@@ -66,13 +72,19 @@ export function readOnlyLibraryFile(file, ownerId) {
 }
 
 export async function canReadSharedSong(userId, jobId, name) {
-  return Boolean(await openDatabase().prepare(`SELECT 1 FROM user_songs
-    JOIN library_shares ON library_shares.owner_id = user_songs.user_id
+  return Boolean(await openDatabase().prepare(`SELECT 1 FROM library_memberships membership
+    JOIN library_entries entry ON entry.user_id = membership.user_id AND entry.id = membership.playlist_id
+    JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
+    JOIN jobs ON jobs.id = songs.job_id
+    JOIN library_shares ON library_shares.owner_id = membership.user_id
     JOIN users ON users.id = library_shares.owner_id
-    WHERE library_shares.viewer_id = $1 AND user_songs.job_id = $2 AND user_songs.name = $3
+    WHERE library_shares.viewer_id = $1 AND songs.job_id = $2 AND songs.name = $3
+      AND ${entryVisibilitySql('entry', '$1')} AND ${fileVisibilitySql('jobs', 'songs.name', '$1')}
       AND users.status = 'approved' AND users.role <> 'shared' LIMIT 1`).get(userId, jobId, name));
 }
 
-export function sharedJobSummary(job) {
+export function sharedJobSummary(job, user = null) {
+  job = visibleJob(job, user);
+  if (!job) return null;
   return { id: job.id, playlistTitle: job.playlistTitle, status: job.status, songCount: job.songCount, updatedAt: job.updatedAt };
 }

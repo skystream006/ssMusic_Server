@@ -1,5 +1,6 @@
 import { getPlaylistIds, getPlaylistTracks, individualPlaylistNames, isNoVocals, reconcileLibrary, songKey, songMetadataFields, songSearchText, songStem } from './library.js';
 import { mediaType } from './media.js';
+import { attachPrivacyAliases, canReadFile, entryVisibilitySql, fileVisibilitySql, jobVisibilitySql, visibleJob } from './privacy.js';
 
 function hydrate(job, rows) {
   job.files = rows.map((row) => row.name);
@@ -13,7 +14,9 @@ function hydrate(job, rows) {
 export async function readPostgresJob(database, id) {
   const record = await database.prepare('SELECT data FROM jobs WHERE id = $1').get(id);
   if (!record) return undefined;
-  return hydrate(JSON.parse(record.data), await database.prepare('SELECT name, metadata, transcription FROM songs WHERE job_id = $1 ORDER BY file_order').all(id));
+  const job = hydrate(JSON.parse(record.data), await database.prepare('SELECT name, metadata, transcription FROM songs WHERE job_id = $1 ORDER BY file_order').all(id));
+  await attachPrivacyAliases(database, [job]);
+  return job;
 }
 
 export async function readPostgresJobs(database, userId) {
@@ -26,7 +29,7 @@ export async function readPostgresJobs(database, userId) {
     if (!grouped.has(row.job_id)) grouped.set(row.job_id, []);
     grouped.get(row.job_id).push(row);
   }
-  return records.map((record) => hydrate(JSON.parse(record.data), grouped.get(record.id) || []));
+  return attachPrivacyAliases(database, records.map((record) => hydrate(JSON.parse(record.data), grouped.get(record.id) || [])));
 }
 
 async function insertRows(database, sql, rows) {
@@ -141,62 +144,90 @@ export async function writePostgresJob(database, job) {
   });
 }
 
-export async function readPostgresLibrary(database, userId) {
+export async function readPostgresLibrary(database, userId, viewerId = userId) {
   const preferences = await database.prepare('SELECT library_version FROM user_preferences WHERE user_id = $1').get(userId);
   const catalog = await database.prepare('SELECT total_songs, revision FROM user_catalog WHERE user_id = $1').get(userId);
-  const entryRows = await database.prepare('SELECT data, id, song_count FROM library_entries WHERE user_id = $1 ORDER BY position, id').all(userId);
+  const entryRows = await database.prepare(`SELECT entry.data, entry.id, (
+    SELECT count(*) FROM library_memberships membership
+    JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
+    JOIN jobs ON jobs.id = songs.job_id
+    WHERE membership.user_id = entry.user_id AND membership.playlist_id = entry.id
+      AND ${fileVisibilitySql('jobs', 'songs.name', '$2')}) AS song_count
+    FROM library_entries entry WHERE entry.user_id = $1 AND ${entryVisibilitySql('entry', '$2')}
+    ORDER BY entry.position, entry.id`).all(userId, viewerId);
   const entries = entryRows.map((row) => JSON.parse(row.data));
-  const jobs = (await database.prepare(`SELECT jobs.data - 'output' - 'command' AS data, jobs.song_count,
-    EXISTS (SELECT 1 FROM songs WHERE job_id = jobs.id AND transcription->>'status' = 'sent') AS pending
-    FROM jobs JOIN library_entries ON library_entries.id = jobs.id WHERE library_entries.user_id = $1`).all(userId))
+  const jobs = await attachPrivacyAliases(database, (await database.prepare(`SELECT jobs.data - 'output' - 'command' AS data,
+    (SELECT count(*) FROM songs WHERE job_id = jobs.id AND media_type IS NOT NULL
+      AND ${fileVisibilitySql('jobs', 'songs.name', '$2')}) AS song_count,
+    EXISTS (SELECT 1 FROM songs WHERE job_id = jobs.id AND transcription->>'status' = 'sent'
+      AND ${fileVisibilitySql('jobs', 'songs.name', '$2')}) AS pending
+    FROM jobs JOIN library_entries entry ON entry.id = jobs.id WHERE entry.user_id = $1
+      AND ${entryVisibilitySql('entry', '$2')} AND ${jobVisibilitySql('jobs', '$2')}`).all(userId, viewerId))
     .map((row) => {
       const job = JSON.parse(row.data);
       return { ...job, contributors: job.contributors || [], transcriptions: {}, songCount: row.song_count, transcriptionPending: row.pending };
-    });
+    }));
+  const summaries = jobs.map((job) => ({ ...visibleJob(job, viewerId), songCount: job.songCount,
+    transcriptionPending: job.transcriptionPending }));
   const jobMap = new Map(jobs.map((job) => [job.id, job]));
+  for (const entry of entries) {
+    if (jobMap.has(entry.id)) entry.private = jobMap.get(entry.id).private === true;
+  }
   const counts = new Map(entryRows.map((row) => [row.id, row.song_count]));
-  return { version: preferences?.library_version || 0, catalogRevision: catalog?.revision || 0, serverPagination: true, entries, songOrder: {}, jobs,
-    songCount: catalog?.total_songs || 0,
+  const { count } = await database.prepare(`SELECT count(DISTINCT (membership.job_id, membership.name)) AS count
+    FROM library_memberships membership JOIN library_entries entry ON entry.user_id = membership.user_id AND entry.id = membership.playlist_id
+    JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name JOIN jobs ON jobs.id = songs.job_id
+    WHERE membership.user_id = $1 AND ${entryVisibilitySql('entry', '$2')}
+      AND ${fileVisibilitySql('jobs', 'songs.name', '$2')}`).get(userId, viewerId);
+  return { version: preferences?.library_version || 0, catalogRevision: catalog?.revision || 0, serverPagination: true, entries, songOrder: {}, jobs: summaries,
+    songCount: count,
     playlists: entries.filter((entry) => entry.type === 'playlist').map((entry) => ({ id: entry.id,
       jobId: jobMap.has(entry.id) ? entry.id : null, playlistTitle: entry.name || jobMap.get(entry.id)?.playlistTitle,
-      protected: Boolean(entry.protected), status: jobMap.get(entry.id)?.status || 'completed',
+      protected: Boolean(entry.protected), private: entry.private === true, status: jobMap.get(entry.id)?.status || 'completed',
       initiatedBy: jobMap.get(entry.id)?.initiatedBy, contributors: jobMap.get(entry.id)?.contributors || [],
       updatedAt: jobMap.get(entry.id)?.updatedAt, songCount: counts.get(entry.id) || 0 })) };
 }
 
-export async function pagePostgresTracks(database, userId, { entryId = null, page = 1, pageSize = 50, search = '' } = {}) {
-  const entries = (await database.prepare('SELECT data FROM library_entries WHERE user_id = $1 ORDER BY position, id').all(userId)).map((row) => JSON.parse(row.data));
+export async function pagePostgresTracks(database, userId, { entryId = null, page = 1, pageSize = 50, search = '', viewerId = userId } = {}) {
+  const entries = (await database.prepare(`SELECT entry.data FROM library_entries entry WHERE user_id = $1
+    AND ${entryVisibilitySql('entry', '$2')} ORDER BY position, id`).all(userId, viewerId)).map((row) => JSON.parse(row.data));
   if (entryId !== null && !entries.some((entry) => entry.id === entryId)) throw Object.assign(new Error('Library selection not found'), { statusCode: 404 });
   const selected = getPlaylistIds(entries, entryId);
-  const source = entryId === null ? 'SELECT * FROM user_songs WHERE user_id = $1' : `SELECT DISTINCT ON (membership.job_id, membership.name)
+  const source = `SELECT DISTINCT ON (membership.job_id, membership.name)
     membership.*, entry.playlist_position FROM library_memberships membership
     JOIN library_entries entry ON entry.user_id = membership.user_id AND entry.id = membership.playlist_id
     WHERE membership.user_id = $1 AND membership.playlist_id IN (SELECT jsonb_array_elements_text($2::jsonb))
+      AND ${entryVisibilitySql('entry', '$3')}
     ORDER BY membership.job_id, membership.name, entry.playlist_position, membership.position`;
-  const parameters = entryId === null ? [userId] : [userId, JSON.stringify(selected)];
-  const filter = search ? `WHERE songs.search_text LIKE $${parameters.length + 1} ESCAPE '\\'` : '';
+  const parameters = [userId, JSON.stringify(selected), viewerId];
+  const filter = `WHERE ${fileVisibilitySql('jobs', 'songs.name', '$3')}`
+    + (search ? ` AND songs.search_text LIKE $${parameters.length + 1} ESCAPE '\\'` : '');
   if (search) parameters.push(`%${search.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`);
-  const from = `FROM (${source}) membership JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name`;
-  const count = !search && entryId === null
-    ? (await database.prepare('SELECT total_songs AS count FROM user_catalog WHERE user_id = $1').get(userId))?.count || 0
-    : (await database.prepare(`SELECT count(*) AS count ${from} ${filter}`).get(...parameters)).count;
+  const from = `FROM (${source}) membership JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
+    JOIN jobs ON jobs.id = songs.job_id`;
+  const count = (await database.prepare(`SELECT count(*) AS count ${from} ${filter}`).get(...parameters)).count;
   const totalPages = pageSize === null ? 1 : Math.max(1, Math.ceil(count / pageSize));
   const selectedPage = Math.min(page, totalPages);
-  const orderedPage = `SELECT membership.* ${search ? `${from} ${filter}` : `FROM (${source}) membership`}
+  const orderedPage = `SELECT membership.* ${from} ${filter}
     ORDER BY membership.playlist_position, membership.position, membership.job_id, membership.name LIMIT $${parameters.length + 1} OFFSET $${parameters.length + 2}`;
   const rows = await database.prepare(`SELECT membership.*, songs.metadata, songs.transcription,
     jobs.data - 'output' - 'command' AS job_data,
-    EXISTS (SELECT 1 FROM songs pending WHERE pending.job_id = jobs.id AND pending.transcription->>'status' = 'sent') AS transcription_pending
+    EXISTS (SELECT 1 FROM songs pending WHERE pending.job_id = jobs.id AND pending.transcription->>'status' = 'sent'
+      AND ${fileVisibilitySql('jobs', 'pending.name', '$3')}) AS transcription_pending
     FROM (${orderedPage}) membership JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
     JOIN jobs ON jobs.id = songs.job_id
     ORDER BY membership.playlist_position, membership.position, membership.job_id, membership.name`)
     .all(...parameters, pageSize, pageSize === null ? 0 : (selectedPage - 1) * pageSize);
   const version = (await database.prepare('SELECT library_version FROM user_preferences WHERE user_id = $1').get(userId))?.library_version || 0;
-  return { version, page: selectedPage, pageSize, total: count, totalPages, files: rows.map((row) => {
-    const job = JSON.parse(row.job_data);
+  const sourceJobs = await attachPrivacyAliases(database, rows.map((row) => JSON.parse(row.job_data)));
+  return { version, page: selectedPage, pageSize, total: count, totalPages, files: rows.map((row, index) => {
+    const job = sourceJobs[index];
+    const transcription = row.transcription ? JSON.parse(row.transcription) : null;
+    if (transcription?.noVocalsName && !canReadFile(job, transcription.noVocalsName, viewerId)) delete transcription.noVocalsName;
     return { ...JSON.parse(row.metadata), jobId: row.job_id, name: row.name, playlistId: row.playlist_id,
       playlistTitle: Object.hasOwn(individualPlaylistNames, row.playlist_id) ? individualPlaylistNames[row.playlist_id] : job.playlistTitle,
-      transcription: row.transcription ? JSON.parse(row.transcription) : null, sourceJob: { ...job, transcriptionPending: row.transcription_pending } };
+      private: !canReadFile(job, row.name, null), transcription,
+      sourceJob: { ...visibleJob(job, viewerId), transcriptionPending: row.transcription_pending } };
   }) };
 }
 
@@ -221,7 +252,7 @@ export async function deletePostgresJob(database, id) {
   });
 }
 
-export async function postgresPageJobs(database, tracks) {
+export async function postgresPageJobs(database, tracks, viewerId = null) {
   const jobs = new Map();
   for (const track of tracks) {
     if (!jobs.has(track.jobId)) jobs.set(track.jobId, { ...track.sourceJob, files: [], songMetadata: {}, transcriptions: {} });
@@ -232,10 +263,12 @@ export async function postgresPageJobs(database, tracks) {
   }
   for (const job of jobs.values()) {
     const named = Object.values(job.transcriptions).map((record) => record.noVocalsName).filter(Boolean);
-    const companions = await database.prepare(`SELECT name FROM songs WHERE job_id = $1 AND
-      (karaoke_stem IN (SELECT jsonb_array_elements_text($2::jsonb)) OR name IN (SELECT jsonb_array_elements_text($3::jsonb)))`)
-      .all(job.id, JSON.stringify(job.files.map(songStem)), JSON.stringify(named));
+    const companions = await database.prepare(`SELECT songs.name FROM songs JOIN jobs ON jobs.id = songs.job_id WHERE job_id = $1 AND
+      (karaoke_stem IN (SELECT jsonb_array_elements_text($2::jsonb)) OR name IN (SELECT jsonb_array_elements_text($3::jsonb)))
+      AND ${fileVisibilitySql('jobs', 'songs.name', '$4')}`)
+      .all(job.id, JSON.stringify(job.files.map(songStem)), JSON.stringify(named), viewerId);
     job.files = [...new Set([...job.files, ...companions.map((row) => row.name)])];
   }
-  return jobs;
+  await attachPrivacyAliases(database, [...jobs.values()]);
+  return new Map([...jobs].map(([id, job]) => [id, visibleJob(job, viewerId)]).filter(([, job]) => job));
 }

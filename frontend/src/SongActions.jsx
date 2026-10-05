@@ -1,6 +1,7 @@
 import { Children, cloneElement, useEffect, useId, useRef, useState } from 'react';
 import { Check, CircleAlert, Clock3, Copy, ExternalLink, FileAudio, ImagePlus, Info, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Share2, Star, Trash2, Upload, X } from 'lucide-react';
 import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
+import { individualSongsId, individualVideosId } from '../../src/library.js';
 
 export const transcriptionInactiveMessage = 'Transciption service is currently inactive. Refresh the page when transcription service is available';
 
@@ -86,6 +87,20 @@ export function canManageJob(user, job) {
   return Boolean(user && user.role !== 'shared' && job && (user.role === 'admin' || user.id === job.initiatedBy?.id));
 }
 
+export function canChangePrivacy(user, job, readOnly = false) {
+  return Boolean(!readOnly && user?.id && user.role !== 'shared' && user.id === job?.initiatedBy?.id);
+}
+
+export function canChangePlaylistPrivacy(user, playlist, libraryOwnerId, readOnly = false) {
+  const individual = playlist?.protected && [individualSongsId, individualVideosId].includes(playlist.id);
+  return canChangePrivacy(user, individual ? { initiatedBy: { id: libraryOwnerId } } : playlist, readOnly);
+}
+
+export function getFilePrivacy(file, job = file?.sourceJob || file?.job) {
+  const inherited = Boolean(job?.private || (file?.private && Array.isArray(job?.privateFiles) && !job.privateFiles.includes(file.name)));
+  return { private: Boolean(inherited || file?.private || job?.privateFiles?.includes(file?.name)), inherited };
+}
+
 export function isContributor(user, job) {
   return Boolean(user?.id && job?.contributors?.some((contributor) => contributor.id === user.id));
 }
@@ -110,6 +125,7 @@ export function ShareMediaDialog({ file, jobId, request, onClose }) {
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
+  const privateFile = getFilePrivacy(file).private;
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -119,7 +135,7 @@ export function ShareMediaDialog({ file, jobId, request, onClose }) {
   }, []);
 
   async function generate() {
-    if (generatingRef.current || url) return;
+    if (generatingRef.current || url || privateFile) return;
     generatingRef.current = true;
     setGenerating(true);
     setError('');
@@ -147,7 +163,8 @@ export function ShareMediaDialog({ file, jobId, request, onClose }) {
     <h2 id={headingId}>Share Media</h2>
     <p className="metadata-filename">{file.title || file.name}</p>
     <p id={`${headingId}-help`}>Anyone with this link can listen, read lyrics and metadata, and save this file without signing in. They cannot edit it. Only share content you have permission to share.</p>
-    {url && <>
+    {privateFile && <p className="notice warning" role="status">Private files cannot be shared. Only the owner can access this file.</p>}
+    {url && !privateFile && <>
       <label className="sr-only" htmlFor={`${headingId}-link`}>Public media link</label>
       <textarea ref={linkRef} id={`${headingId}-link`} readOnly value={url} spellCheck={false} onFocus={(event) => event.target.select()} />
       <p><a href={url} target="_blank" rel="noopener noreferrer"><ExternalLink size={15} /> Open media page</a></p>
@@ -155,8 +172,8 @@ export function ShareMediaDialog({ file, jobId, request, onClose }) {
     {error && <p className="notice error" role="alert">{error}</p>}
     <div className="dialog-actions">
       <button className="secondary-button" type="button" disabled={generating} onClick={onClose}>{url ? 'Done' : 'Cancel'}</button>
-      {url ? <button className="primary-button" type="button" onClick={copyLink}><Copy size={17} />{copied ? 'Copied' : 'Copy link'}</button>
-        : <button className="primary-button" type="button" disabled={generating} onClick={generate}>
+      {url && !privateFile ? <button className="primary-button" type="button" onClick={copyLink}><Copy size={17} />{copied ? 'Copied' : 'Copy link'}</button>
+        : <button className="primary-button" type="button" disabled={generating || privateFile} onClick={generate}>
           {generating ? <RefreshCw className="spin" size={17} /> : <Share2 size={17} />}{generating ? 'Generating...' : 'Generate public link'}
         </button>}
     </div>

@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Info, Link, ListChecks, ListMusic, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Repeat1, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
-import { ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
+import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Info, Link, ListChecks, ListMusic, Lock, LockOpen, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Repeat1, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
+import { getFilePrivacy, ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory } from './navigation.js';
 import { findNoVocals, isNoVocals, songKey, songSearchText } from '../../src/library.js';
@@ -466,7 +466,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <header className="library-selection-heading">
             <span className="selection-art">{libraryView.type === 'folder' ? <Folder size={30} /> : <Disc3 size={32} />}</span>
             <div><p className="eyebrow">{libraryView.type === 'folder' ? 'Playlist folder' : libraryView.selectedId ? 'Playlist' : 'Your collection'}</p>
-              <h2>{libraryView.title}</h2><p>{totalTracks} track{totalTracks === 1 ? '' : 's'}</p></div>
+              <h2>{libraryView.title}</h2><p>{totalTracks} track{totalTracks === 1 ? '' : 's'}</p>
+              {libraryView.playlistPrivate && <p><Lock size={13} /> Private playlist — owner only</p>}</div>
             <button className="round-play" type="button" aria-label={libraryView.pagination ? 'Play page' : 'Play selection'} title={libraryView.pagination ? 'Play page' : 'Play selection'} disabled={!tracks.length || libraryView.loading}
               onClick={() => selectSong(tracks[0], tracks, libraryScope)}><Play size={22} fill="currentColor" /></button>
           </header>
@@ -494,6 +495,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             const trackIndex = playlistTracks.findIndex((item) => songKey(item) === songKey(track));
             const current = songKey(track) === selected;
             const action = libraryView.songState(track);
+            const privacy = action.privacy || getFilePrivacy(track);
+            const privacyLabel = privacy.inherited ? 'Inherited privacy' : privacy.private ? 'Make file public' : 'Make file private';
             const acceptSong = (event) => allowDrop(event, !libraryView.readOnly && !libraryView.saving && !libraryView.pagination && event.dataTransfer.types.includes('application/x-ssmusic-song'));
             return <li className={`library-song-row ${current ? 'is-current' : ''} ${selection?.active && selection.keys.has(songKey(track)) ? 'is-checked' : ''}`} key={songKey(track)}
               onDragEnter={acceptSong} onDragOver={acceptSong} onDragLeave={leaveDrop}
@@ -520,6 +523,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 <span className="song-number">{mediaType(track.name) === 'video' ? <Film size={15} aria-label="Movie" /> : current && playing ? <Music2 size={15} /> : trackIndex + 1}</span>
                 <SongArtwork track={track} />
                 <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><small>{track.artist || (track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original')}</small>
+                  {privacy.private && <small><Lock size={12} /> {privacy.inherited ? 'Inherited privacy — owner only' : 'Private file — owner only'}</small>}
                   <TranscriptionStatus transcription={action.transcription} /></span>
               </button></div>
               <button className="song-playlist" type="button" title={track.playlistTitle} onClick={() => libraryView.onSelect(track.playlistId)}>{track.playlistTitle}</button>
@@ -528,7 +532,13 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 onSaved={(result) => libraryView.onMetadataSaved(track, result)} onError={libraryView.onRatingError} />
               <SongActions name={track.name} className="song-order-actions">
                 <KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} showLabel />
-                {action.canModify && !libraryView.readOnly && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Share Media" aria-label={`Share Media ${track.name}`} aria-haspopup="dialog" disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onShareMedia(track)}><Share2 size={16} /></button>}
+                {action.canChangePrivacy && !libraryView.readOnly && <button className="music-icon-button" type="button"
+                  title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}
+                  aria-label={`${privacyLabel}: ${track.name}`} aria-pressed={privacy.private}
+                  disabled={action.disabled || libraryView.saving || privacy.inherited} onClick={() => libraryView.onChangePrivacy(track)}>
+                  {libraryView.saving ? <RefreshCw className="spin" size={16} /> : privacy.private ? <Lock size={16} /> : <LockOpen size={16} />}
+                </button>}
+                {action.canModify && !libraryView.readOnly && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title={privacy.private ? 'Private files cannot be shared' : 'Share Media'} data-action-label="Share Media" aria-label={`Share Media ${track.name}`} aria-haspopup="dialog" disabled={action.disabled || libraryView.saving || privacy.private} onClick={() => libraryView.onShareMedia(track)}><Share2 size={16} /></button>}
                 {(action.canModify || libraryView.readOnly) && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button"
                   title={libraryView.readOnly ? 'View song metadata' : 'Edit song metadata'} aria-label={`${libraryView.readOnly ? 'View' : 'Edit'} metadata ${track.name}`}
                   aria-haspopup="dialog" disabled={!libraryView.readOnly && action.disabled} onClick={() => libraryView.onEditMetadata(track)}>

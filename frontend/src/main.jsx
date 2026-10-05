@@ -21,6 +21,8 @@ import {
   ListChecks,
   ListPlus,
   ListMusic,
+  Lock,
+  LockOpen,
   LogOut,
   MemoryStick,
   Moon,
@@ -59,7 +61,7 @@ import { navigate, useNavigation } from './navigation.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
 import { isPlayableFile } from '../../src/media.js';
-import { canManageJob, canModifyJob, canRunJobAction, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, SongActions, TranscriptionDialog, transcriptionInactiveMessage, TranscriptionStatus, useTranscriptionService } from './SongActions.jsx';
+import { canChangePrivacy, canManageJob, canModifyJob, canRunJobAction, getFilePrivacy, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, SongActions, TranscriptionDialog, transcriptionInactiveMessage, TranscriptionStatus, useTranscriptionService } from './SongActions.jsx';
 
 const POLL_INTERVAL = 5000;
 const AuthContext = createContext(null);
@@ -715,6 +717,8 @@ function JobPage({ id }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [savingTitle, setSavingTitle] = useState(false);
+  const [savingPrivacy, setSavingPrivacy] = useState(false);
+  const privacySavingRef = useRef(false);
   const [transcribingFile, setTranscribingFile] = useState(null);
   const [pendingTranscriptions, setPendingTranscriptions] = useState({});
   const [transcriptionNotice, setTranscriptionNotice] = useState('');
@@ -726,8 +730,28 @@ function JobPage({ id }) {
   const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
   const canModify = canModifyJob(user, job);
   const canManage = canManageJob(user, job);
-  const transcriptionDisabled = !canModify || isActive || rerunning || deleting || editingContributors || savingTitle;
+  const transcriptionDisabled = !canModify || isActive || rerunning || deleting || editingContributors || savingTitle || savingPrivacy;
   const mutationDisabled = transcriptionDisabled || hasPendingTranscription || Object.keys(pendingTranscriptions).length > 0 || Object.keys(deletingFiles).length > 0 || transcribingFile !== null;
+
+  async function savePrivacy(file = null) {
+    if (!canChangePrivacy(user, job) || mutationDisabled || privacySavingRef.current || (file && getFilePrivacy(file, job).inherited)) return;
+    privacySavingRef.current = true;
+    setSavingPrivacy(true);
+    setActionError('');
+    const isPrivate = file ? getFilePrivacy(file, job).private : Boolean(job.private);
+    try {
+      await request(`/api/jobs/${encodeURIComponent(id)}${file ? `/files/${encodeURIComponent(file.name)}` : ''}/privacy`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ private: !isPrivate })
+      });
+      setSharingFile(null);
+      setFileRevision((revision) => revision + 1);
+    } catch (requestError) {
+      setActionError(`Unable to save privacy: ${requestError.message}`);
+    } finally {
+      privacySavingRef.current = false;
+      setSavingPrivacy(false);
+    }
+  }
 
   async function saveTitle(event) {
     event.preventDefault();
@@ -836,7 +860,7 @@ function JobPage({ id }) {
       {dialog}
       <a className="back-link" href="/job"><ArrowLeft size={17} /> Back to jobs</a>
       {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
-      {sharingFile && <ShareMediaDialog file={sharingFile} jobId={id} request={request} onClose={() => setSharingFile(null)} />}
+      {sharingFile && <ShareMediaDialog file={{ ...sharingFile, private: getFilePrivacy(sharingFile, job).private }} jobId={id} request={request} onClose={() => setSharingFile(null)} />}
       {editingMetadata && <MetadataDialog file={editingMetadata} jobId={id} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
         playback.updateMetadata(id, editingMetadata.name, result);
         setFileRevision((revision) => revision + 1);
@@ -856,7 +880,7 @@ function JobPage({ id }) {
           <div>
             <p className="eyebrow">{job.source ? 'Music import' : job.isPlaylist ? 'Playlist download' : 'Track download'}</p>
             <h1>{job.playlistTitle || 'Preparing playlist'}</h1>
-            <div className="detail-meta"><StatusBadge status={job.status} /><span>Created {formatDate(job.createdAt)}</span></div>
+            <div className="detail-meta"><StatusBadge status={job.status} /><span>Created {formatDate(job.createdAt)}</span>{job.private && <span><Lock size={14} /> Private — owner only</span>}</div>
           </div>
           <div className="detail-actions">
             <div className="record-art"><Disc3 size={70} strokeWidth={1.2} /></div>
@@ -881,6 +905,15 @@ function JobPage({ id }) {
               <dt>{job.source ? 'Source' : 'Source URL'}</dt><dd>{job.source ? (job.source === 'itunes' ? 'iTunes library' : 'Uploaded files') : <a href={job.url} target="_blank" rel="noreferrer">{job.url}<ExternalLink size={14} /></a>}</dd>
               <dt>Job ID</dt><dd><code>{job.id}</code></dd>
               <dt>Initiated by</dt><dd>{job.initiatedBy?.name || 'Unknown'}</dd>
+              <dt>Privacy</dt><dd className="playlist-title-value">
+                <span>{job.private ? 'Private — only the owner can access this job and its files' : 'Not private'}</span>
+                {canChangePrivacy(user, job) && <button className="secondary-button compact-button" type="button"
+                  title={job.private ? 'Make job public' : 'Make job private'} aria-label={job.private ? 'Make job public' : 'Make job private'}
+                  aria-pressed={Boolean(job.private)} disabled={mutationDisabled} onClick={() => savePrivacy()}>
+                  {savingPrivacy ? <RefreshCw className="spin" size={16} /> : job.private ? <LockOpen size={16} /> : <Lock size={16} />}
+                  {savingPrivacy ? 'Saving privacy...' : job.private ? 'Make public' : 'Make private'}
+                </button>}
+              </dd>
               <dt>Contributors</dt><dd className="job-contributors">
                 <span>{job.contributors?.map((contributor) => contributor.name).join(', ') || 'None'}</span>
                 {canManage && <button className="icon-link" type="button" title="Manage contributors" aria-label="Manage contributors" disabled={mutationDisabled} onClick={() => setEditingContributors(true)}><Users size={17} /></button>}
@@ -917,18 +950,22 @@ function JobPage({ id }) {
               </div>
             </div>
             {files.length === 0 ? <div className="empty-files"><FileAudio size={29} /><p>No downloadable files yet.</p></div> : (
-              <ul className="file-list">{files.map((file) => (
+              <ul className="file-list">{files.map((file) => {
+                const privacy = getFilePrivacy(file, job);
+                const privacyLabel = privacy.inherited ? 'Inherited privacy' : privacy.private ? 'Make file public' : 'Make file private';
+                return (
                 <li key={file.name}>
                   {file.isPlayable ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play media">
                     <span className="file-icon">{file.mediaType === 'video' ? <Play size={19} /> : <FileAudio size={19} />}</span>
                     <span className="file-song-info"><strong>{file.title || file.name}</strong>
                       {(file.artist || file.album) && <span className="file-song-credit">{[file.artist, file.album].filter(Boolean).join(' / ')}</span>}
                       <small>{file.title ? `${file.name} / ` : ''}{formatBytes(file.sizeBytes)}</small>
+                      {privacy.private && <small><Lock size={12} /> {privacy.inherited ? 'Inherited privacy — owner only' : 'Private file — owner only'}</small>}
                       <TranscriptionStatus transcription={pendingTranscriptions[file.name] || job.transcriptions?.[file.name]} />
                     </span>
                   </a> : <>
                     <span className="file-icon"><FileAudio size={19} /></span>
-                    <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small></div>
+                    <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small>{privacy.private && <small>{privacy.inherited ? 'Inherited privacy — owner only' : 'Private file — owner only'}</small>}</div>
                   </>}
                   <ListSongRating file={file} jobId={id} request={request} canModify={canModify}
                     disabled={songMutationDisabled(file.name) || editingMetadata?.name === file.name} onError={setActionError}
@@ -937,7 +974,13 @@ function JobPage({ id }) {
                       setFileRevision((revision) => revision + 1);
                     }} />
                   <SongActions name={file.name} className="file-row-actions">
-                    {canModify && file.isSong && <button className="icon-link" type="button" title="Share Media" aria-label={`Share Media ${file.name}`} aria-haspopup="dialog" disabled={songMutationDisabled(file.name)} onClick={() => setSharingFile(file)}><Share2 size={18} /></button>}
+                    {canChangePrivacy(user, job) && <button className="icon-link" type="button"
+                      title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}
+                      aria-label={`${privacyLabel}: ${file.name}`} aria-pressed={privacy.private}
+                      disabled={mutationDisabled || privacy.inherited} onClick={() => savePrivacy(file)}>
+                      {savingPrivacy ? <RefreshCw className="spin" size={18} /> : privacy.private ? <Lock size={18} /> : <LockOpen size={18} />}
+                    </button>}
+                    {canModify && file.isSong && <button className="icon-link" type="button" title={privacy.private ? 'Private files cannot be shared' : 'Share Media'} data-action-label="Share Media" aria-label={`Share Media ${file.name}`} aria-haspopup="dialog" disabled={songMutationDisabled(file.name) || privacy.private} onClick={() => setSharingFile(file)}><Share2 size={18} /></button>}
                     {canModify && file.isSong && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
                     {canModify && file.isSong && <button className="icon-link" type="button" title="Replace File" aria-label={`Replace File ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setReplacingFile(file)}><Upload size={18} /></button>}
                     {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" data-action-label="Transcribe song" title={transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${file.name}`} disabled={songMutationDisabled(file.name) || !transcriptionActive} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
@@ -947,7 +990,7 @@ function JobPage({ id }) {
                     </button>}
                   </SongActions>
                 </li>
-              ))}</ul>
+              ); })}</ul>
             )}
           </section>
         </div>
