@@ -50,6 +50,7 @@ async function testSecondaryPasskeyOptions(context) {
         body: JSON.stringify({ requestId })
       });
       assert.equal(flow === 'register' ? options.rp.id : options.rpId, expectedRPID);
+      if (flow === 'register') assert.equal(options.rp.name, 'ssMusic');
     }
   }
   for (const missingKey of ['PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY']) {
@@ -81,8 +82,8 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
   await store.updateUser(user.id, { status: 'approved' }, admin.id);
   const adminSession = await store.createSession(admin.id);
   const userSession = await store.createSession(user.id);
-  const adminHeaders = { Cookie: `ssytdlp_session=${adminSession.token}` };
-  const userHeaders = { Cookie: `ssytdlp_session=${userSession.token}` };
+  const adminHeaders = { Cookie: `ssmusic_session=${adminSession.token}` };
+  const userHeaders = { Cookie: `ssmusic_session=${userSession.token}` };
   const app = express();
   app.use(express.json(), attachUser);
   registerAuthRoutes(app);
@@ -93,6 +94,28 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
   const call = (url, method = 'GET', headers = {}, body) => fetch(`${base}${url}`, {
     method, headers: { ...headers, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  await context.test('renamed and legacy session cookies authenticate and log out', async () => {
+    for (const cookieName of ['ssmusic_session', 'ssytdlp_session']) {
+      const session = await store.createSession(user.id);
+      const headers = { Cookie: `${cookieName}=${session.token}` };
+      const authenticated = await call('/api/auth/me', 'GET', headers);
+      assert.equal(authenticated.status, 200);
+      assert.equal((await authenticated.json()).user.id, user.id);
+      assert.equal((await call('/api/auth/me', 'GET', { ...headers, Authorization: 'Bearer invalid' })).status, 401);
+      const loggedOut = await call('/api/auth/logout', 'POST', headers);
+      assert.equal(loggedOut.status, 204);
+      assert.match(loggedOut.headers.get('set-cookie'), /ssmusic_session=;/);
+      assert.match(loggedOut.headers.get('set-cookie'), /ssytdlp_session=;/);
+      assert.equal((await call('/api/auth/me', 'GET', headers)).status, 401);
+    }
+    const current = await store.createSession(user.id);
+    const legacy = await store.createSession(admin.id);
+    const headers = { Cookie: `ssytdlp_session=${legacy.token}; ssmusic_session=${current.token}` };
+    assert.equal((await (await call('/api/auth/me', 'GET', headers)).json()).user.id, user.id);
+    assert.equal((await call('/api/auth/logout', 'POST', headers)).status, 204);
+    assert.equal(await store.getSessionUser(current.token), null);
+    assert.equal(await store.getSessionUser(legacy.token), null);
   });
   await context.test('admins rename users and sessions rename only their own username', async () => {
     assert.equal((await call('/api/auth/me', 'PATCH', {}, { name: 'Anonymous' })).status, 401);
@@ -118,7 +141,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     const viewer = await store.registerUser('Shared car', 'shared-car', credential('shared-car'), { role: 'shared', organizerId: user.id });
     await store.updateUser(viewer.id, { status: 'approved' }, admin.id);
     const viewerSession = await store.createSession(viewer.id);
-    const viewerHeaders = { Cookie: `ssytdlp_session=${viewerSession.token}` };
+    const viewerHeaders = { Cookie: `ssmusic_session=${viewerSession.token}` };
     const userPat = await store.createPrivateAccessToken(user.id, 'Link test');
     const organizerRoute = `/api/auth/shared-users/${viewer.id}/libraries`;
     const directoryResponse = await call('/api/auth/register/users');
@@ -264,7 +287,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.equal((await database.prepare(`SELECT count(*) AS count FROM ${table} WHERE user_id = $1`).get(target.id)).count, 0);
     }
     assert.deepEqual((await database.prepare('SELECT * FROM library_backups WHERE user_id = $1').get(target.id)), backup);
-    for (const headers of [{ Cookie: `ssytdlp_session=${session.token}` }, { Authorization: `Bearer ${mobile.token}` }, { 'X-PAT': token.token }]) {
+    for (const headers of [{ Cookie: `ssmusic_session=${session.token}` }, { Authorization: `Bearer ${mobile.token}` }, { 'X-PAT': token.token }]) {
       assert.equal((await call('/protected', 'POST', headers)).status, 401);
     }
     assert.equal((await call(route, 'GET', adminHeaders)).status, 404);
@@ -381,7 +404,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     const userHandle = crypto.randomBytes(32).toString('base64url');
     const account = await store.registerUser('Multiple Passkeys', userHandle, first.credential);
     const session = await store.createSession(account.id);
-    const headers = { Cookie: `ssytdlp_session=${session.token}`, Origin: origin };
+    const headers = { Cookie: `ssmusic_session=${session.token}`, Origin: origin };
     assert.equal((await call('/api/auth/passkeys/options', 'POST', headers)).status, 401);
     assert.equal((await call('/api/auth/passkeys', 'GET', headers)).status, 401);
     assert.equal((await call(`/api/auth/passkeys/${first.credential.id}`, 'DELETE', headers)).status, 401);
@@ -410,6 +433,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.equal(attempt.options.user.id, userHandle);
       assert.equal(attempt.options.user.name, account.name);
       assert.equal(attempt.options.rp.id, rpID);
+      assert.equal(attempt.options.rp.name, 'ssMusic');
       assert.equal(attempt.options.authenticatorSelection.residentKey, 'required');
       assert.equal(attempt.options.authenticatorSelection.userVerification, 'required');
       assert.deepEqual(attempt.options.excludeCredentials.map(({ id }) => id).sort(),
@@ -444,7 +468,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
         requestId: login.requestId, response: key.login(login.options)
       });
       assert.equal(loggedIn.status, 200);
-      assert.match(loggedIn.headers.get('set-cookie'), /ssytdlp_session=.*HttpOnly/);
+      assert.match(loggedIn.headers.get('set-cookie'), /ssmusic_session=.*HttpOnly/);
       assert.equal((await loggedIn.json()).user.id, account.id);
       const after = (await store.findCredential(key.credential.id)).credential;
       assert.equal(after.createdAt, before.createdAt);
@@ -616,7 +640,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.equal((await call('/api/auth/login/options', 'POST', {}, { client: 'android' })).status, 400);
       assert.equal((await call('/api/auth/login/options', 'POST', {}, { client: 'unknown' })).status, 400);
       const codeVerifier = crypto.randomBytes(32).toString('base64url');
-      const appRequest = { client: 'browser-app', redirectUri: 'com.ssytdlp.app:/oauth/callback',
+      const appRequest = { client: 'browser-app', redirectUri: 'com.ssmusic.app:/oauth/callback',
         state: crypto.randomBytes(32).toString('base64url'), codeChallengeMethod: 'S256',
         codeChallenge: crypto.createHash('sha256').update(codeVerifier).digest('base64url') };
       for (const changes of [{ redirectUri: 'https://evil.example/callback' }, { redirectUri: 'javascript:alert(1)' },
@@ -636,6 +660,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
         assert.equal(optionsResponse.status, 200);
         const registration = await optionsResponse.json();
         assert.equal(registration.options.rp.id, rpID);
+        assert.equal(registration.options.rp.name, 'ssMusic');
         const registeredId = crypto.randomBytes(32);
         const idLength = Buffer.alloc(2);
         idLength.writeUInt16BE(registeredId.length);
@@ -664,8 +689,8 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       await store.updateUser(localAccount.user.id, { status: 'approved' }, admin.id);
       const account = await store.registerUser('Mobile Listener', 'mobile-listener', { id: credentialId, publicKey: keyBytes, counter: 0 });
       await store.updateUser(account.id, { status: 'approved' }, admin.id);
-      const start = async (appLogin = false) => {
-        const result = await call('/api/auth/login/options', 'POST', {}, appLogin ? appRequest : {});
+      const start = async (appLogin = false, redirectUri = appRequest.redirectUri) => {
+        const result = await call('/api/auth/login/options', 'POST', {}, appLogin ? { ...appRequest, redirectUri } : {});
         assert.equal(result.status, 200);
         assert.equal(result.headers.get('cache-control'), 'no-store');
         const payload = await result.json();
@@ -713,7 +738,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
         ...appRequest, requestId: browserLogin.requestId, response: assertion(browserLogin.options, origin)
       });
       assert.equal(browserVerified.status, 200);
-      assert.match(browserVerified.headers.get('set-cookie'), /ssytdlp_session=.*HttpOnly/);
+      assert.match(browserVerified.headers.get('set-cookie'), /ssmusic_session=.*HttpOnly/);
       const browserResult = await browserVerified.json();
       assert.equal(browserResult.session, undefined);
       assert.equal(browserResult.redirectUrl, undefined);
@@ -737,7 +762,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
         assert.equal(verifiedAttempt.status, expectedStatus);
         if (expectedStatus === 200) {
           assert.equal((await verifiedAttempt.json()).user.id, localAccount.user.id);
-          assert.match(verifiedAttempt.headers.get('set-cookie'), /ssytdlp_session=.*HttpOnly; Secure/);
+          assert.match(verifiedAttempt.headers.get('set-cookie'), /ssmusic_session=.*HttpOnly; Secure/);
         } else {
           assert.equal(verifiedAttempt.headers.get('set-cookie'), null);
         }
@@ -756,16 +781,32 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
         assert.equal(rejected.headers.get('set-cookie'), null);
         assert.equal((await rejected.json()).session, undefined);
       }
-      const getCode = async () => {
-        const attempt = await start(true);
+      const getCode = async (redirectUri = appRequest.redirectUri) => {
+        const attempt = await start(true, redirectUri);
         const verifiedAttempt = await call('/api/auth/login/verify', 'POST', {}, {
           requestId: attempt.requestId, response: assertion(attempt.options, origin)
         });
         assert.equal(verifiedAttempt.status, 200);
-        return new URL((await verifiedAttempt.json()).redirectUrl).searchParams.get('code');
+        const redirect = new URL((await verifiedAttempt.json()).redirectUrl);
+        assert.equal(`${redirect.protocol}${redirect.pathname}`, redirectUri);
+        assert.equal(redirect.searchParams.get('state'), appRequest.state);
+        return redirect.searchParams.get('code');
       };
+      const legacyRedirectUri = 'com.ssytdlp.app:/oauth/callback';
+      const legacyCode = await getCode(legacyRedirectUri);
+      const legacyExchange = await call('/api/auth/app/token', 'POST', {}, {
+        ...exchangeBody, code: legacyCode, redirectUri: legacyRedirectUri
+      });
+      assert.equal(legacyExchange.status, 200);
+      assert.equal(legacyExchange.headers.get('set-cookie'), null);
+      const legacyResult = await legacyExchange.json();
+      assert.equal(legacyResult.user.id, account.id);
+      assert.equal((await call('/protected', 'POST', { Authorization: `Bearer ${legacyResult.session.token}` })).status, 200);
+      const mismatchedCode = await getCode(legacyRedirectUri);
+      assert.equal((await call('/api/auth/app/token', 'POST', {}, { ...exchangeBody, code: mismatchedCode })).status, 400);
       for (const changes of [{ codeVerifier: crypto.randomBytes(32).toString('base64url') },
-        { codeVerifier: 'short' }, { codeVerifier: undefined }, { redirectUri: 'https://evil.example' }]) {
+        { codeVerifier: 'short' }, { codeVerifier: undefined }, { redirectUri: 'https://evil.example' },
+        { redirectUri: legacyRedirectUri }]) {
         const code = await getCode();
         assert.equal((await call('/api/auth/app/token', 'POST', userHeaders, { ...exchangeBody, code, ...changes })).status, 400);
         assert.equal((await call('/api/auth/app/token', 'POST', {}, { ...exchangeBody, code })).status, 400);

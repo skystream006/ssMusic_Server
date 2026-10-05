@@ -1,5 +1,5 @@
 {
-  "name": "ssytdlp-server",
+  "name": "ssmusic-server",
   "version": "1.0.0",
   "description": "YouTube Music yt-dlp job server",
   "main": "src/server.js",

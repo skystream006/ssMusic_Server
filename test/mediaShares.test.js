@@ -36,7 +36,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     }
     users[name] = user;
     const session = await store.createSession(user.id);
-    credentials[name] = [{ Cookie: `ssytdlp_session=${session.token}` }, { Authorization: ['Bearer', session.token].join(' ') }];
+    credentials[name] = [{ Cookie: `ssmusic_session=${session.token}` }, { Authorization: ['Bearer', session.token].join(' ') }];
     if (user.status === 'approved') {
       const pat = await store.createPrivateAccessToken(user.id, 'Song sharing tests');
       credentials[name].push({ 'X-PAT': pat.token });
@@ -107,7 +107,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
       server.stderr.on('data', (chunk) => { output += chunk; });
       server.stdout.on('data', (chunk) => {
         output += chunk;
-        if (output.includes('ssYTDLP HTTPS server listening')) resolve();
+        if (output.includes('ssMusic HTTPS server listening')) resolve();
       });
     });
   }
@@ -241,7 +241,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     assert.ok(expected.artwork.startsWith('data:image/png;base64,'));
     assert.deepEqual(expected.sylt, [{ time: 1, text: 'First line' }, { time: 2.5, text: 'Second line' }]);
     for (const headers of [{}, credentials.Other[0], credentials.Reader[0],
-      { Cookie: 'ssytdlp_session=%broken' }, { Authorization: ['Bearer', 'invalid'].join(' '), 'X-PAT': 'invalid' }]) {
+      { Cookie: 'ssmusic_session=%broken' }, { Authorization: ['Bearer', 'invalid'].join(' '), 'X-PAT': 'invalid' }]) {
       const response = await call(mediaPath(ownerToken), 'GET', headers);
       assert.equal(response.status, 200, response.text);
       assert.deepEqual(response.body, expected);
@@ -323,7 +323,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
       privacyHeaders(response);
     }
     for (const headers of [{ Authorization: ['Bearer', ownerToken].join(' ') }, { 'X-PAT': ownerToken },
-      { Cookie: `ssytdlp_session=${ownerToken}` }]) {
+      { Cookie: `ssmusic_session=${ownerToken}` }]) {
       for (const route of ['/api/jobs', '/api/library', '/api/preferences', '/api/health',
         '/api/admin/users', `/api/jobs/${job.id}/stream/${encodeURIComponent(songName)}`]) {
         assert.equal((await call(route, 'GET', headers)).status, 401, route);

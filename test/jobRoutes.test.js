@@ -122,7 +122,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     users[name] = user;
     const session = await store.createSession(user.id);
     const pat = await store.createPrivateAccessToken(user.id, 'HTTP test');
-    credentials[name] = [{ Cookie: `ssytdlp_session=${session.token}` }, { 'X-PAT': pat.token }];
+    credentials[name] = [{ Cookie: `ssmusic_session=${session.token}` }, { 'X-PAT': pat.token }];
     mobileHeaders[name] = { Authorization: `Bearer ${session.token}` };
   }
 
@@ -200,7 +200,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       server.stderr.on('data', (chunk) => { output += chunk; });
       server.stdout.on('data', (chunk) => {
         output += chunk;
-        if (output.includes('ssYTDLP HTTPS server listening')) resolve();
+        if (output.includes('ssMusic HTTPS server listening')) resolve();
       });
     });
   }

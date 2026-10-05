@@ -58,7 +58,7 @@ if (await exists(ffmpegPath) && await exists(ffprobePath)) {
   process.exit(0);
 }
 
-const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-ffmpeg-'));
+const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-ffmpeg-'));
 const archivePath = path.join(temporaryRoot, 'ffmpeg.zip');
 const extractRoot = path.join(temporaryRoot, 'extract');
 

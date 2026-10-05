@@ -1,12 +1,23 @@
-# ssYTDLP_Server
+# ssMusic_Server
 
-ssMusic Player is a personal music and video library backed by ssYTDLP download
+ssMusic is a personal music and video library with yt-dlp download
 jobs from YouTube and YouTube Music URLs.
 
 Submitted YouTube links containing a `list` query parameter are normalized to
 `https://music.youtube.com/playlist?list=PLAYLIST_ID` before duplicate detection and
 downloading. Video IDs, tracking parameters, and fragments are discarded for these
 playlist submissions; links without `list` are unchanged.
+
+## Renamed deployments
+
+Keep the existing PostgreSQL database, Docker volumes, `.env`, and TLS files
+when upgrading. Before moving a Docker checkout to a differently named folder,
+set `COMPOSE_PROJECT_NAME` in `.env` to the original project name shown by
+`docker compose ls`. This keeps the same `data`, `output`, and `postgres_data`
+volumes instead of selecting a fresh database or empty media library.
+Keep `PASSKEY_RP_ID`, `PASSKEY_ORIGIN`, and any secondary passkey settings
+unchanged: existing passkeys are bound to those hostnames and origins, not the
+application or repository name. No account or media data migration is required.
 
 ## Audio and video downloads
 
@@ -277,9 +288,9 @@ the job's **Download all** archive.
 ### Import from a Windows folder
 
 Docker Compose mounts `./import-storage` beside this project into the container
-at `/app/import-storage`, with write access. For a checkout at `C:\DATA\ssYTDLP_Server`,
+at `/app/import-storage`, with write access. For a checkout at `C:\DATA\ssMusic_Server`,
 copy your ZIP and XML from USB directly into
-`C:\DATA\ssYTDLP_Server\import-storage`. No access to Docker volumes is needed.
+`C:\DATA\ssMusic_Server\import-storage`. No access to Docker volumes is needed.
 The folder is excluded from Git and from the Docker build context.
 
 To use a different existing Windows folder, set this in `.env` (forward slashes
@@ -561,10 +572,10 @@ fixture gets its own temporary database; no deployed database or volume is used.
 To select tests, use `npm test -- test/database.test.js test/postgres.test.js`.
 
 Alternatively, provide a dedicated PostgreSQL test service with a database named
-`ssytdlp_test` and a user allowed to create and drop databases:
+`ssmusic_test` and a user allowed to create and drop databases:
 
 ```powershell
-$env:TEST_POSTGRES_URL = 'postgres://user:password@127.0.0.1:5432/ssytdlp_test'
+$env:TEST_POSTGRES_URL = 'postgres://user:password@127.0.0.1:5432/ssmusic_test'
 npm test
 ```
 
@@ -807,12 +818,12 @@ credential provider. Use an external browser, not an embedded WebView.
    padding. Open the following URL with correctly URL-encoded query values:
 
    ```text
-   <PASSKEY_ORIGIN>/app-login?redirect_uri=com.ssytdlp.app%3A%2Foauth%2Fcallback&code_challenge=<CHALLENGE>&code_challenge_method=S256&state=<STATE>
+    <PASSKEY_ORIGIN>/app-login?redirect_uri=com.ssmusic.app%3A%2Foauth%2Fcallback&code_challenge=<CHALLENGE>&code_challenge_method=S256&state=<STATE>
    ```
 
 3. The user selects **Authorize with Passkey** and completes a fresh browser
    passkey confirmation, even if a browser session already exists. The page
-   returns to `com.ssytdlp.app:/oauth/callback?code=<CODE>&state=<STATE>` and
+    returns to `com.ssmusic.app:/oauth/callback?code=<CODE>&state=<STATE>` and
    offers **Return to app** if automatic navigation is blocked. Cancel leaves
    the authorization page without issuing a code; closing the tab cancels too.
 4. In the Android callback, require the exact scheme/path and expected `state`;
@@ -824,7 +835,7 @@ credential provider. Use an external browser, not an embedded WebView.
    {
      "code": "CODE_FROM_CALLBACK",
      "codeVerifier": "ORIGINAL_SECRET_VERIFIER",
-     "redirectUri": "com.ssytdlp.app:/oauth/callback"
+    "redirectUri": "com.ssmusic.app:/oauth/callback"
    }
    ```
 
@@ -838,16 +849,18 @@ credential provider. Use an external browser, not an embedded WebView.
    server restarts. On expiry or `401`, start a new browser login.
 
 Register an exported callback Activity with a browsable `VIEW` intent filter
-for scheme `com.ssytdlp.app`. The callback is a private-use URI with no host;
+for scheme `com.ssmusic.app`. The callback is a private-use URI with no host;
 validate the complete URI path `/oauth/callback` in the Activity. The server
-only accepts the exact redirect URI above; arbitrary redirects are rejected.
+also accepts the legacy `com.ssytdlp.app:/oauth/callback` URI so installed clients
+keep working. Each authorization code is bound to the exact URI requested;
+the schemes cannot be swapped during token exchange. Arbitrary redirects are rejected.
 
 ```xml
 <intent-filter>
     <action android:name="android.intent.action.VIEW" />
     <category android:name="android.intent.category.DEFAULT" />
     <category android:name="android.intent.category.BROWSABLE" />
-    <data android:scheme="com.ssytdlp.app" />
+    <data android:scheme="com.ssmusic.app" />
 </intent-filter>
 ```
 
@@ -871,7 +884,10 @@ Account changes before exchange return `403` and require a fresh login.
 Pending/revoked accounts cannot authorize; passkey verification returns `403`
 with `ACCESS_PENDING` or `ACCESS_REVOKED`. Rate limiting returns `429`.
 
-Normal web login remains cookie-based. The app flow neither reads nor replaces
+Normal web login remains cookie-based and now issues `ssmusic_session` cookies.
+Existing `ssytdlp_session` cookies remain accepted until expiry or logout;
+browser logout revokes and clears both names. Bearer sessions and PATs are unchanged.
+The app flow neither reads nor replaces
 the browser session. `GET /api/auth/me` returns the bearer session's user;
 `POST /api/auth/logout` with that bearer header revokes only that session (`204`).
 Account revocation invalidates all sessions. Send only one auth mechanism:
@@ -1403,11 +1419,11 @@ curl --request POST "https://localhost:4000/api/jobs" \
     --data '{"url":"https://music.youtube.com/watch?v=VIDEO_ID"}'
 ```
 
-PowerShell 7 example, with the PAT already in the `SSYTDLP_PAT` environment variable:
+PowerShell 7 example, with the PAT already in the `SSMUSIC_PAT` environment variable:
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri 'https://localhost:4000/api/jobs' `
-        -Headers @{ 'X-PAT' = $env:SSYTDLP_PAT } `
+        -Headers @{ 'X-PAT' = $env:SSMUSIC_PAT } `
         -ContentType 'application/json' `
         -Body (@{ url = 'https://music.youtube.com/watch?v=VIDEO_ID' } | ConvertTo-Json)
 ```

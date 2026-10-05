@@ -73,7 +73,7 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
       users[name] = await store.updateUser(users[name].id, { status: 'approved' }, users.Admin.id);
     }
     const session = await store.createSession(users[name].id);
-    credentials[name] = [{ Cookie: `ssytdlp_session=${session.token}` }, { Authorization: ['Bearer', session.token].join(' ') }];
+    credentials[name] = [{ Cookie: `ssmusic_session=${session.token}` }, { Authorization: ['Bearer', session.token].join(' ') }];
     if (name !== 'Pending') {
       const pat = await store.createPrivateAccessToken(users[name].id, 'Replacement tests');
       credentials[name].push({ 'X-PAT': pat.token });
@@ -162,7 +162,7 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
     server.stderr.on('data', (chunk) => { output += chunk; });
     server.stdout.on('data', (chunk) => {
       output += chunk;
-      if (output.includes('ssYTDLP HTTPS server listening')) resolve();
+      if (output.includes('ssMusic HTTPS server listening')) resolve();
     });
   });
   const ca = await fs.readFile(path.join(directory, 'data', 'tls', 'server-cert.pem'));

@@ -16,7 +16,7 @@ import { deletePostgresJob, pagePostgresTracks, readPostgresJob, readPostgresLib
 test('PostgreSQL bindings and async transactions preserve isolation and rollback', {
   skip: !process.env.TEST_POSTGRES_URL
 }, async (testContext) => {
-  assert.equal(new URL(process.env.TEST_POSTGRES_URL).pathname, '/ssytdlp_test');
+  assert.equal(new URL(process.env.TEST_POSTGRES_URL).pathname, '/ssmusic_test');
   const database = createPostgresDatabase(process.env.TEST_POSTGRES_URL);
   testContext.after(() => database.close());
   await database.ready;
@@ -46,7 +46,7 @@ test('PostgreSQL bindings and async transactions preserve isolation and rollback
 test('PostgreSQL normalizes songs and pages searchable account-scoped catalog records', {
   skip: !process.env.TEST_POSTGRES_URL
 }, async (testContext) => {
-  assert.equal(new URL(process.env.TEST_POSTGRES_URL).pathname, '/ssytdlp_test');
+  assert.equal(new URL(process.env.TEST_POSTGRES_URL).pathname, '/ssmusic_test');
   const database = createPostgresDatabase(process.env.TEST_POSTGRES_URL);
   const userId = crypto.randomUUID();
   const jobId = crypto.randomUUID();
@@ -107,8 +107,8 @@ test('PostgreSQL normalizes songs and pages searchable account-scoped catalog re
 test('PostgreSQL serves authenticated library, metadata, organization and duplicate-job HTTP workflows', {
   skip: !process.env.TEST_POSTGRES_URL, timeout: 30_000
 }, async (testContext) => {
-  assert.equal(new URL(process.env.TEST_POSTGRES_URL).pathname, '/ssytdlp_test');
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-postgres-http-'));
+  assert.equal(new URL(process.env.TEST_POSTGRES_URL).pathname, '/ssmusic_test');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-postgres-http-'));
   const database = createPostgresDatabase(process.env.TEST_POSTGRES_URL);
   const userId = crypto.randomUUID();
   const otherId = crypto.randomUUID();
@@ -161,7 +161,7 @@ test('PostgreSQL serves authenticated library, metadata, organization and duplic
     server.stderr.on('data', (chunk) => { output += chunk; });
     server.stdout.on('data', (chunk) => {
       output += chunk;
-      if (output.includes('ssYTDLP HTTPS server listening')) resolve();
+      if (output.includes('ssMusic HTTPS server listening')) resolve();
     });
   });
   const request = (route, { method = 'GET', body, user = userId } = {}) => new Promise((resolve, reject) => {
@@ -224,7 +224,7 @@ test('PostgreSQL serves authenticated library, metadata, organization and duplic
 test('PostgreSQL pages a million indexed song records without materializing the catalog in Node', {
   skip: !process.env.TEST_POSTGRES_URL || process.env.TEST_POSTGRES_SCALE !== '1', timeout: 180_000
 }, async (testContext) => {
-  assert.equal(new URL(process.env.TEST_POSTGRES_URL).pathname, '/ssytdlp_test');
+  assert.equal(new URL(process.env.TEST_POSTGRES_URL).pathname, '/ssmusic_test');
   const database = createPostgresDatabase(process.env.TEST_POSTGRES_URL);
   const userId = crypto.randomUUID();
   const jobId = crypto.randomUUID();

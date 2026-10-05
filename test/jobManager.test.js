@@ -540,7 +540,7 @@ test('persisted unavailable video failures are recovered unless unrelated errors
 });
 
 test('duplicate source URLs return the previous job without creating another record', async (testContext) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-duplicate-'));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-duplicate-'));
   testContext.after(() => fs.rm(directory, { recursive: true, force: true }));
   process.env.YTDLP_OUTPUT_ROOT = directory;
   const url = 'https://music.youtube.com/watch?v=existing';
@@ -587,8 +587,8 @@ test('playlist watch links use the canonical URL for duplicate detection', async
 test('jobManager queues jobs around a maintenance update', {
   skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'
 }, async (t) => {
-  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-bin-'));
-  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-out-'));
+  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-bin-'));
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-out-'));
 
   const fakeYtDlp = await makeFakeBin(binDir, 'yt-dlp', { delayMs: 300 });
   const fakeDeno = await makeFakeBin(binDir, 'deno', { delayMs: 0 });
@@ -645,7 +645,7 @@ test('jobManager queues jobs around a maintenance update', {
 });
 
 async function assertRerunPreservesOutput(t, isPlaylist) {
-  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-rerun-'));
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-rerun-'));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = process.execPath;
 
@@ -702,7 +702,7 @@ test('playlist reruns preserve the job folder, songs and download archive', (tes
   assertRerunPreservesOutput(testContext, true));
 
 test('deleting a finished job removes its record and output', async (t) => {
-  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-delete-'));
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-delete-'));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = path.join(outputRoot, 'missing-yt-dlp');
 
@@ -724,7 +724,7 @@ test('deleting a finished job removes its record and output', async (t) => {
 });
 
 test('individual song removal enforces ownership, validates paths and preserves the archive', async (testContext) => {
-  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-song-delete-'));
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-song-delete-'));
   testContext.after(() => fs.rm(outputRoot, { recursive: true, force: true }));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = process.execPath;
@@ -799,7 +799,7 @@ test('individual song removal enforces ownership, validates paths and preserves 
 });
 
 test('legacy folders shared with another owner require an administrator to modify', async (testContext) => {
-  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-shared-'));
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-shared-'));
   testContext.after(() => fs.rm(outputRoot, { recursive: true, force: true }));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   const manager = await import(`../src/jobManager.js?shared=${Date.now()}`);
@@ -1352,7 +1352,7 @@ test('transcription sends multipart lyrics, replaces audio and persists NoVocals
 });
 
 test('job history is restored after a manager restart', async (t) => {
-  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-persist-'));
+  const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-persist-'));
   process.env.YTDLP_OUTPUT_ROOT = outputRoot;
   process.env.YTDLP_PATH = process.execPath;
 

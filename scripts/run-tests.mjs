@@ -17,16 +17,16 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
 try {
   let connectionString = process.env.TEST_POSTGRES_URL;
   if (!connectionString) {
-    container = `ssytdlp-tests-${crypto.randomUUID()}`;
+    container = `ssmusic-tests-${crypto.randomUUID()}`;
     const password = crypto.randomBytes(32).toString('hex');
     console.log('Starting disposable PostgreSQL test database...');
     await execute('docker', ['run', '--detach', '--rm', '--name', container,
-      '--env', 'POSTGRES_DB=ssytdlp_test', '--env', `POSTGRES_PASSWORD=${password}`,
+      '--env', 'POSTGRES_DB=ssmusic_test', '--env', `POSTGRES_PASSWORD=${password}`,
       '--publish', '127.0.0.1::5432', 'postgres:17-bookworm']);
     const { stdout } = await execute('docker', ['port', container, '5432/tcp']);
-    connectionString = `postgres://postgres:${password}@${stdout.trim()}/ssytdlp_test`;
+    connectionString = `postgres://postgres:${password}@${stdout.trim()}/ssmusic_test`;
   }
-  if (new URL(connectionString).pathname !== '/ssytdlp_test') throw new Error('Tests require a disposable database named ssytdlp_test.');
+  if (new URL(connectionString).pathname !== '/ssmusic_test') throw new Error('Tests require a disposable database named ssmusic_test.');
   for (let attempt = 0; ; attempt += 1) {
     if (interrupted) throw new Error('Tests interrupted.');
     const client = new pg.Client({ connectionString, connectionTimeoutMillis: 1000 });

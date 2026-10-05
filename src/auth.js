@@ -40,18 +40,19 @@ const challenges = new Map();
 const challengeLifetimeMs = 5 * 60 * 1000;
 const maxChallenges = 5_000;
 const maxChallengesPerClient = 10;
-const sessionCookie = 'ssytdlp_session';
-const appRedirectUri = 'com.ssytdlp.app:/oauth/callback';
+const sessionCookie = 'ssmusic_session';
+const legacySessionCookie = 'ssytdlp_session';
+const appRedirectUris = new Set(['com.ssmusic.app:/oauth/callback', 'com.ssytdlp.app:/oauth/callback']);
 
 function getAppAuthorization(body) {
   if (body?.client !== 'browser-app') return undefined;
-  if (body.redirectUri !== appRedirectUri || body.codeChallengeMethod !== 'S256'
+  if (!appRedirectUris.has(body.redirectUri) || body.codeChallengeMethod !== 'S256'
     || typeof body.codeChallenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.codeChallenge)
     || Buffer.from(body.codeChallenge, 'base64url').toString('base64url') !== body.codeChallenge
     || typeof body.state !== 'string' || !/^[A-Za-z0-9_-]{43,128}$/.test(body.state)) {
     throw Object.assign(new Error('Invalid app callback, state, or S256 PKCE challenge'), { statusCode: 400 });
   }
-  return { redirectUri: appRedirectUri, codeChallenge: body.codeChallenge, state: body.state };
+  return { redirectUri: body.redirectUri, codeChallenge: body.codeChallenge, state: body.state };
 }
 
 function getWebAuthnConfig(req) {
@@ -133,7 +134,7 @@ function getSessionToken(req) {
   if (req.headers.authorization !== undefined) {
     return /^Bearer ([A-Za-z0-9_-]{43})$/i.exec(req.headers.authorization)?.[1] || null;
   }
-  return getCookie(req, sessionCookie);
+  return getCookie(req, sessionCookie) ?? getCookie(req, legacySessionCookie);
 }
 
 async function issueSession(req, res, user) {
@@ -304,7 +305,7 @@ export function registerAuthRoutes(app, limiters = {}) {
       const userHandle = crypto.randomBytes(32);
       const { rpID, origin } = getWebAuthnConfig(req);
       const options = await generateRegistrationOptions({
-        rpName: 'ssYTDLP',
+        rpName: 'ssMusic',
         rpID,
         userName: name,
         userDisplayName: name,
@@ -352,7 +353,7 @@ export function registerAuthRoutes(app, limiters = {}) {
       const { userHandle, credentials } = (await getUserPasskeys(req.user.id));
       const { rpID, origin } = getWebAuthnConfig(req);
       const options = await generateRegistrationOptions({
-        rpName: 'ssYTDLP',
+        rpName: 'ssMusic',
         rpID,
         userName: req.user.name,
         userDisplayName: req.user.name,
@@ -499,7 +500,12 @@ export function registerAuthRoutes(app, limiters = {}) {
   app.post('/api/auth/logout', async (req, res) => {
     const token = getSessionToken(req);
     await deleteSession(token);
-    if (req.headers.authorization === undefined) res.clearCookie(sessionCookie, { path: '/' });
+    if (req.headers.authorization === undefined) {
+      const legacyToken = getCookie(req, legacySessionCookie);
+      if (legacyToken && legacyToken !== token) await deleteSession(legacyToken);
+      res.clearCookie(sessionCookie, { path: '/' });
+      res.clearCookie(legacySessionCookie, { path: '/' });
+    }
     return res.status(204).end();
   });
 

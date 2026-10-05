@@ -56,7 +56,7 @@ test('browser and touch icons use the bundled app logo', async () => {
 test('public branding uses the app logo in loaded, loading and unavailable states', () => {
   for (const props of [{}, { loading: true }, { media: null, error: 'Unavailable' }]) {
     const html = render(props);
-    assert.ok(html.includes(`<span class="public-media-brand"><img src="${appIcon}" alt="" width="34" height="34"/>ssYTDLP</span>`));
+    assert.ok(html.includes(`<span class="public-media-brand"><img src="${appIcon}" alt="" width="34" height="34"/>ssMusic</span>`));
   }
 });
 

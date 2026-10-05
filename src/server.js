@@ -745,11 +745,11 @@ protectServer(http.createServer((req, res) => {
   res.writeHead(308, { Location: location.toString() });
   res.end();
 })).listen(httpPort, () => {
-  console.log(`ssYTDLP HTTP redirect listening on http://localhost:${httpPort}`);
+  console.log(`ssMusic HTTP redirect listening on http://localhost:${httpPort}`);
 });
 
 protectServer(https.createServer(httpsOptions, app)).listen(httpsPort, () => {
-  console.log(`ssYTDLP HTTPS server listening on https://localhost:${httpsPort}`);
+  console.log(`ssMusic HTTPS server listening on https://localhost:${httpsPort}`);
 });
 
 scheduleDailyMaintenance(3, 0);

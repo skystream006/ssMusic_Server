@@ -15,7 +15,7 @@ services:
       retries: 20
   app:
     build: .
-    image: ssytdlp-server:local
+    image: ssmusic-server:local
     init: true
     restart: unless-stopped
     depends_on:

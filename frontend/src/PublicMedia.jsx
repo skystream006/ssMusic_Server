@@ -134,7 +134,7 @@ export function PublicMediaView({
 
   return <main className="public-media-page" aria-busy={loading}>
     <header className="public-media-masthead">
-      <span className="public-media-brand"><img src={appIcon} alt="" width="34" height="34" />ssYTDLP</span>
+      <span className="public-media-brand"><img src={appIcon} alt="" width="34" height="34" />ssMusic</span>
       <span className="public-media-badge"><Headphones size={14} aria-hidden="true" />Shared listening</span>
     </header>
 

@@ -8,11 +8,11 @@ import { closeDatabases, openDatabase } from '../src/database.js';
 export async function createTestDatabase(context, { beforeCleanup = async () => {} } = {}) {
   if (!process.env.TEST_POSTGRES_URL) throw new Error('Run npm test or configure TEST_POSTGRES_URL for a disposable PostgreSQL database.');
   const target = new URL(process.env.TEST_POSTGRES_URL);
-  if (target.pathname !== '/ssytdlp_test') throw new Error('TEST_POSTGRES_URL must use the disposable ssytdlp_test database.');
-  const name = `ssytdlp_test_${crypto.randomUUID().replaceAll('-', '')}`;
+  if (target.pathname !== '/ssmusic_test') throw new Error('TEST_POSTGRES_URL must use the disposable ssmusic_test database.');
+  const name = `ssmusic_test_${crypto.randomUUID().replaceAll('-', '')}`;
   const admin = new pg.Client({ connectionString: target.toString() });
   await admin.connect();
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssytdlp-test-'));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-test-'));
   const previousUrl = process.env.DATABASE_URL;
   try {
     await admin.query(`CREATE DATABASE "${name}"`);
