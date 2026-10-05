@@ -21,7 +21,7 @@
 }
 
 .public-media-brand { font: 600 23px 'Newsreader', serif; }
-.public-media-brand svg { color: var(--royal); }
+.public-media-brand img { display: block; flex: none; object-fit: contain; }
 .public-media-badge { color: var(--muted); font-size: 11px; }
 
 .public-media-hero {

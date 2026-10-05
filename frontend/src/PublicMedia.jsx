@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Headphones, Maximize2, Music2, X } from 'lucide-react';
 import LyricTimeline from './LyricTimeline.jsx';
+import appIcon from './assets/ic_launcher.png';
 import './publicMedia.css';
 
 const metadataFields = [
@@ -133,7 +134,7 @@ export function PublicMediaView({
 
   return <main className="public-media-page" aria-busy={loading}>
     <header className="public-media-masthead">
-      <span className="public-media-brand"><Music2 size={20} aria-hidden="true" />ssYTDLP</span>
+      <span className="public-media-brand"><img src={appIcon} alt="" width="34" height="34" />ssYTDLP</span>
       <span className="public-media-badge"><Headphones size={14} aria-hidden="true" />Shared listening</span>
     </header>
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -14,12 +15,14 @@ let AdminArtworkThumbnailsView;
 let watchArtworkThumbnails;
 let LyricTimeline;
 let scrollToActiveLyric;
+let appIcon;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ default: PublicMedia, PublicMediaView, seekPublicAudio } = await server.ssrLoadModule('/src/PublicMedia.jsx'));
   ({ AdminMediaSharesView, AdminArtworkThumbnails, AdminArtworkThumbnailsView, watchArtworkThumbnails } = await server.ssrLoadModule('/src/AdminMediaShares.jsx'));
   ({ default: LyricTimeline, scrollToActiveLyric } = await server.ssrLoadModule('/src/LyricTimeline.jsx'));
+  ({ default: appIcon } = await server.ssrLoadModule('/src/assets/ic_launcher.png'));
 });
 
 after(async () => { await server?.close(); });
@@ -36,6 +39,26 @@ const media = {
 function render(props = {}) {
   return renderToStaticMarkup(createElement(PublicMediaView, { media, ...props }));
 }
+
+test('browser and touch icons use the bundled app logo', async () => {
+  const html = await fs.readFile(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  for (const rel of ['icon', 'apple-touch-icon']) {
+    const link = html.match(new RegExp(`<link\\b[^>]*rel="${rel}"[^>]*>`))?.[0];
+    assert.ok(link?.includes(`href="${appIcon}"`));
+    assert.match(link, /sizes="192x192"/);
+  }
+  const image = await fs.readFile(new URL('../frontend/src/assets/ic_launcher.png', import.meta.url));
+  assert.equal(image.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.equal(image.readUInt32BE(16), 192);
+  assert.equal(image.readUInt32BE(20), 192);
+});
+
+test('public branding uses the app logo in loaded, loading and unavailable states', () => {
+  for (const props of [{}, { loading: true }, { media: null, error: 'Unavailable' }]) {
+    const html = render(props);
+    assert.ok(html.includes(`<span class="public-media-brand"><img src="${appIcon}" alt="" width="34" height="34"/>ssYTDLP</span>`));
+  }
+});
 
 test('public media renders a complete, read-only track without an authenticated provider', () => {
   const html = render();
@@ -123,7 +146,8 @@ test('missing metadata, artwork and lyrics have readable fallbacks, retaining sa
   assert.match(html, /No lyrics are available for this track/);
   assert.match(html, /<audio /);
   assert.match(html, /download="Unknown.mp3"/);
-  assert.doesNotMatch(html, /<img\b|<button\b|undefined|null/);
+  assert.doesNotMatch(html, /<button\b|undefined|null/);
+  assert.equal((html.match(/<img\b/g) || []).length, 1, 'only the app logo should render without artwork');
 });
 
 test('timed and plain lyrics render independently and reject malformed timed entries', () => {
@@ -212,7 +236,8 @@ test('metadata, filenames and both lyric formats are escaped React text', () => 
   } });
   assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
   assert.match(html, /&lt;img src=x onerror=&quot;boom&quot;&gt;&amp;/);
-  assert.doesNotMatch(html, /<script\b|<img\b|onerror="boom"/);
+  assert.doesNotMatch(html, /<script\b|onerror="boom"/);
+  assert.equal((html.match(/<img\b/g) || []).length, 1, 'untrusted text must not create images alongside the logo');
 });
 
 test('loading, unavailable and playback failures have accessible non-authenticated states', () => {

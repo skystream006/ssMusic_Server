@@ -45,6 +45,7 @@ import {
   X
 } from 'lucide-react';
 import './styles.css';
+import appIcon from './assets/ic_launcher.png';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
 import PublicMedia from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
@@ -213,7 +214,7 @@ function AppShell({ children, section = 'jobs' }) {
     <div className="app-shell">
       <header className="topbar">
         <a className="brand" href="/" aria-label="ssMusic Player">
-          <span className="brand-mark"><Music2 size={18} strokeWidth={2.5} /></span>
+          <img className="brand-mark" src={appIcon} alt="" width="34" height="34" />
           <span>ssMusic</span>
         </a>
         <nav aria-label="Main navigation">
@@ -1085,7 +1086,7 @@ function LoginPage({ onLogin, appLogin = false }) {
 
   return <main className="auth-page">
     <section className="auth-intro">
-      <span className="auth-mark"><Music2 size={28} /></span>
+      <img className="auth-mark" src={appIcon} alt="ssMusic Player" width="58" height="58" />
       <p className="eyebrow">Private music workspace</p>
       <h1>{appLogin ? 'ssMusic Player' : 'Open your archive.'}</h1>
       <p>{appLogin ? 'Authorize the Android app to access your account.' : 'Your passkey stays with your password manager or device. The server stores only the public credential needed to recognize you.'}</p>
