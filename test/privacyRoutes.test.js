@@ -15,6 +15,7 @@ import { createTestDatabase } from '../test-support/postgres.js';
 
 test('privacy and search keys enforce owner-only access through HTTP', { timeout: 120_000 }, async (context) => {
   let server;
+  let certificate;
   async function stop() {
     if (server && server.exitCode === null && server.signalCode === null) {
       const exited = once(server, 'exit');
@@ -74,11 +75,12 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
         if (output.includes('ssMusic HTTPS server listening')) resolve();
       });
     });
+    certificate = await fs.readFile(path.join(directory, 'data', 'tls', 'server-cert.pem'));
   }
   function call(route, auth = headers.Owner, method = 'GET', body) {
     return new Promise((resolve, reject) => {
       const request = https.request({ hostname: '127.0.0.1', port: httpsPort, path: route, method,
-        headers: { 'Content-Type': 'application/json', ...auth }, rejectUnauthorized: false }, (response) => {
+        headers: { 'Content-Type': 'application/json', ...auth }, ca: certificate }, (response) => {
         const chunks = [];
         response.on('data', (chunk) => chunks.push(chunk));
         response.on('end', () => {

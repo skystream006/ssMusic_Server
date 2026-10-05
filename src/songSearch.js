@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { openDatabase } from './database.js';
 import { songMetadataFields } from './library.js';
 import { songVisibilitySql } from './privacy.js';
@@ -8,8 +8,9 @@ export function attachSearchKey(req, res, next) {
   if (supplied === undefined) return next();
   res.set('Cache-Control', 'no-store');
   const expected = process.env.SEARCH_API_KEY;
-  const digest = (value) => createHash('sha256').update(value).digest();
-  if (!expected || typeof supplied !== 'string' || !timingSafeEqual(digest(supplied), digest(expected))) {
+  const actualBytes = typeof supplied === 'string' ? Buffer.from(supplied) : Buffer.alloc(0);
+  const expectedBytes = Buffer.from(expected || '');
+  if (!expected || actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes)) {
     return res.status(401).json({ error: 'Valid X-API-Key required' });
   }
   const pathname = req.path.replace(/\/+$/, '').toLowerCase();
@@ -17,6 +18,10 @@ export function attachSearchKey(req, res, next) {
     || /^\/api\/jobs\/[^/]+\/(stream|download|artwork|lyrics)\/[^/]+$/.test(pathname);
   if (!['GET', 'HEAD'].includes(req.method) || !allowed) {
     return res.status(403).json({ error: 'Search API keys have read-only catalog and media access' });
+  }
+  if (['/api/library', '/api/library/tracks'].includes(pathname)
+    && (typeof req.query.userId !== 'string' || !req.query.userId)) {
+    return res.status(400).json({ error: 'A library userId is required' });
   }
   req.searchKey = true;
   req.user = { id: null, role: 'catalog' };

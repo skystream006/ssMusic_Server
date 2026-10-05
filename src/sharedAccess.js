@@ -40,6 +40,13 @@ export async function libraryReaderId(user, requestedId) {
   if (requestedId !== undefined && typeof requestedId !== 'string') {
     throw Object.assign(new Error('Invalid library user'), { statusCode: 400 });
   }
+  if (user.role === 'catalog') {
+    const owner = requestedId && await openDatabase().prepare(
+      "SELECT id FROM users WHERE id = $1 AND status = 'approved' AND role <> 'shared'"
+    ).get(requestedId);
+    if (!owner) throw Object.assign(new Error('Library not found'), { statusCode: 404 });
+    return owner.id;
+  }
   if (user.role !== 'shared' && (requestedId === undefined || requestedId === user.id)) return user.id;
   const owners = await sharedLibraryUsers(user.id);
   if (requestedId !== undefined && !owners.some((owner) => owner.id === requestedId)) {

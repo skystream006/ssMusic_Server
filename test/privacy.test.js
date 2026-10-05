@@ -9,7 +9,7 @@ import { createPostgresDatabase } from '../src/postgres.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresJob, readPostgresLibrary, readPostgresJobs } from '../src/postgresCatalog.js';
 import { canReadAllFiles, canReadFile, canReadJob, fileVisibilitySql, visibleJob } from '../src/privacy.js';
 import { addLibraryJobFiles, getLibrary, linkLibraryJob, setLibrary, setLibraryPlaylistPrivacy } from '../src/libraryStore.js';
-import { canReadSharedSong } from '../src/sharedAccess.js';
+import { canReadLibrarySong, canReadSharedSong, libraryReaderId } from '../src/sharedAccess.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
 test('privacy defaults public and permits only the owning user, never an administrator override', () => {
@@ -65,7 +65,7 @@ test('privacy survives persistence, filters SQL before paging and protects alias
   const source = { id: 'source', url: 'https://music.youtube.com/playlist?list=privacy', isPlaylist: true,
     status: 'completed', initiatedBy: owner, contributors: [contributor], outputDir,
     playlistTitle: 'Source', files, createdAt: now, updatedAt: now,
-    transcriptions: { 'Secret.mp3': { noVocalsName: files[1] } } };
+    transcriptions: { 'Secret.mp3': { noVocalsName: files[1] }, 'Public.mp3': { noVocalsName: files[1] } } };
   await writeJob(database, source);
   const destination = { ...source, id: 'destination', url: 'import:destination', outputDir: null, files: [],
     transcriptions: {}, playlistTitle: 'Destination' };
@@ -111,6 +111,11 @@ test('privacy survives persistence, filters SQL before paging and protects alias
     assert.equal((await share(files[1])).statusCode, 404);
     assert.equal(await canReadSharedSong(shared.id, source.id, 'Secret.mp3'), false);
     assert.equal(await canReadSharedSong(shared.id, source.id, 'Public.mp3'), true);
+    const catalogReader = { id: null, role: 'catalog' };
+    assert.equal(await libraryReaderId(catalogReader, owner.id), owner.id);
+    await assert.rejects(libraryReaderId(catalogReader, shared.id), { statusCode: 404 });
+    assert.equal(await canReadLibrarySong(catalogReader, owner.id, source.id, 'Secret.mp3'), false);
+    assert.equal(await canReadLibrarySong(catalogReader, owner.id, source.id, 'Public.mp3'), true);
     const restarted = createPostgresDatabase(process.env.DATABASE_URL);
     try { assert.deepEqual((await readPostgresJob(restarted, source.id)).privateFiles, ['Secret.mp3']); }
     finally { await restarted.close(); }
@@ -122,6 +127,7 @@ test('privacy survives persistence, filters SQL before paging and protects alias
       assert.equal(page.total, 2);
       assert.equal(page.files.length, 1);
       assert.equal(page.files[0].name, 'Public.mp3');
+      assert.doesNotMatch(JSON.stringify(page.files), /Secret|Different/);
       assert.equal((await pagePostgresTracks(database, owner.id, { viewerId, search: 'Secret' })).total, 0);
       assert.equal((await pagePostgresTracks(database, owner.id, { viewerId, entryId: destination.id })).total, 2);
       const summary = await readPostgresLibrary(database, owner.id, viewerId);
@@ -183,12 +189,24 @@ test('privacy survives persistence, filters SQL before paging and protects alias
     await linkLibraryJob(owner.id, single, jobs);
     await assert.rejects(setLibraryPlaylistPrivacy(owner.id, 'individual-songs', 'true', jobs), { statusCode: 400 });
     await setLibraryPlaylistPrivacy(owner.id, 'individual-songs', true, jobs);
+    const ownCatalog = await readPostgresLibrary(database, owner.id);
+    const individualPlaylist = ownCatalog.playlists.find((playlist) => playlist.id === 'individual-songs');
+    assert.deepEqual(individualPlaylist.initiatedBy, { id: owner.id });
+    assert.equal(individualPlaylist.private, true);
+    const ownSingle = (await pagePostgresTracks(database, owner.id, { search: 'Single' })).files[0];
+    assert.equal(ownSingle.private, false);
+    assert.equal(ownSingle.sourceJob.private, false);
     library = await getLibrary(owner.id, jobs);
     assert.equal(library.entries.find((entry) => entry.id === 'individual-songs').private, true);
     await setLibrary(owner.id, { ...library, entries: library.entries.map(({ private: _privacy, ...entry }) => entry) }, jobs);
     assert.equal((await getLibrary(owner.id, jobs)).entries.find((entry) => entry.id === 'individual-songs').private, true);
     assert.equal((await readPostgresLibrary(database, owner.id, contributor.id)).entries.some((entry) => entry.id === 'individual-songs'), false);
     assert.equal((await pagePostgresTracks(database, owner.id, { viewerId: contributor.id, search: 'Single' })).total, 0);
+    library = await getLibrary(owner.id, jobs);
+    await addLibraryJobFiles(owner.id, { version: library.version, jobId: single.id, playlistId: destination.id }, jobs);
+    const alternate = await pagePostgresTracks(database, owner.id, { viewerId: contributor.id, search: 'Single' });
+    assert.equal(alternate.total, 1);
+    assert.equal(alternate.files[0].playlistId, destination.id);
     await setLibraryPlaylistPrivacy(owner.id, 'individual-songs', false, jobs);
     assert.equal((await pagePostgresTracks(database, owner.id, { viewerId: contributor.id, search: 'Single' })).total, 1);
   });

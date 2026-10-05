@@ -184,7 +184,8 @@ export async function readPostgresLibrary(database, userId, viewerId = userId) {
     playlists: entries.filter((entry) => entry.type === 'playlist').map((entry) => ({ id: entry.id,
       jobId: jobMap.has(entry.id) ? entry.id : null, playlistTitle: entry.name || jobMap.get(entry.id)?.playlistTitle,
       protected: Boolean(entry.protected), private: entry.private === true, status: jobMap.get(entry.id)?.status || 'completed',
-      initiatedBy: jobMap.get(entry.id)?.initiatedBy, contributors: jobMap.get(entry.id)?.contributors || [],
+      initiatedBy: Object.hasOwn(individualPlaylistNames, entry.id) ? { id: userId } : jobMap.get(entry.id)?.initiatedBy,
+      contributors: jobMap.get(entry.id)?.contributors || [],
       updatedAt: jobMap.get(entry.id)?.updatedAt, songCount: counts.get(entry.id) || 0 })) };
 }
 
@@ -193,12 +194,20 @@ export async function pagePostgresTracks(database, userId, { entryId = null, pag
     AND ${entryVisibilitySql('entry', '$2')} ORDER BY position, id`).all(userId, viewerId)).map((row) => JSON.parse(row.data));
   if (entryId !== null && !entries.some((entry) => entry.id === entryId)) throw Object.assign(new Error('Library selection not found'), { statusCode: 404 });
   const selected = getPlaylistIds(entries, entryId);
-  const source = `SELECT DISTINCT ON (membership.job_id, membership.name)
+  const memberships = `SELECT DISTINCT ON (membership.job_id, membership.name)
     membership.*, entry.playlist_position FROM library_memberships membership
     JOIN library_entries entry ON entry.user_id = membership.user_id AND entry.id = membership.playlist_id
     WHERE membership.user_id = $1 AND membership.playlist_id IN (SELECT jsonb_array_elements_text($2::jsonb))
       AND ${entryVisibilitySql('entry', '$3')}
     ORDER BY membership.job_id, membership.name, entry.playlist_position, membership.position`;
+  const source = entryId !== null ? memberships : `SELECT saved.user_id, saved.playlist_id, saved.job_id, saved.name,
+    saved.position, saved.playlist_position FROM user_songs saved
+    JOIN library_entries entry ON entry.user_id = saved.user_id AND entry.id = saved.playlist_id
+    WHERE saved.user_id = $1 AND ${entryVisibilitySql('entry', '$3')}
+    UNION ALL SELECT membership.* FROM (${memberships}) membership WHERE NOT EXISTS (
+      SELECT 1 FROM user_songs saved JOIN library_entries entry ON entry.user_id = saved.user_id AND entry.id = saved.playlist_id
+      WHERE saved.user_id = $1 AND saved.job_id = membership.job_id AND saved.name = membership.name
+        AND ${entryVisibilitySql('entry', '$3')})`;
   const parameters = [userId, JSON.stringify(selected), viewerId];
   const filter = `WHERE ${fileVisibilitySql('jobs', 'songs.name', '$3')}`
     + (search ? ` AND songs.search_text LIKE $${parameters.length + 1} ESCAPE '\\'` : '');
