@@ -113,6 +113,9 @@ test('privacy survives persistence, filters SQL before paging and protects alias
     assert.equal(await canReadSharedSong(shared.id, source.id, 'Secret.mp3'), false);
     assert.equal(await canReadSharedSong(shared.id, source.id, 'Public.mp3'), true);
     const catalogReader = { id: null, role: 'catalog' };
+    for (const requestedId of [undefined, null, '', [], {}]) {
+      await assert.rejects(libraryReaderId(catalogReader, requestedId), { statusCode: 400 });
+    }
     assert.equal(await libraryReaderId(catalogReader, owner.id), owner.id);
     await assert.rejects(libraryReaderId(catalogReader, shared.id), { statusCode: 404 });
     assert.equal(await canReadLibrarySong(catalogReader, owner.id, source.id, 'Secret.mp3'), false);

@@ -41,7 +41,8 @@ export async function libraryReaderId(user, requestedId) {
     throw Object.assign(new Error('Invalid library user'), { statusCode: 400 });
   }
   if (user.role === 'catalog') {
-    const owner = requestedId && await openDatabase().prepare(
+    if (!requestedId) throw Object.assign(new Error('A library userId is required'), { statusCode: 400 });
+    const owner = await openDatabase().prepare(
       "SELECT id FROM users WHERE id = $1 AND status = 'approved' AND role <> 'shared'"
     ).get(requestedId);
     if (!owner) throw Object.assign(new Error('Library not found'), { statusCode: 404 });
