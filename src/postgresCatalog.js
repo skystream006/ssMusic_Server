@@ -147,22 +147,24 @@ export async function writePostgresJob(database, job) {
 export async function readPostgresLibrary(database, userId, viewerId = userId) {
   const preferences = await database.prepare('SELECT library_version FROM user_preferences WHERE user_id = $1').get(userId);
   const catalog = await database.prepare('SELECT total_songs, revision FROM user_catalog WHERE user_id = $1').get(userId);
-  const entryRows = await database.prepare(`SELECT entry.data, entry.id, (
-    SELECT count(*) FROM library_memberships membership
-    JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
-    JOIN jobs ON jobs.id = songs.job_id
-    WHERE membership.user_id = entry.user_id AND membership.playlist_id = entry.id
-      AND ${fileVisibilitySql('jobs', 'songs.name', '$2')}) AS song_count
-    FROM library_entries entry WHERE entry.user_id = $1 AND ${entryVisibilitySql('entry', '$2')}
+  const entryRows = await database.prepare(`SELECT entry.data, entry.id, COALESCE(counts.song_count, 0) AS song_count
+    FROM library_entries entry LEFT JOIN (
+      SELECT membership.playlist_id, count(*) AS song_count FROM library_memberships membership
+      JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
+      JOIN jobs ON jobs.id = songs.job_id
+      WHERE membership.user_id = $1 AND ${fileVisibilitySql('jobs', 'songs.name', '$2')}
+      GROUP BY membership.playlist_id
+    ) counts ON counts.playlist_id = entry.id
+    WHERE entry.user_id = $1 AND ${entryVisibilitySql('entry', '$2')}
     ORDER BY entry.position, entry.id`).all(userId, viewerId);
   const entries = entryRows.map((row) => JSON.parse(row.data));
   const jobs = await attachPrivacyAliases(database, (await database.prepare(`SELECT jobs.data - 'output' - 'command' AS data,
-    (SELECT count(*) FROM songs WHERE job_id = jobs.id AND media_type IS NOT NULL
-      AND ${fileVisibilitySql('jobs', 'songs.name', '$2')}) AS song_count,
-    EXISTS (SELECT 1 FROM songs WHERE job_id = jobs.id AND transcription->>'status' = 'sent'
-      AND ${fileVisibilitySql('jobs', 'songs.name', '$2')}) AS pending
-    FROM jobs JOIN library_entries entry ON entry.id = jobs.id WHERE entry.user_id = $1
-      AND ${entryVisibilitySql('entry', '$2')} AND ${jobVisibilitySql('jobs', '$2')}`).all(userId, viewerId))
+    count(songs.name) FILTER (WHERE songs.media_type IS NOT NULL) AS song_count,
+    COALESCE(bool_or(songs.transcription->>'status' = 'sent'), false) AS pending
+    FROM jobs JOIN library_entries entry ON entry.id = jobs.id
+    LEFT JOIN songs ON songs.job_id = jobs.id AND ${fileVisibilitySql('jobs', 'songs.name', '$2')}
+    WHERE entry.user_id = $1 AND ${entryVisibilitySql('entry', '$2')} AND ${jobVisibilitySql('jobs', '$2')}
+    GROUP BY jobs.id`).all(userId, viewerId))
     .map((row) => {
       const job = JSON.parse(row.data);
       return { ...job, contributors: job.contributors || [], transcriptions: {}, songCount: row.song_count, transcriptionPending: row.pending };

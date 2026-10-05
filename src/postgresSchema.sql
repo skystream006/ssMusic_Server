@@ -54,6 +54,10 @@ CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at DESC, id);
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS song_count BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS jobs_output_directory ON jobs((data->>'outputDir'));
+CREATE INDEX IF NOT EXISTS jobs_private_id ON jobs(id)
+  WHERE data->'private' = 'true'::jsonb OR jsonb_array_length(COALESCE(data->'privateFiles', '[]'::jsonb)) > 0;
+CREATE INDEX IF NOT EXISTS jobs_private_output_directory ON jobs((rtrim(data->>'outputDir', '/')))
+  WHERE data->'private' = 'true'::jsonb OR jsonb_array_length(COALESCE(data->'privateFiles', '[]'::jsonb)) > 0;
 CREATE TABLE IF NOT EXISTS job_users (
   job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL, PRIMARY KEY (user_id, job_id)
