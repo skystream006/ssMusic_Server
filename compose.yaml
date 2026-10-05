@@ -42,6 +42,7 @@ services:
       IMPORT_STORAGE_COMPLETED_ROOT: /app/import-storage-completed
       TRUST_PROXY: ${TRUST_PROXY:-}
       TRANSCRIPTION_ENDPOINT: ${TRANSCRIPTION_ENDPOINT:-}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
       HTTPS_KEY_PATH: ${HTTPS_KEY_PATH:-}
       HTTPS_CERT_PATH: ${HTTPS_CERT_PATH:-}
     extra_hosts:

@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ArrowRightLeft, CalendarClock, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
+import { ArrowRightLeft, CalendarClock, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, Lock, LockKeyhole, LockOpen, Music2, Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
 import MusicPlayer, { replaceSongFile, usePlayback } from './MusicPlayer.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
 import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
-import { canManageJob, canModifyJob, formatBytes, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
+import { canChangePlaylistPrivacy, canChangePrivacy, canManageJob, canModifyJob, getFilePrivacy, formatBytes, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { replaceURL } from './navigation.js';
 
@@ -410,6 +410,8 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const sourceJobMap = new Map((library?.jobs || []).map((job) => [job.id, job]));
   const selected = entryMap.get(selectedId);
   const selectedJob = sourceJobMap.get(selectedId);
+  const selectedPlaylist = jobMap.get(selectedId);
+  const canChangeSelectedPrivacy = canChangePlaylistPrivacy(user, selectedPlaylist, owner?.id || user.id, readOnly);
   const title = selected?.type === 'folder' ? selected.name : selectedId ? jobMap.get(selectedId)?.playlistTitle || 'Preparing playlist' : 'All music';
   const allMusic = selectedId === null;
   const paginated = allMusic || library?.serverPagination;
@@ -502,13 +504,49 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   }
 
   function songState(track) {
-    const job = track.sourceJob || sourceJobMap.get(track.jobId);
+    const job = track.sourceJob || track.job || sourceJobMap.get(track.jobId);
     const key = songKey(track);
     const transcription = pendingTranscriptions[key] || track.transcription || job?.transcriptions?.[track.name];
     const canModify = !readOnly && canModifyJob(user, job);
-    return { canModify, transcription, deleting: Boolean(deletingFiles[key]),
+    return { canModify, canChangePrivacy: canChangePrivacy(user, job, readOnly), privacy: getFilePrivacy(track, job),
+      transcription, deleting: Boolean(deletingFiles[key]),
       disabled: !canModify || ['queued', 'running'].includes(job?.status)
         || songMutations.current.has(key) || transcription?.status === 'sent' };
+  }
+
+  async function savePrivacy(endpoint, isPrivate) {
+    if (readOnly || savingRef.current) return;
+    savingRef.current = true;
+    mutationRef.current += 1;
+    setSaving(true);
+    setSaved(false);
+    setActionError('');
+    try {
+      await request(endpoint, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ private: isPrivate })
+      });
+      setSharingFile(null);
+      setTracksLoading(true);
+      setLibrary(await request(owner ? `/api/library?${new URLSearchParams({ userId: owner.id })}` : '/api/library'));
+      setSaved(true);
+    } catch (saveError) {
+      setActionError(`Unable to save or refresh privacy: ${saveError.message}`);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+      setRefresh((value) => value + 1);
+    }
+  }
+
+  function changeFilePrivacy(track) {
+    const state = songState(track);
+    if (!state.canChangePrivacy || state.disabled || state.privacy.inherited) return;
+    return savePrivacy(`/api/jobs/${encodeURIComponent(track.jobId)}/files/${encodeURIComponent(track.name)}/privacy`, !state.privacy.private);
+  }
+
+  function changePlaylistPrivacy() {
+    if (!canChangeSelectedPrivacy) return;
+    return savePrivacy(`/api/library/playlists/${encodeURIComponent(selectedId)}/privacy`, !selectedPlaylist.private);
   }
 
   function metadataSaved(file, result) {
@@ -838,7 +876,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
           })}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : selectingPlaylists ? <input className="library-select-checkbox" type="checkbox" aria-label={`Select playlist ${entryTitle(entry)}`} checked={selectedPlaylists.has(entry.id)} disabled={saving}
             onChange={(event) => { const checked = event.target.checked; setSelectedPlaylists((current) => { const next = new Set(current); if (checked) next.add(entry.id); else next.delete(entry.id); return next; }); }} /> : <span className="folder-expander" />}
           <button className="library-entry-select" type="button" aria-current={selectedId === entry.id ? 'true' : undefined} title={entryTitle(entry)} onClick={() => { if (!reordering) selectEntry(entry.id); }}>
-            {folder ? open ? <FolderOpen size={18} /> : <Folder size={18} /> : <ListMusic size={18} />}<span>{entryTitle(entry)}</span>{entry.protected && <LockKeyhole size={12} aria-label="Permanent playlist" />}<small>{count}</small>
+            {folder ? open ? <FolderOpen size={18} /> : <Folder size={18} /> : <ListMusic size={18} />}<span>{entryTitle(entry)}</span>{playlist?.private && <Lock size={12} aria-label="Private playlist — owner only" />}{entry.protected && <LockKeyhole size={12} aria-label="Permanent playlist" />}<small>{count}</small>
           </button>
           {!reordering && !folder && !entry.protected && canManageJob(user, playlist) && <button
             className="music-icon-button library-entry-rename" type="button" title={`Rename ${entryTitle(entry)}`} aria-label={`Rename playlist ${entryTitle(entry)}`}
@@ -895,6 +933,13 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
           <a className="music-icon-button" href={`/job/${encodeURIComponent(selected.id)}`} title="Job details" aria-label="Open job details"><ExternalLink size={16} /></a>
         </>}
       </div></div>
+      {selected.type === 'playlist' && canChangeSelectedPrivacy && <button
+        className="secondary-button compact-button" type="button" title={selectedPlaylist.private ? 'Make playlist public' : 'Make playlist private'}
+        aria-label={selectedPlaylist.private ? 'Make playlist public' : 'Make playlist private'} aria-pressed={Boolean(selectedPlaylist.private)}
+        disabled={saving} onClick={changePlaylistPrivacy}>
+        {saving ? <RefreshCw className="spin" size={16} /> : selectedPlaylist.private ? <Lock size={16} /> : <LockOpen size={16} />}
+        {selectedPlaylist.private ? 'Private — make public' : 'Not private — make private'}
+      </button>}
       <label className="library-location">Location<select aria-label="Move selection to folder" value={selected.parentId || ''} disabled={saving}
         onChange={(event) => moveEntry(selected.id, event.target.value || null)}><option value="">Library</option>{possibleFolders(selected.id).map((folder) => <option key={folder.id} value={folder.id}>{folder.path}</option>)}</select></label>
     </div>}
@@ -916,7 +961,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     </div>}
     <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>
     <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: (tracksLoading || searchPending) && !trackError,
-      ownerId: owner?.id,
+      ownerId: owner?.id, playlistPrivate: Boolean(selectedPlaylist?.private),
       pagination, error: trackError, queueScope: JSON.stringify([owner?.id || user.id, selectedId || 'all', ...(paginated ? [trackPage, debouncedTrackSearch] : [])]),
       search: paginated ? trackSearch : undefined, onSearch: paginated ? setTrackSearch : undefined,
       songSelection: !readOnly && selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
@@ -924,11 +969,11 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         remove: removeSelectedSongs, canRemove: songSelection.length > 0 && songSelection.every((track) => !songState(track).disabled),
         transfer: (action) => setBulkDialog({ type: 'songs', action, version: library.version, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,
       songState, transcriptionActive, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
-      onReplaceFile: setReplacingFile, onShareMedia: setSharingFile,
+      onReplaceFile: setReplacingFile, onShareMedia: setSharingFile, onChangePrivacy: changeFilePrivacy,
       onMetadataSaved: metadataSaved, onRatingError: setActionError,
       saving: saving || tracksLoading || searchPending, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
     {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
-    {sharingFile && <ShareMediaDialog file={sharingFile} jobId={sharingFile.jobId} request={request} onClose={() => setSharingFile(null)} />}
+    {sharingFile && <ShareMediaDialog file={{ ...sharingFile, private: songState(sharingFile).privacy.private }} jobId={sharingFile.jobId} request={request} onClose={() => setSharingFile(null)} />}
     {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} readOnly={readOnly} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
       metadataSaved(editingMetadata, result);
       setRefresh((value) => value + 1);

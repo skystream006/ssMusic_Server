@@ -25,6 +25,14 @@ export async function createLibraryBackupService({ loadLibrary, database = openD
   const writing = new Set();
   (await database.prepare("UPDATE library_backups SET running = 0, last_error = 'Backup interrupted by a server restart. Try again.' WHERE running = 1").run());
 
+  async function privacyRevision(userId) {
+    const rows = await database.prepare(`SELECT id, data->'private' AS private, data->'privateFiles' AS files
+      FROM jobs WHERE (data->'initiatedBy'->>'id') IS DISTINCT FROM $1
+        AND (data->'private' = 'true'::jsonb OR jsonb_array_length(COALESCE(data->'privateFiles', '[]'::jsonb)) > 0)
+      ORDER BY id`).all(userId);
+    return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+  }
+
   function directory(userId) {
     return path.resolve(root, createHash('sha256').update(userId).digest('hex'));
   }
@@ -95,6 +103,7 @@ export async function createLibraryBackupService({ loadLibrary, database = openD
           .run(now().toISOString(), userId);
         await fs.mkdir(folder, { recursive: true, mode: 0o700 });
         await cleanup(userId);
+        const revision = await privacyRevision(userId);
         const { library, jobs } = await loadLibrary(userId);
         const prepared = await prepareLibraryExport(library, jobs, options);
         progress.totalSongs = prepared.files.length;
@@ -104,8 +113,9 @@ export async function createLibraryBackupService({ loadLibrary, database = openD
         await fs.rename(temporary, target);
         const stat = await fs.stat(target);
         (await requireUser(userId));
+        if (revision !== await privacyRevision(userId)) throw failure('Media privacy changed during export. Create a new export.', 409);
         const latest = { id, format: options.format, ...(options.destination ? { destination: options.destination } : {}),
-          createdAt: now().toISOString(), sizeBytes: stat.size, songCount: prepared.files.length };
+          createdAt: now().toISOString(), sizeBytes: stat.size, songCount: prepared.files.length, privacyRevision: revision };
         (await database.prepare('UPDATE library_backups SET latest = $1, running = 0, last_error = NULL WHERE user_id = $2')
           .run(JSON.stringify(latest), userId));
         await cleanup(userId);
@@ -124,6 +134,9 @@ export async function createLibraryBackupService({ loadLibrary, database = openD
     (await requireUser(userId));
     const latest = (await getStatus(userId)).latest;
     if (!latest) throw failure('No library backup is available. Create a new export first.', 404);
+    if (latest.privacyRevision !== await privacyRevision(userId)) {
+      throw failure('Media privacy changed since this backup. Create a new export.', 409);
+    }
     const filePath = path.join(directory(userId), `${latest.id}.zip`);
     readers.set(filePath, (readers.get(filePath) || 0) + 1);
     let handle;

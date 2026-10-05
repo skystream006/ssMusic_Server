@@ -10,8 +10,9 @@ import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTran
 import { isPlayableFile } from './media.js';
 import { readSongMetadata, readSongSummary, updateSongMetadata } from './music.js';
 import { refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
-import { songMetadataFields } from './library.js';
+import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
+import { attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
 
 const jobs = new Map();
 const jobMutations = new Set();
@@ -301,6 +302,8 @@ function newJob(url, initiatedBy, metadataOnly = false, downloadType = 'audio') 
     downloadType,
     initiatedBy,
     contributors: [],
+    private: false,
+    privateFiles: [],
     isPlaylist: isPlaylistUrl(url),
     playlistTitle: null,
     playlistSongCount: null,
@@ -336,15 +339,18 @@ function hasJobAccess(job, user, allowContributors = false) {
 }
 
 function assertJobAccess(job, user, allowContributors = false) {
-  if (!hasJobAccess(job, user, allowContributors)) {
+  if (!hasJobAccess(job, user, allowContributors) || !canReadJob(job, user)) {
     const error = new Error('You do not have permission to perform this action on this job');
     error.statusCode = 403;
     throw error;
   }
 }
 
-async function assertCanModifyJob(job, user, allowContributors = false) {
+async function assertCanModifyJob(job, user, allowContributors = false, fileName = null) {
   assertJobAccess(job, user, allowContributors);
+  if (!(fileName === null ? canReadAllFiles(job, user) : canReadFile(job, fileName, user))) {
+    throw Object.assign(new Error('You do not have permission to modify private files'), { statusCode: 403 });
+  }
   if (user.role === 'admin' || !job.outputDir) return;
   const shared = (await database.prepare("SELECT data FROM jobs WHERE data->>'outputDir' = $1 AND id <> $2").all(job.outputDir, job.id))
     .map((row) => JSON.parse(row.data));
@@ -544,6 +550,11 @@ async function createJobRecord(sourceUrl, user, metadataOnly, downloadType) {
     AND COALESCE(data->>'downloadType', 'audio') = $2
     ORDER BY created_at DESC LIMIT 1`).get(sourceUrl, downloadType));
   if (existingJob) {
+    const stored = await getJob(existingJob.id);
+    const existing = visibleJob(stored, user);
+    if (!existing || !canReadAllFiles(stored, user)) {
+      throw Object.assign(new Error('This source URL is unavailable'), { statusCode: 409 });
+    }
     const error = new Error('This source URL already has a job');
     error.statusCode = 409;
     error.code = 'JOB_ALREADY_EXISTS';
@@ -565,7 +576,7 @@ async function createJobRecord(sourceUrl, user, metadataOnly, downloadType) {
 export async function setJobTitle(id, title, user = null) {
   const job = (await getJob(id));
   if (!job) return null;
-  assertJobAccess(job, user);
+  await assertCanModifyJob(job, user);
   assertJobIsIdle(job, 'rename');
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 200 || /[\x00-\x1f\x7f]/.test(title)) {
     throw Object.assign(new Error('Playlist title must be between 1 and 200 characters without control characters'), { statusCode: 400 });
@@ -578,6 +589,63 @@ export async function setJobTitle(id, title, user = null) {
     await persistJob(job);
     return job;
   } finally { jobMutations.delete(id); }
+}
+
+async function setPrivacy(id, name, value, user) {
+  if (typeof value !== 'boolean') throw Object.assign(new Error('private must be a boolean'), { statusCode: 400 });
+  return mutateJobFiles(id, async () => {
+    const job = await getJob(id);
+    if (!job) return null;
+    if (!ownsJob(job, user) || user?.role === 'shared') {
+      throw Object.assign(new Error('Only the owner can change privacy'), { statusCode: 403 });
+    }
+    if (name !== null && (!isValidJobFileName(name)
+      || (!job.files?.includes(name) && (value || !job.privateFiles?.includes(name))))) {
+      throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+    }
+    const directory = job.outputDir && (await fs.realpath(job.outputDir).catch(() => path.resolve(job.outputDir)));
+    const candidates = directory ? await database.prepare(`SELECT id, status, data->>'outputDir' AS output_dir
+      FROM jobs WHERE data->>'outputDir' IS NOT NULL`).all() : [job];
+    const related = [];
+    for (const alias of candidates) {
+      if (!directory || (await fs.realpath(alias.output_dir).catch(() => path.resolve(alias.output_dir))) === directory) related.push(alias);
+    }
+    for (const alias of related) assertJobIsIdle(jobs.get(alias.id) || alias, 'change privacy for');
+    for (const alias of related) jobMutations.add(alias.id);
+    try {
+      if (name === null) job.private = value;
+      else job.privateFiles = [...new Set([...(job.privateFiles || []).filter((item) => item !== name), ...(value ? [name] : [])])];
+      job.updatedAt = new Date().toISOString();
+      await withTransaction(database, async () => {
+        // Legacy jobs can point at the same physical directory through different paths.
+        if (directory) {
+          await database.prepare(`UPDATE jobs SET data = jsonb_set(data, '{outputDir}', $1::jsonb)
+            WHERE id IN (SELECT jsonb_array_elements_text($2::jsonb))`)
+            .run(JSON.stringify(directory), JSON.stringify(related.map((alias) => alias.id)));
+          job.outputDir = directory;
+        }
+        await persistJob(job);
+        await database.prepare(`UPDATE user_catalog SET revision = revision + 1 WHERE user_id IN (
+          SELECT user_id FROM job_users WHERE job_id <> $1
+            AND job_id IN (SELECT jsonb_array_elements_text($2::jsonb)))`)
+          .run(id, JSON.stringify(related.map((alias) => alias.id)));
+      });
+      if (directory) for (const alias of related) {
+        const active = jobs.get(alias.id);
+        if (active) active.outputDir = directory;
+      }
+      await attachPrivacyAliases(database, [job]);
+      return job;
+    } finally { for (const alias of related) jobMutations.delete(alias.id); }
+  });
+}
+
+export async function setJobPrivacy(id, value, user) {
+  return setPrivacy(id, null, value, user);
+}
+
+export async function setJobFilePrivacy(id, name, value, user) {
+  return setPrivacy(id, name, value, user);
 }
 
 export async function importJobFiles({ files, playlistId, playlistTitle, source = 'files', individual = false, playlistSongCount, downloadType = 'audio' }, user) {
@@ -696,7 +764,7 @@ export function isValidJobFileName(fileName) {
 export async function transcribeJobFile(id, fileName, options, user = null) {
   const storedJob = await getJob(id);
   if (!storedJob) return null;
-  await assertCanModifyJob(storedJob, user, true);
+  await assertCanModifyJob(storedJob, user, true, fileName);
   const existingQueue = transcriptionQueues.get(id);
   const job = existingQueue?.job || storedJob;
   assertJobIsIdle(job, 'transcribe', true);
@@ -725,7 +793,7 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   persisted.catch(() => {});
   const operation = queue.tail.then(async () => {
     await persisted;
-    return executeTranscription(job, fileName, fields, transcription);
+    return executeTranscription(job, fileName, fields, transcription, user);
   });
   queue.tail = operation.catch(() => {});
   try {
@@ -736,7 +804,20 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   }
 }
 
-async function executeTranscription(job, fileName, options, transcription) {
+function preservePrivateCompanion(job, fileName, { removeOriginal = false, files = job.files } = {}) {
+  if (!job.privateFiles?.includes(fileName)) return;
+  const companion = job.transcriptions?.[fileName]?.noVocalsName;
+  const privateFiles = new Set(job.privateFiles);
+  for (const name of files) {
+    if (name === companion || (removeOriginal && isNoVocals({ name }) && songStem(name) === songStem(fileName))) {
+      privateFiles.add(name);
+    }
+  }
+  if (removeOriginal) privateFiles.delete(fileName);
+  job.privateFiles = [...privateFiles];
+}
+
+async function executeTranscription(job, fileName, options, transcription, user) {
   try {
     const filePath = getFilePath(job, fileName);
     const realPath = await fs.realpath(filePath).catch(() => null);
@@ -752,8 +833,14 @@ async function executeTranscription(job, fileName, options, transcription) {
     if (options.NoVocalsOnly && !replacements.some((result) => path.extname(result.name).toLowerCase() === '.mp3')) {
       throw Object.assign(new Error('Transcription service did not return a no-vocals MP3'), { statusCode: 502 });
     }
+    for (const result of replacements) {
+      await assertCanModifyJob(job, user, true, result.original ? fileName : `[NoVocals]/${result.name}`);
+    }
     await mutateJobFiles(job.id, () => replaceTranscribedFiles(job, fileName, replacements, async (updatedJob) => {
       const noVocals = results.find((result) => !result.original);
+      if (noVocals && `[NoVocals]/${noVocals.name}` !== updatedJob.transcriptions[fileName]?.noVocalsName) {
+        preservePrivateCompanion(updatedJob, fileName);
+      }
       updatedJob.transcriptions[fileName] = {
         ...transcription, status: 'transcribed', completedAt: new Date().toISOString(),
         noVocalsName: noVocals ? `[NoVocals]/${noVocals.name}` : updatedJob.transcriptions[fileName]?.noVocalsName
@@ -779,7 +866,7 @@ async function executeTranscription(job, fileName, options, transcription) {
 export async function setSongMetadata(id, fileName, value, user = null) {
   const storedJob = await getJob(id);
   if (!storedJob) return null;
-  await assertCanModifyJob(storedJob, user, true);
+  await assertCanModifyJob(storedJob, user, true, fileName);
   const job = transcriptionQueues.get(id)?.job || storedJob;
   assertJobIsIdle(job, 'edit metadata for', true);
   if (transcriptionQueues.get(id)?.files.has(fileName) || deletingFiles.has(id)) {
@@ -821,7 +908,7 @@ export async function setSongMetadata(id, fileName, value, user = null) {
 export async function replaceJobFile(id, fileName, user, receiveFile) {
   const job = await getJob(id);
   if (!job) return null;
-  await assertCanModifyJob(job, user, true);
+  await assertCanModifyJob(job, user, true, fileName);
   assertJobIsIdle(job, 'replace files in');
   if (!isValidJobFileName(fileName) || !isSongFile(fileName)) {
     throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
@@ -907,12 +994,30 @@ export async function replaceJobFile(id, fileName, user, receiveFile) {
 }
 
 export async function deleteJobFile(id, fileName, user = null, membership = null) {
+  const pending = deletingFiles.get(id) || new Set();
+  if (pending.has(fileName)) {
+    const job = await getJob(id);
+    if (!job) return null;
+    await assertCanModifyJob(job, user, true, fileName);
+    throw Object.assign(new Error('Another change to this song is in progress'), { statusCode: 409 });
+  }
+  pending.add(fileName);
+  deletingFiles.set(id, pending);
+  try {
+    return await deleteReservedJobFile(id, fileName, user, membership);
+  } finally {
+    pending.delete(fileName);
+    if (pending.size === 0) deletingFiles.delete(id);
+  }
+}
+
+async function deleteReservedJobFile(id, fileName, user, membership) {
   const job = (await getJob(id));
   if (!job) return null;
 
-  (await assertCanModifyJob(job, user, true));
+  (await assertCanModifyJob(job, user, true, fileName));
   assertJobIsIdle(job, 'remove files from', true);
-  if (transcriptionQueues.get(id)?.files.has(fileName) || deletingFiles.get(id)?.has(fileName)) {
+  if (transcriptionQueues.get(id)?.files.has(fileName)) {
     throw Object.assign(new Error('Another change to this song is in progress'), { statusCode: 409 });
   }
   if (!isValidJobFileName(fileName)) {
@@ -932,9 +1037,6 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
     throw error;
   }
 
-  const pending = deletingFiles.get(id) || new Set();
-  pending.add(fileName);
-  deletingFiles.set(id, pending);
   let unlock = () => {};
   try {
     return await mutateJobFiles(id, async () => {
@@ -954,6 +1056,11 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
       });
       await removeSongThumbnail(thumbnailPath);
       const currentJob = transcriptionQueues.get(id)?.job || (await getJob(id));
+      preservePrivateCompanion(currentJob, fileName, { removeOriginal: true, files: [
+        ...currentJob.files,
+        ...allJobs.filter((alias) => alias.outputDir && path.resolve(alias.outputDir) === path.resolve(currentJob.outputDir))
+          .flatMap((alias) => alias.files || [])
+      ] });
       currentJob.files = currentJob.files.filter((name) => name !== fileName);
       if (currentJob.transcriptions) delete currentJob.transcriptions[fileName];
       if (currentJob.songMetadata) delete currentJob.songMetadata[fileName];
@@ -963,8 +1070,6 @@ export async function deleteJobFile(id, fileName, user = null, membership = null
     });
   } finally {
     unlock();
-    pending.delete(fileName);
-    if (pending.size === 0) deletingFiles.delete(id);
   }
 }
 
@@ -979,7 +1084,7 @@ export async function getAvailableContributors(id, user = null) {
 export async function setJobContributors(id, userIds, user = null) {
   const job = (await getJob(id));
   if (!job) return null;
-  assertJobAccess(job, user);
+  await assertCanModifyJob(job, user);
   assertJobIsIdle(job, 'change contributors for');
   if (!Array.isArray(userIds) || userIds.some((userId) => typeof userId !== 'string' || !userId)) {
     const error = new Error('userIds must be an array of user IDs');
@@ -1002,11 +1107,15 @@ export async function setJobContributors(id, userIds, user = null) {
 }
 
 export async function getJobs(userId) {
-  return (await readPostgresJobs(database, userId)).map((job) => jobs.get(job.id) || job);
+  return attachPrivacyAliases(database, (await readPostgresJobs(database, userId)).map((job) => jobs.get(job.id) || job));
 }
 
 export async function getJob(id) {
-  if (jobs.has(id)) return jobs.get(id);
+  if (jobs.has(id)) {
+    const job = jobs.get(id);
+    await attachPrivacyAliases(database, [job]);
+    return job;
+  }
   return readPostgresJob(database, id);
 }
 

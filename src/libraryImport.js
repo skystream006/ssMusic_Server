@@ -17,6 +17,7 @@ import { individualPlaylistNames, individualVideosId, songKey } from './library.
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { getUser } from './authStore.js';
+import { canReadAllFiles, visibleJob } from './privacy.js';
 
 const maxUploadBytes = 2 * 1024 ** 3;
 const maxAudioBytes = 512 * 1024 ** 2;
@@ -369,7 +370,7 @@ export function parseItunesImport(xml, media, { local = false, report = () => {}
   return playlists;
 }
 
-export async function importUploadedFiles(files, options, user) {
+export async function importUploadedFiles(files, options, user, actor = user) {
   const jobs = (await libraryJobs(user));
   const library = (await getLibrary(user.id, jobs));
   if (options.createNew !== 'true' && options.createNew !== 'false') throw failure('Choose an existing or new playlist');
@@ -382,6 +383,11 @@ export async function importUploadedFiles(files, options, user) {
   const validated = [];
   for (const file of files) validated.push(await validateImportMedia(file));
   const individual = !createNew && Object.hasOwn(individualPlaylistNames, options.playlistId);
+  if (!createNew && (individual
+    ? library.entries.find((entry) => entry.id === options.playlistId)?.private === true && actor.id !== user.id
+    : !canReadAllFiles(jobs.find((job) => job.id === options.playlistId), actor))) {
+    throw failure('Playlist is not available for import', 403);
+  }
   const individualVideo = individual && options.playlistId === individualVideosId;
   const job = await importJobFiles({ files: validated, playlistId: createNew || individual ? undefined : options.playlistId,
     playlistTitle: individual ? (individualVideo ? 'Imported videos' : 'Imported songs') : options.playlistTitle,
@@ -536,7 +542,7 @@ export async function handleLibraryImport(req, res) {
         const name = /^[\x00-\xff]*$/.test(file.originalname) && isUtf8(bytes) ? bytes.toString('utf8') : file.originalname;
         return { name, path: file.path };
       });
-      result = await importUploadedFiles(files, req.body, importUser);
+      result = await importUploadedFiles(files, req.body, importUser, req.user);
     } else throw failure('Choose files, or upload both an iTunes XML and a media ZIP');
   } catch (error) {
     status = error instanceof multer.MulterError
@@ -561,5 +567,6 @@ export async function handleLibraryImport(req, res) {
       jobs: result.jobs.map((job) => ({ id: job.id, playlistTitle: job.playlistTitle })) };
   } else progress.error = result.error;
   progress.finishedAt = Date.now();
-  if (!acknowledged && !res.destroyed) res.status(status).json({ ...result, importId });
+  if (!acknowledged && !res.destroyed) res.status(status).json({ ...result,
+    ...(result.jobs ? { jobs: result.jobs.map((job) => visibleJob(job, req.user)).filter(Boolean) } : {}), importId });
 }

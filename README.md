@@ -34,6 +34,78 @@ existing job's normal rerun or details action.
 `POST /api/jobs` accepts `downloadType: "audio"` (default) or `"video"`, for example
 `{ "url": "https://www.youtube.com/watch?v=VIDEO_ID", "downloadType": "video" }`.
 
+## Playlist and file privacy
+
+Playlists and files are nonprivate by default, retaining their existing access
+rules. Only the owning user can change privacy. A private playlist and its source
+files are accessible only to that owner, not contributors, linked users, Shared
+accounts, other administrators, public-link recipients, or search API keys.
+A private file remains private when linked into another playlist; generated
+no-vocals versions cannot bypass the original file's privacy.
+Retained no-vocals files stay private when their private original is deleted.
+
+Use the owner-only privacy actions in Jobs or Music Library to mark a playlist
+or file private, or make it nonprivate again. The **Individual Songs** and
+**Individual Videos** playlists have per-library privacy: hiding one hides that
+playlist and its memberships from other library readers, but does not itself
+make its source files private. Mark the files private to restrict their direct
+media URLs everywhere.
+
+The authenticated privacy endpoints accept `{ "private": true }` or
+`{ "private": false }` (JSON booleans):
+
+- `PATCH /api/jobs/:id/privacy` — playlist/source job privacy.
+- `PATCH /api/jobs/:id/files/:name/privacy` — file privacy; URL-encode the entire filename.
+- `PATCH /api/library/playlists/:id/privacy` — playlist privacy, including the
+  current user's Individual Songs/Videos playlists.
+
+Privacy applies to catalogs, searches, metadata, lyrics, artwork, streams,
+downloads, exports, and mutations. Making a playlist nonprivate does not clear
+its files' individual privacy flags. Existing public links stop working while
+the source is private, and new public links cannot be created for private media.
+Previously downloaded copies or streams already in progress cannot be recalled.
+Saved ZIP backups made before privacy support, or before another owner's privacy
+settings changed, must be regenerated before downloading; an export is also
+rejected if those settings change while it is being prepared.
+
+## Read-only song search API
+
+Set `SEARCH_API_KEY` in `.env` to a long, randomly generated secret and restart
+the server. For example, generate a value with
+`node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`.
+Leaving the setting empty disables key access. Docker Compose passes the
+setting to the app. Send it over HTTPS in the `X-API-Key` header on **every**
+request; keys in query strings, cookies, or `X-PAT` are not accepted.
+
+`GET /api/songs/search?q=artist&page=1&pageSize=50` searches audio across all
+libraries/source jobs, excluding private playlists and files. Search is
+case-insensitive literal substring matching over indexed filename, playlist
+title, title, artist, album, performer, genre, year, and track/disc metadata.
+`q` is optional (empty lists accessible songs), with a maximum of 200 characters.
+Pages start at 1; `pageSize` defaults to 50 and is limited to 100.
+
+The response is `{ "files": [...], "page": 1, "pageSize": 50, "total": 42,
+"totalPages": 1 }`. Files contain `jobId`, `name`, available summary metadata,
+`playlistTitle`, and relative `streamUrl`, `downloadUrl`, `artworkUrl`, and
+`lyricsUrl` links. Send the same header when following these URLs; it is never
+embedded in a returned URL. Media streams support ranges and HEAD requests.
+Private media is rechecked on each request, including previously returned URLs.
+
+The key also permits:
+
+- `GET /api/libraries` — approved library owners as `{ "users": [{ "id", "name" }] }`.
+- `GET /api/library?userId=<id>` — a nonprivate, read-only library catalog.
+- `GET /api/library/tracks?userId=<id>` — the existing track pagination,
+  `entryId`, and `search` parameters, filtered by privacy.
+- `GET`/`HEAD /api/jobs/:id/stream/:name`, `/download/:name`,
+  `/artwork/:name`, and `/lyrics/:name` — nonprivate media, including videos
+  where supported by the endpoint.
+
+No writes, account/admin operations, job logs, or backup downloads are allowed.
+Supplying a key alongside a session or PAT never upgrades its read-only scope.
+Treat this key as a server-wide read credential, not a public browser key;
+rotate it by replacing the environment value and restarting the server.
+
 ## Public song links
 
 Open a song's **Share Media** action, review the privacy warning, then choose
@@ -63,8 +135,9 @@ share URLs in proxy logs or analytics.
 
 Public shared-media pages always use the midnight-blue dark palette, independently
 of account appearance settings. Administrators can open **Admin > Shared links**
-to browse all generated links, 50 per page, with the song, source playlist,
+to browse accessible generated links, 50 per page, with the song, source playlist,
 creator, and unique link ID. Use the delete icon and confirm to revoke a link.
+Links to another owner's private media are omitted, even for administrators.
 This blocks subsequent metadata, streaming, and download requests for that link;
 the source file, other links, and already downloaded copies are unaffected.
 Existing public URLs cannot be recovered because only token hashes are stored.
