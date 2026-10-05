@@ -95,7 +95,8 @@ export function visibleJob(job, user) {
 // Identifiers/expressions are supplied only by server code; viewer values remain SQL parameters.
 export function jobVisibilitySql(job = 'jobs', viewer = '$1') {
   return `(COALESCE(${job}.data->'private', 'false'::jsonb) <> 'true'::jsonb
-    OR (NULLIF(${job}.data->'initiatedBy'->>'id', '') IS NOT NULL AND ${job}.data->'initiatedBy'->>'id' = ${viewer}))`;
+    OR (${viewer}::text IS NOT NULL AND NULLIF(${job}.data->'initiatedBy'->>'id', '') IS NOT NULL
+      AND ${job}.data->'initiatedBy'->>'id' = ${viewer}))`;
 }
 
 function stemSql(name) {

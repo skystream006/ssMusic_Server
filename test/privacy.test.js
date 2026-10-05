@@ -43,6 +43,36 @@ test('privacy defaults public and permits only the owning user, never an adminis
   assert.equal(job.songMetadata['Secret.mp3'].title, 'Secret');
 });
 
+test('catalog viewers cannot see public songs linked only into a private playlist', async (context) => {
+  const { database } = await createTestDatabase(context);
+  const owner = { id: 'owner', role: 'user', status: 'approved', name: 'Owner' };
+  const now = new Date().toISOString();
+  await writeUser(database, { ...owner, userHandle: owner.id, credentials: [], createdAt: now, updatedAt: now });
+  const source = { id: 'public-source', url: 'import:public-source', status: 'completed',
+    isPlaylist: true, initiatedBy: owner, files: ['Public.mp3'], createdAt: now, updatedAt: now };
+  const destination = { ...source, id: 'private-destination', url: 'import:private-destination', files: [], private: true };
+  for (const job of [source, destination]) await writeJob(database, job);
+  const jobs = await readPostgresJobs(database, owner.id);
+  const library = await getLibrary(owner.id, jobs);
+  await moveLibrarySong(owner.id, { version: library.version, jobId: source.id, name: 'Public.mp3',
+    sourcePlaylistId: source.id, playlistId: destination.id }, jobs);
+
+  for (const viewerId of [null, 'other']) {
+    const catalog = await readPostgresLibrary(database, owner.id, viewerId);
+    assert.equal(catalog.entries.some((entry) => entry.id === destination.id), false);
+    assert.equal(catalog.playlists.some((playlist) => playlist.id === destination.id), false);
+    assert.equal(catalog.songCount, 0);
+    const tracks = await pagePostgresTracks(database, owner.id, { viewerId });
+    assert.equal(tracks.total, 0);
+    assert.deepEqual(tracks.files, []);
+    await assert.rejects(pagePostgresTracks(database, owner.id, { viewerId, entryId: destination.id }), { statusCode: 404 });
+  }
+  assert.equal(await canReadLibrarySong({ id: null, role: 'catalog' }, owner.id, source.id, 'Public.mp3'), false);
+  const owned = await pagePostgresTracks(database, owner.id, { entryId: destination.id });
+  assert.equal(owned.total, 1);
+  assert.equal(owned.files[0].name, 'Public.mp3');
+});
+
 test('privacy survives persistence, filters SQL before paging and protects aliases, companions and shares', { timeout: 120_000 }, async (context) => {
   const { database, directory } = await createTestDatabase(context);
   const now = new Date().toISOString();

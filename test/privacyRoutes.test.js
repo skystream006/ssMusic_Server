@@ -196,18 +196,59 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal((await call('/api/songs/search', keyHeaders)).body.total, 4);
   });
 
-  await context.test('deleting a private original does not publish a retained, differently named companion', async () => {
-    const outputDir = path.join(outputRoot, 'retained');
-    const companion = '[NoVocals]/different.mp3';
-    await fs.mkdir(path.join(outputDir, '[NoVocals]'), { recursive: true });
-    for (const name of ['original.mp3', companion]) await fs.writeFile(path.join(outputDir, name), 'audio');
-    await writeJob(database, { id: 'retained', url: 'import:retained', status: 'completed',
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), initiatedBy: { id: users.Owner.id },
-      outputDir, files: ['original.mp3', companion], privateFiles: ['original.mp3'],
-      transcriptions: { 'original.mp3': { noVocalsName: companion } } });
-    assert.equal((await call('/api/jobs/retained/files/original.mp3', headers.Owner, 'DELETE')).status, 200);
-    assert.equal((await call(`/api/jobs/retained/stream/${encodeURIComponent(companion)}`, keyHeaders)).status, 404);
-    assert.equal((await call(`/api/jobs/retained/stream/${encodeURIComponent(companion)}`)).status, 200);
+  await context.test('retained companions stay private after deleting their original and owners can make them public', async () => {
+    const companions = ['[NoVocals]/different.mp3', '[NoVocals]/original.mp3', '[NoVocals]/original [No Vocals].mp3'];
+    for (const [index, companion] of companions.entries()) {
+      const id = `retained-${index}`;
+      const outputDir = path.join(outputRoot, id);
+      await fs.mkdir(path.join(outputDir, '[NoVocals]'), { recursive: true });
+      for (const name of ['original.mp3', companion]) await fs.writeFile(path.join(outputDir, name), 'audio');
+      await writeJob(database, { id, url: `import:${id}`, status: 'completed',
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), initiatedBy: { id: users.Owner.id },
+        outputDir, files: ['original.mp3', companion], privateFiles: ['original.mp3'],
+        transcriptions: index === 0 ? { 'original.mp3': { noVocalsName: companion } } : {} });
+      assert.equal((await call(`/api/jobs/${id}/files/original.mp3`, headers.Owner, 'DELETE')).status, 200);
+      const stream = `/api/jobs/${id}/stream/${encodeURIComponent(companion)}`;
+      assert.equal((await call(stream, keyHeaders)).status, 404);
+      assert.equal((await call(stream)).status, 200);
+      assert.deepEqual((await call(`/api/jobs/${id}`)).body.privateFiles, [companion]);
+      const privacy = `/api/jobs/${id}/files/${encodeURIComponent(companion)}/privacy`;
+      assert.equal((await call(privacy, headers.Admin, 'PATCH', { private: false })).status, 403);
+      assert.equal((await call(privacy, headers.Owner, 'PATCH', { private: false })).status, 200);
+      assert.equal((await call(stream, keyHeaders)).status, 200);
+    }
+  });
+
+  await context.test('alias-only companions retain the original owner privacy after deleting the original', async () => {
+    for (const aliasOwner of ['Owner', 'Linked']) {
+      const sourceId = `alias-source-${aliasOwner}`;
+      const aliasId = `alias-companion-${aliasOwner}`;
+      const outputDir = path.join(outputRoot, sourceId);
+      const companion = '[NoVocals]/original.mp3';
+      await fs.mkdir(path.join(outputDir, '[NoVocals]'), { recursive: true });
+      for (const name of ['original.mp3', companion]) await fs.writeFile(path.join(outputDir, name), 'audio');
+      const source = { id: sourceId, url: `import:${sourceId}`, status: 'completed',
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), initiatedBy: { id: users.Owner.id },
+        outputDir, files: ['original.mp3'], privateFiles: ['original.mp3'] };
+      await writeJob(database, source);
+      await writeJob(database, { ...source, id: aliasId, url: `import:${aliasId}`,
+        initiatedBy: { id: users[aliasOwner].id }, contributors: [{ id: users.Owner.id }],
+        files: [companion], privateFiles: [] });
+      const stream = `/api/jobs/${aliasId}/stream/${encodeURIComponent(companion)}`;
+      assert.equal((await call(stream, keyHeaders)).status, 404);
+      assert.equal((await call(`/api/jobs/${sourceId}/files/original.mp3`, headers.Owner, 'DELETE')).status, 200);
+      assert.equal((await call(stream, keyHeaders)).status, 404);
+      assert.equal((await call(stream, headers.Linked)).status, 404);
+      assert.equal((await call(stream)).status, 200);
+      assert.deepEqual((await call(`/api/jobs/${sourceId}`)).body.privateFiles, [companion]);
+      const privacy = `/api/jobs/${sourceId}/files/${encodeURIComponent(companion)}/privacy`;
+      for (const auth of [headers.Admin, headers.Linked]) {
+        assert.equal((await call(privacy, auth, 'PATCH', { private: false })).status, 403);
+      }
+      assert.equal((await call(privacy, headers.Owner, 'PATCH', { private: true })).status, 404);
+      assert.equal((await call(privacy, headers.Owner, 'PATCH', { private: false })).status, 200);
+      assert.equal((await call(stream, keyHeaders)).status, 200);
+    }
   });
 
   await context.test('an unset key disables access, including formerly valid credentials', async () => {

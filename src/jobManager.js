@@ -10,7 +10,7 @@ import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTran
 import { isPlayableFile } from './media.js';
 import { readSongMetadata, readSongSummary, updateSongMetadata } from './music.js';
 import { refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
-import { songMetadataFields } from './library.js';
+import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
 import { attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
 
@@ -599,7 +599,8 @@ async function setPrivacy(id, name, value, user) {
     if (!ownsJob(job, user) || user?.role === 'shared') {
       throw Object.assign(new Error('Only the owner can change privacy'), { statusCode: 403 });
     }
-    if (name !== null && (!isValidJobFileName(name) || !job.files?.includes(name))) {
+    if (name !== null && (!isValidJobFileName(name)
+      || (!job.files?.includes(name) && (value || !job.privateFiles?.includes(name))))) {
       throw Object.assign(new Error('Song not found'), { statusCode: 404 });
     }
     const directory = job.outputDir && (await fs.realpath(job.outputDir).catch(() => path.resolve(job.outputDir)));
@@ -803,11 +804,17 @@ export async function transcribeJobFile(id, fileName, options, user = null) {
   }
 }
 
-function preservePrivateCompanion(job, fileName) {
+function preservePrivateCompanion(job, fileName, { removeOriginal = false, files = job.files } = {}) {
+  if (!job.privateFiles?.includes(fileName)) return;
   const companion = job.transcriptions?.[fileName]?.noVocalsName;
-  if (job.privateFiles?.includes(fileName) && companion && job.files.includes(companion)) {
-    job.privateFiles = [...new Set([...job.privateFiles, companion])];
+  const privateFiles = new Set(job.privateFiles);
+  for (const name of files) {
+    if (name === companion || (removeOriginal && isNoVocals({ name }) && songStem(name) === songStem(fileName))) {
+      privateFiles.add(name);
+    }
   }
+  if (removeOriginal) privateFiles.delete(fileName);
+  job.privateFiles = [...privateFiles];
 }
 
 async function executeTranscription(job, fileName, options, transcription, user) {
@@ -1049,7 +1056,11 @@ async function deleteReservedJobFile(id, fileName, user, membership) {
       });
       await removeSongThumbnail(thumbnailPath);
       const currentJob = transcriptionQueues.get(id)?.job || (await getJob(id));
-      preservePrivateCompanion(currentJob, fileName);
+      preservePrivateCompanion(currentJob, fileName, { removeOriginal: true, files: [
+        ...currentJob.files,
+        ...allJobs.filter((alias) => alias.outputDir && path.resolve(alias.outputDir) === path.resolve(currentJob.outputDir))
+          .flatMap((alias) => alias.files || [])
+      ] });
       currentJob.files = currentJob.files.filter((name) => name !== fileName);
       if (currentJob.transcriptions) delete currentJob.transcriptions[fileName];
       if (currentJob.songMetadata) delete currentJob.songMetadata[fileName];
