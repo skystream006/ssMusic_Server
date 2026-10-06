@@ -550,6 +550,16 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(schedule.body.latest.format, 'itunes');
   assert.ok(schedule.body.nextRunAt);
   assert.equal((await call('/api/library/backup', 'GET', credentials.Other[0])).body.schedule.enabled, false);
+  const monthly = { enabled: true, frequency: 'monthly', dayOfMonth: 31, time: '04:30', format: 'android' };
+  for (const invalid of [{ ...monthly, frequency: 'daily' }, { ...monthly, dayOfMonth: 0 }, { ...monthly, dayOfMonth: 32 }]) {
+    assert.equal((await call('/api/library/backup/schedule', 'PUT', credentials.Owner[1], invalid)).status, 400);
+  }
+  const monthlySchedule = await call('/api/library/backup/schedule', 'PUT', credentials.Owner[1], monthly);
+  assert.equal(monthlySchedule.status, 200);
+  assert.deepEqual(monthlySchedule.body.schedule, monthly);
+  assert.ok(monthlySchedule.body.nextRunAt);
+  assert.equal(monthlySchedule.body.latest.id, schedule.body.latest.id);
+  assert.deepEqual((await call('/api/library/backup', 'GET', credentials.Owner[0])).body.schedule, monthly);
   const otherBackup = await call(`/api/library/export?source=latest&userId=${users.Owner.id}`, 'GET', credentials.Other[0]);
   assert.deepEqual(new AdmZip(otherBackup.buffer).getEntries().map((entry) => entry.entryName), ['IMPORT.txt']);
   assert.equal((await call('/api/library/backup', 'POST', credentials.Owner[0], { format: 'invalid' })).status, 400);

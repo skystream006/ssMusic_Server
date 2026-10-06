@@ -18,12 +18,65 @@ async function fixture(context) {
   return { root, database, options, service: (await createLibraryBackupService(options)) };
 }
 
-test('backup schedules compute the next daily or weekly time in UTC', () => {
+test('backup schedules compute the next monthly or weekly time in UTC', () => {
   const now = new Date('2026-09-21T03:00:00Z');
-  assert.equal(nextBackupTime({ frequency: 'daily', time: '03:00' }, now), '2026-09-22T03:00:00.000Z');
-  assert.equal(nextBackupTime({ frequency: 'daily', time: '04:00' }, now), '2026-09-21T04:00:00.000Z');
+  assert.equal(nextBackupTime({ frequency: 'monthly', dayOfMonth: 21, time: '03:00' }, now), '2026-10-21T03:00:00.000Z');
+  assert.equal(nextBackupTime({ frequency: 'monthly', dayOfMonth: 21, time: '04:00' }, now), '2026-09-21T04:00:00.000Z');
+  assert.equal(nextBackupTime({ frequency: 'monthly', dayOfMonth: 1, time: '04:00' }, now), '2026-10-01T04:00:00.000Z');
+  assert.equal(nextBackupTime({ frequency: 'monthly', dayOfMonth: 25, time: '02:00' }, now), '2026-09-25T02:00:00.000Z');
   assert.equal(nextBackupTime({ frequency: 'weekly', time: '03:00', weekday: 1 }, now), '2026-09-28T03:00:00.000Z');
+  assert.equal(nextBackupTime({ frequency: 'weekly', time: '04:00', weekday: 1 }, now), '2026-09-21T04:00:00.000Z');
   assert.equal(nextBackupTime({ frequency: 'weekly', time: '02:00', weekday: 0 }, now), '2026-09-27T02:00:00.000Z');
+  assert.throws(() => nextBackupTime({ frequency: 'daily', time: '03:00' }, now), { statusCode: 400 });
+  assert.equal(now.toISOString(), '2026-09-21T03:00:00.000Z');
+});
+
+test('monthly schedules clamp short months without losing the chosen day and roll over years', () => {
+  const schedule = { frequency: 'monthly', dayOfMonth: 31, time: '03:00' };
+  for (const [now, expected] of [
+    ['2026-01-31T03:00:00Z', '2026-02-28T03:00:00.000Z'],
+    ['2026-02-28T02:59:59Z', '2026-02-28T03:00:00.000Z'],
+    ['2026-02-28T03:00:00Z', '2026-03-31T03:00:00.000Z'],
+    ['2028-01-31T03:00:00Z', '2028-02-29T03:00:00.000Z'],
+    ['2028-02-29T03:00:00Z', '2028-03-31T03:00:00.000Z'],
+    ['2026-04-01T00:00:00Z', '2026-04-30T03:00:00.000Z'],
+    ['2026-04-30T03:00:00Z', '2026-05-31T03:00:00.000Z'],
+    ['2026-12-31T03:00:00Z', '2027-01-31T03:00:00.000Z']
+  ]) assert.equal(nextBackupTime(schedule, new Date(now)), expected);
+  assert.equal(schedule.dayOfMonth, 31);
+  assert.equal(nextBackupTime({ ...schedule, dayOfMonth: 1 }, new Date('2026-01-31T00:00:00Z')), '2026-02-01T03:00:00.000Z');
+});
+
+test('legacy daily schedules migrate once to monthly while preserving disabled schedules and backups', async (context) => {
+  const { service, options, database } = await fixture(context);
+  const latest = await service.start('owner', { format: 'android' });
+  const daily = { enabled: true, frequency: 'daily', time: '03:00', weekday: 0, format: 'itunes', destination: '/Music' };
+  const weekly = { enabled: true, frequency: 'weekly', time: '04:00', weekday: 1, format: 'android' };
+  for (const [id, schedule] of [['owner', daily], ['other', { ...daily, enabled: false }], ['revoked', weekly]]) {
+    await database.prepare(`INSERT INTO library_backups (user_id, schedule, next_run_at) VALUES ($1, $2, $3)
+      ON CONFLICT(user_id) DO UPDATE SET schedule = excluded.schedule, next_run_at = excluded.next_run_at`)
+      .run(id, JSON.stringify(schedule), schedule.enabled ? '2026-09-21T03:00:00.000Z' : null);
+  }
+  let time = new Date('2026-09-21T02:00:00Z');
+  let restarted = await createLibraryBackupService({ ...options, now: () => time });
+  const migrated = await restarted.getStatus('owner');
+  assert.deepEqual(migrated.schedule, { ...daily, frequency: 'monthly', dayOfMonth: 1 });
+  assert.equal(migrated.nextRunAt, '2026-10-01T03:00:00.000Z');
+  assert.deepEqual(migrated.latest, latest);
+  assert.deepEqual((await restarted.getStatus('other')).schedule, { ...daily, enabled: false, frequency: 'monthly', dayOfMonth: 1 });
+  assert.equal((await restarted.getStatus('other')).nextRunAt, null);
+  assert.deepEqual((await restarted.getStatus('revoked')).schedule, weekly);
+  assert.equal((await restarted.getStatus('revoked')).nextRunAt, '2026-09-21T03:00:00.000Z');
+  time = new Date('2026-09-22T04:00:00Z');
+  await restarted.runDue();
+  assert.deepEqual(await restarted.getStatus('owner'), migrated);
+  time = new Date('2026-10-01T04:00:00Z');
+  restarted = await createLibraryBackupService({ ...options, now: () => time });
+  assert.deepEqual(await restarted.getStatus('owner'), migrated);
+  await restarted.runDue();
+  assert.equal((await restarted.getStatus('owner')).nextRunAt, '2026-11-01T03:00:00.000Z');
+  assert.equal((await restarted.getStatus('owner')).latest.format, 'itunes');
+  assert.equal((await restarted.getStatus('other')).latest, null);
 });
 
 test('latest backup is replaced across formats, private to each user and retained on failure', async (context) => {
@@ -168,7 +221,7 @@ test('deleting an account retains its saved archive through download cleanup, an
     await gate;
     await writeLibraryExport(...args);
   } }));
-  (await replacing.saveSchedule('owner', { enabled: true, frequency: 'daily', time: '03:00', format: 'android' }));
+  (await replacing.saveSchedule('owner', { enabled: true, frequency: 'monthly', dayOfMonth: 21, time: '03:00', format: 'android' }));
   const completion = replacing.start('owner', { format: 'android' });
   const rejected = assert.rejects(completion, { statusCode: 403 });
   try {
@@ -203,22 +256,23 @@ test('scheduled backups persist, catch up once after downtime and skip disabled 
   const { options, database } = await fixture(context);
   let time = new Date('2026-09-21T02:00:00Z');
   let service = (await createLibraryBackupService({ ...options, now: () => time }));
-  const schedule = { enabled: true, frequency: 'daily', time: '03:00', format: 'android' };
+  const schedule = { enabled: true, frequency: 'monthly', dayOfMonth: 21, time: '03:00', format: 'android' };
   (await service.saveSchedule('owner', schedule));
   (await service.saveSchedule('other', schedule));
   service = (await createLibraryBackupService({ ...options, now: () => time }));
+  assert.deepEqual((await service.getStatus('owner')).schedule, schedule);
   assert.equal((await service.getStatus('owner')).nextRunAt, '2026-09-21T03:00:00.000Z');
-  time = new Date('2026-09-24T12:00:00Z');
+  time = new Date('2026-12-24T12:00:00Z');
   (await database.prepare("UPDATE users SET status = 'revoked' WHERE id = 'other'").run());
   await service.runDue();
   const completed = (await service.getStatus('owner'));
   assert.equal(completed.latest.format, 'android');
-  assert.equal(completed.nextRunAt, '2026-09-25T03:00:00.000Z');
+  assert.equal(completed.nextRunAt, '2027-01-21T03:00:00.000Z');
   assert.equal((await service.getStatus('other')).latest, null);
   await service.runDue();
   assert.equal((await service.getStatus('owner')).latest.id, completed.latest.id);
   (await service.saveSchedule('owner', { enabled: false }));
-  time = new Date('2026-10-01T12:00:00Z');
+  time = new Date('2027-02-01T12:00:00Z');
   await service.runDue();
   assert.equal((await service.getStatus('owner')).latest.id, completed.latest.id);
   assert.equal((await service.getStatus('owner')).nextRunAt, null);
@@ -231,14 +285,24 @@ test('scheduled backups persist, catch up once after downtime and skip disabled 
   await assert.rejects(service.saveSchedule('other', schedule), { statusCode: 403 });
 });
 
-test('schedule validation rejects invalid times, formats, weekdays and iTunes destinations', async (context) => {
+test('schedule validation rejects daily frequency, invalid times, formats, days and iTunes destinations', async (context) => {
   const { service } = await fixture(context);
   const valid = { enabled: true, frequency: 'weekly', weekday: 1, time: '03:00', format: 'itunes', destination: 'C:\\Music' };
-  for (const value of [{}, { ...valid, enabled: 'true' }, { ...valid, frequency: 'hourly' }, { ...valid, time: '24:00' },
+  for (const value of [{}, { ...valid, enabled: 'true' }, { ...valid, frequency: 'hourly' }, { ...valid, frequency: 'daily' }, { ...valid, time: '24:00' },
     { ...valid, weekday: 7 }, { ...valid, weekday: 1.5 }, { ...valid, format: 'zip' }, { ...valid, destination: '../Music' }]) {
     (await assert.rejects(async () => (await service.saveSchedule('owner', value)), { statusCode: 400 }));
   }
   assert.equal((await service.saveSchedule('owner', valid)).schedule.destination, 'C:/Music');
+  for (const dayOfMonth of [undefined, null, '1', true, 0, -1, 32, 1.5]) {
+    await assert.rejects(service.saveSchedule('owner', { ...valid, frequency: 'monthly', dayOfMonth }), { statusCode: 400 });
+  }
+  for (const dayOfMonth of [1, 28, 29, 30, 31]) {
+    const saved = await service.saveSchedule('owner', { ...valid, frequency: 'monthly', dayOfMonth });
+    assert.equal(saved.schedule.dayOfMonth, dayOfMonth);
+    assert.equal(saved.schedule.frequency, 'monthly');
+    assert.equal(saved.schedule.weekday, undefined);
+  }
+  assert.equal((await service.saveSchedule('owner', valid)).schedule.dayOfMonth, undefined);
 });
 
 test('scheduled failures retain the previous backup and interrupted state recovers after restart', async (context) => {
@@ -246,12 +310,12 @@ test('scheduled failures retain the previous backup and interrupted state recove
   const latest = await service.start('owner', { format: 'android' });
   let time = new Date('2026-09-21T02:00:00Z');
   const failing = (await createLibraryBackupService({ ...options, now: () => time, writeArchive: async () => { throw new Error('Disk unavailable'); } }));
-  (await failing.saveSchedule('owner', { enabled: true, frequency: 'daily', time: '03:00', format: 'android' }));
+  (await failing.saveSchedule('owner', { enabled: true, frequency: 'monthly', dayOfMonth: 21, time: '03:00', format: 'android' }));
   time = new Date('2026-09-21T04:00:00Z');
   await failing.runDue();
   assert.equal((await failing.getStatus('owner')).latest.id, latest.id);
   assert.equal((await failing.getStatus('owner')).running, false);
-  assert.equal((await failing.getStatus('owner')).nextRunAt, '2026-09-22T03:00:00.000Z');
+  assert.equal((await failing.getStatus('owner')).nextRunAt, '2026-10-21T03:00:00.000Z');
   assert.match((await failing.getStatus('owner')).error, /server storage/);
   (await database.prepare('UPDATE library_backups SET running = 1 WHERE user_id = $1').run('owner'));
   (await closeDatabases());

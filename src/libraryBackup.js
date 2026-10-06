@@ -12,8 +12,22 @@ export function nextBackupTime(schedule, now = new Date()) {
   const [hour, minute] = schedule.time.split(':').map(Number);
   const next = new Date(now);
   next.setUTCHours(hour, minute, 0, 0);
-  if (schedule.frequency === 'weekly') next.setUTCDate(next.getUTCDate() + (schedule.weekday - next.getUTCDay() + 7) % 7);
-  if (next <= now) next.setUTCDate(next.getUTCDate() + (schedule.frequency === 'weekly' ? 7 : 1));
+  if (schedule.frequency === 'monthly') {
+    const setDay = () => {
+      const lastDay = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
+      next.setUTCDate(Math.min(schedule.dayOfMonth, lastDay));
+    };
+    setDay();
+    if (next <= now) {
+      next.setUTCMonth(next.getUTCMonth() + 1, 1);
+      setDay();
+    }
+  } else if (schedule.frequency === 'weekly') {
+    next.setUTCDate(next.getUTCDate() + (schedule.weekday - next.getUTCDay() + 7) % 7);
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 7);
+  } else {
+    throw failure('Choose a monthly or weekly schedule.');
+  }
   return next.toISOString();
 }
 
@@ -24,6 +38,12 @@ export async function createLibraryBackupService({ loadLibrary, database = openD
   const readers = new Map();
   const writing = new Set();
   (await database.prepare("UPDATE library_backups SET running = 0, last_error = 'Backup interrupted by a server restart. Try again.' WHERE running = 1").run());
+  const dailySchedules = await database.prepare("SELECT user_id, schedule FROM library_backups WHERE schedule->>'frequency' = 'daily'").all();
+  for (const row of dailySchedules) {
+    const schedule = { ...JSON.parse(row.schedule), frequency: 'monthly', dayOfMonth: 1 };
+    await database.prepare('UPDATE library_backups SET schedule = $1, next_run_at = $2 WHERE user_id = $3')
+      .run(JSON.stringify(schedule), schedule.enabled ? nextBackupTime(schedule, now()) : null, row.user_id);
+  }
 
   async function privacyRevision(userId) {
     const rows = await database.prepare(`SELECT id, data->'private' AS private, data->'privateFiles' AS files
@@ -58,14 +78,15 @@ export async function createLibraryBackupService({ loadLibrary, database = openD
     if (typeof value?.enabled !== 'boolean') throw failure('Choose whether scheduled backups are enabled.');
     let schedule = { ...(await getStatus(userId)).schedule, enabled: false };
     if (value.enabled) {
-      if (!['daily', 'weekly'].includes(value.frequency) || typeof value.time !== 'string'
+      if (!['monthly', 'weekly'].includes(value.frequency) || typeof value.time !== 'string'
         || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value.time)
-        || (value.frequency === 'weekly' && (!Number.isInteger(value.weekday) || value.weekday < 0 || value.weekday > 6))) {
-        throw failure('Choose a daily or weekly schedule with a valid UTC time and weekday.');
+        || (value.frequency === 'weekly' && (!Number.isInteger(value.weekday) || value.weekday < 0 || value.weekday > 6))
+        || (value.frequency === 'monthly' && (!Number.isInteger(value.dayOfMonth) || value.dayOfMonth < 1 || value.dayOfMonth > 31))) {
+        throw failure('Choose a monthly or weekly schedule with a valid UTC time and day.');
       }
       const options = exportOptions(value.format, value.destination);
       schedule = { enabled: true, frequency: value.frequency, time: value.time,
-        weekday: value.frequency === 'weekly' ? value.weekday : 0, format: options.format,
+        ...(value.frequency === 'weekly' ? { weekday: value.weekday } : { dayOfMonth: value.dayOfMonth }), format: options.format,
         ...(options.destination ? { destination: options.destination } : {}) };
     }
     (await database.prepare('UPDATE library_backups SET schedule = $1, next_run_at = $2 WHERE user_id = $3')
