@@ -344,13 +344,14 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
     assert.deepEqual(result.body.metadata.sylt, [{ time: 1, text: 'New timed line' }]);
     assert.equal(result.body.metadata.artwork, `data:image/png;base64,${imageBuffer.toString('base64')}`);
     const cacheFiles = await fs.readdir(path.join(directory, 'data', 'artwork-thumbnails'), { recursive: true });
-    const cachedCovers = await Promise.all(cacheFiles.filter((file) => file.endsWith('.webp'))
+    const cachedCovers = await Promise.all(cacheFiles.filter((file) => file.endsWith('.avif'))
       .map((file) => fs.readFile(path.join(directory, 'data', 'artwork-thumbnails', file))));
-    assert.ok(cachedCovers.some((cover) => cover.toString('ascii', 8, 12) === 'WEBP'),
+    const cachedTypes = await Promise.all(cachedCovers.filter((cover) => cover.length).map((cover) => fileTypeFromBuffer(cover)));
+    assert.ok(cachedTypes.some((type) => type?.mime === 'image/avif'),
       'replacement generates a thumbnail before artwork is requested');
     const cover = await call(result.body.file.artworkUrl);
     assert.equal(cover.status, 200);
-    assert.equal(cover.headers['content-type'], 'image/webp');
+    assert.equal(cover.headers['content-type'], 'image/avif');
     assert.deepEqual((await call(result.body.file.streamUrl)).buffer, replacement);
     const ranged = await call(result.body.file.streamUrl, 'GET', { ...credentials.Owner[0], Range: 'bytes=0-15' });
     assert.equal(ranged.status, 206);

@@ -347,7 +347,7 @@ test('admin artwork thumbnails describe the non-destructive cache rebuild and gu
     request() { assert.fail('SSR must not request thumbnail status'); }
   }));
   assert.match(loading, /Album artwork thumbnails/);
-  assert.match(loading, /96px WebP images on disk/);
+  assert.match(loading, /192px AVIF images on disk/);
   assert.match(loading, /Original album artwork and media files remain unchanged/);
   assert.match(loading, /Regenerate all thumbnails/);
   assert.match(loading, /role="status" aria-live="polite"/);

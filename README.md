@@ -98,11 +98,11 @@ Private media is rechecked on each request, including previously returned URLs.
 
 All song search results provide an `artworkUrl`. Audio URLs include `?fallback=1`:
 supported embedded MP3 artwork is preferred, and songs with no supported cover
-receive a bundled 96 by 96 WebP ssMusic thumbnail. Other artwork requests retain
+receive a bundled 192 by 192 AVIF ssMusic thumbnail. Other artwork requests retain
 their existing missing-cover behavior unless the fallback is requested.
 
 Video results provide frame thumbnails (MP4, M4V, MOV, WebM, and OGV).
-Video thumbnails are 96 by 96 WebP images generated
+Video thumbnails are 192 by 192 AVIF images generated
 with FFmpeg on the first artwork request and reused from the disk thumbnail cache.
 Changing a video invalidates its cached image; deleting the video or job removes it.
 Search itself does not decode videos. Send `X-API-Key` when fetching a thumbnail,
@@ -1132,7 +1132,7 @@ It lists only jobs you initiated or contribute to, using their **Playlist Title*
 This personal-library rule also applies to administrators. The Jobs dashboard keeps
 its existing broader access rules. Select a playlist on the left to browse its songs
 on the right. Search playlists or songs independently.
-Song rows lazy-load **96 × 96 WebP thumbnails** of embedded MP3 album artwork,
+Song rows lazy-load **192 × 192 AVIF thumbnails** of embedded MP3 album artwork,
 with a music-note placeholder when no supported cover is available. Uploads,
 downloads, metadata edits, file replacement, and transcription refresh the
 thumbnails using the existing FFmpeg runtime. Original artwork and audio are
@@ -1142,7 +1142,9 @@ Thumbnails are cached on disk under `data/artwork-thumbnails` (the existing Dock
 data volume), not in PostgreSQL. Unchanged songs are served from this cache without
 reading their ID3 tags again. Source-file revisions invalidate stale thumbnails,
 including when artwork is removed; older cached revisions are discarded. Existing
-songs without a cache are generated on their first artwork request. A thumbnail
+songs without a cache are generated on their first artwork request. The cache uses
+versioned `.avif` files and serves `image/avif`. Old 96px WebP entries are regenerated
+on the next request (or an admin rebuild), then removed for that source file. A thumbnail
 generation failure does not roll back a song upload or edit; check FFmpeg and retry.
 Artwork requests still require authentication and granted-library access.
 
@@ -1332,7 +1334,7 @@ The pencil beside an MP3 song opens **Edit song metadata** in the library or job
 details. Edit title, artist, album, album artist, genre, year, track number, and disc
 number. Choose or remove artwork; uploads must be JPEG, PNG, WebP, or AVIF, at most 2 MB.
 Artwork retains its uploaded format in the MP3; AVIF previews require browser AVIF
-support. Cached thumbnails are still generated as 96 by 96 WebP images with FFmpeg.
+support. Cached thumbnails are generated as 192 by 192 AVIF images with FFmpeg.
 MP3 ratings appear as zero to five stars in playlist songs and job files. Choose
 stars or **No rating** in the same editor to update the file's ID3 `POPM` tag.
 The existing rating owner and play count are retained. Ratings are read from the

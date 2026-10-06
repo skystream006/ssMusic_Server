@@ -5,12 +5,17 @@ import path from 'node:path';
 import test from 'node:test';
 import NodeID3 from 'node-id3';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { fileTypeFromBuffer } from 'file-type';
 import { readSongArtwork, readSongMetadata, readSongSummary, updateSongMetadata } from '../src/music.js';
 import { createThumbnailCache, encodeThumbnail, encodeVideoThumbnail } from '../src/artworkThumbnails.js';
 import { audioExtensions, videoExtensions } from '../src/media.js';
 import { createThumbnailMaintenance, thumbnailSongs } from '../src/thumbnailMaintenance.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+const thumbnailFixture = (label = 'thumbnail') => Buffer.concat([
+  Buffer.from('00000018667479706176696600000000617669666d696631', 'hex'), Buffer.from(label)
+]);
 
 test('song artwork reads embedded covers without adding image data to song summaries', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-artwork-'));
@@ -68,7 +73,7 @@ test('thumbnail cache persists images, avoids repeated tag reads and invalidates
   context.after(() => fs.rm(directory, { recursive: true, force: true }));
   const filePath = path.join(directory, 'Song.mp3');
   const root = path.join(directory, 'cache');
-  const thumbnail = Buffer.from('RIFF0000WEBPthumbnail');
+  const thumbnail = thumbnailFixture();
   let reads = 0;
   let encodes = 0;
   const options = { root, async readArtwork() { reads++; return { mime: 'image/png', imageBuffer: png }; },
@@ -101,11 +106,39 @@ test('thumbnail cache persists images, avoids repeated tag reads and invalidates
   assert.deepEqual(await fs.readdir(root), []);
 });
 
+test('thumbnail cache replaces legacy WebP files and rejects stale content stored as AVIF', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-avif-cache-upgrade-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'Song.mp3');
+  await fs.writeFile(filePath, 'audio');
+  const stat = await fs.stat(filePath);
+  const hash = (value) => createHash('sha256').update(value).digest('hex');
+  const revision = (version) => hash(`${version}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`);
+  const root = path.join(directory, 'cache');
+  const cacheDirectory = path.join(root, hash(await fs.realpath(filePath)));
+  await fs.mkdir(cacheDirectory, { recursive: true });
+  const oldThumbnail = Buffer.from('RIFF0000WEBPold');
+  await fs.writeFile(path.join(cacheDirectory, `${revision('96-webp-v1')}.webp`), oldThumbnail);
+  await fs.writeFile(path.join(cacheDirectory, 'keep.txt'), 'not a thumbnail');
+  let encodes = 0;
+  const thumbnail = thumbnailFixture();
+  const cache = createThumbnailCache({ root, readArtwork: async () => ({}), encode: async () => { encodes++; return thumbnail; } });
+  assert.deepEqual(await cache.read(filePath), thumbnail);
+  const target = `${revision('192-avif-v1')}.avif`;
+  assert.deepEqual((await fs.readdir(cacheDirectory)).sort(), [target, 'keep.txt'].sort());
+  assert.deepEqual(await cache.read(filePath), thumbnail);
+  assert.equal(encodes, 1);
+  await fs.writeFile(path.join(cacheDirectory, target), oldThumbnail);
+  assert.deepEqual(await cache.read(filePath), thumbnail);
+  assert.equal(encodes, 2);
+});
+
 test('song thumbnails optionally use a bundled fallback without replacing supported embedded artwork', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-audio-thumbnail-fallback-'));
   context.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const fallback = await fs.readFile(new URL('../src/assets/audio-thumbnail.webp', import.meta.url));
-  const embedded = Buffer.from('RIFF0000WEBPembedded');
+  const fallback = await fs.readFile(new URL('../src/assets/audio-thumbnail.avif', import.meta.url));
+  assert.equal((await fileTypeFromBuffer(fallback)).mime, 'image/avif');
+  const embedded = thumbnailFixture('embedded');
   const cache = createThumbnailCache({ root: path.join(directory, 'cache'),
     readArtwork: async (filePath) => path.basename(filePath) === 'Covered.mp3' ? { mime: 'image/png', imageBuffer: png } : null,
     encode: async () => embedded });
@@ -127,7 +160,7 @@ test('video thumbnails use the shared persistent cache and invalidate changed vi
   context.after(() => fs.rm(directory, { recursive: true, force: true }));
   const root = path.join(directory, 'cache');
   const encoded = [];
-  const thumbnail = Buffer.from('RIFF0000WEBPvideo');
+  const thumbnail = thumbnailFixture('video');
   const options = { root, readArtwork: () => assert.fail('Video thumbnails must not read audio tags'),
     encodeVideo: async (filePath) => { encoded.push(filePath); return thumbnail; } };
   const cache = createThumbnailCache(options);
@@ -161,12 +194,12 @@ test('thumbnail cache discards work when a source changes and retries transient 
       encodes++;
       if (encodes === 1) throw new Error('Temporary encoder failure');
       if (encodes === 2) await fs.writeFile(filePath, 'changed during encoding');
-      return Buffer.from(`RIFF0000WEBP${encodes}`);
+      return thumbnailFixture(String(encodes));
     } });
   await assert.rejects(cache.read(filePath), /Temporary encoder failure/);
-  assert.deepEqual(await cache.read(filePath), Buffer.from('RIFF0000WEBP3'));
+  assert.deepEqual(await cache.read(filePath), thumbnailFixture('3'));
   assert.equal(encodes, 3);
-  assert.deepEqual(await cache.read(filePath), Buffer.from('RIFF0000WEBP3'));
+  assert.deepEqual(await cache.read(filePath), thumbnailFixture('3'));
   assert.equal(encodes, 3);
 });
 
@@ -179,7 +212,7 @@ test('thumbnail generation limits concurrent encoders to two', async (context) =
     maximum = Math.max(maximum, ++running);
     await new Promise((resolve) => setTimeout(resolve, 5));
     running--;
-    return Buffer.from('RIFF0000WEBPthumbnail');
+    return thumbnailFixture();
   };
   const cache = createThumbnailCache({ root: path.join(directory, 'cache'),
     readArtwork: async () => ({}), encode, encodeVideo: encode });
@@ -196,7 +229,7 @@ test('cached reads bypass busy encoders and survive a concurrent failed rebuild'
   context.after(() => fs.rm(directory, { recursive: true, force: true }));
   const files = ['playing.mp3', 'cached.mp3', 'uncached.mp3'].map((name) => path.join(directory, name));
   await Promise.all(files.map((file) => fs.writeFile(file, 'audio')));
-  const thumbnail = Buffer.from('RIFF0000WEBPthumbnail');
+  const thumbnail = thumbnailFixture();
   let block = false;
   let entered = 0;
   let release;
@@ -248,7 +281,7 @@ test('cache removal after source deletion waits for any outstanding thumbnail pu
     return rename(...args);
   });
   const cache = createThumbnailCache({ root, readArtwork: async () => ({}),
-    encode: async () => Buffer.from('RIFF0000WEBPthumbnail') });
+    encode: async () => thumbnailFixture() });
   const generating = cache.read(filePath);
   await ready;
   await fs.unlink(filePath);
@@ -260,7 +293,7 @@ test('cache removal after source deletion waits for any outstanding thumbnail pu
   await assert.rejects(cache.read(filePath), { code: 'ENOENT' });
 });
 
-test('FFmpeg encodes bounded 96px WebP thumbnails without modifying original artwork', async (context) => {
+test('FFmpeg encodes bounded 192px AVIF thumbnails without modifying original artwork', async (context) => {
   const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
   const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
   const suffix = process.platform === 'win32' ? '.exe' : '';
@@ -272,14 +305,15 @@ test('FFmpeg encodes bounded 96px WebP thumbnails without modifying original art
   const thumbnail = await encodeThumbnail({ mime: 'image/png', imageBuffer: source });
   const probe = JSON.parse(execFileSync(path.join(bin, `ffprobe${suffix}`), ['-v', 'error',
     '-show_entries', 'stream=codec_name,width,height', '-of', 'json', 'pipe:0'], { input: thumbnail }));
-  assert.deepEqual(probe.streams, [{ codec_name: 'webp', width: 96, height: 96 }]);
+  assert.deepEqual(probe.streams, [{ codec_name: 'av1', width: 192, height: 192 }]);
+  assert.equal((await fileTypeFromBuffer(thumbnail)).mime, 'image/avif');
   assert.ok(thumbnail.length < source.length);
   assert.ok(thumbnail.length <= 64 * 1024);
   assert.deepEqual(source, original);
   await assert.rejects(encodeThumbnail({ mime: 'image/png', imageBuffer: Buffer.from('broken') }), /could not generate|Invalid artwork/);
 });
 
-test('AVIF artwork uploads round-trip through MP3 metadata and cached WebP thumbnails', async (context) => {
+test('AVIF artwork uploads round-trip through MP3 metadata and cached AVIF thumbnails', async (context) => {
   const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
   const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
   const suffix = process.platform === 'win32' ? '.exe' : '';
@@ -309,7 +343,7 @@ test('AVIF artwork uploads round-trip through MP3 metadata and cached WebP thumb
   const thumbnail = await cache.read(filePath);
   const probe = JSON.parse(execFileSync(path.join(bin, `ffprobe${suffix}`), ['-v', 'error',
     '-show_entries', 'stream=codec_name,width,height', '-of', 'json', 'pipe:0'], { input: thumbnail }));
-  assert.deepEqual(probe.streams, [{ codec_name: 'webp', width: 96, height: 96 }]);
+  assert.deepEqual(probe.streams, [{ codec_name: 'av1', width: 192, height: 192 }]);
   assert.ok(thumbnail.length <= 64 * 1024);
   assert.deepEqual(await cache.read(filePath), thumbnail);
   const original = await fs.readFile(filePath);
@@ -344,10 +378,11 @@ test('FFmpeg extracts bounded video frames including short clips and rejects non
     const thumbnail = await encodeVideoThumbnail(filePath);
     const probe = JSON.parse(execFileSync(path.join(bin, `ffprobe${suffix}`), ['-v', 'error',
       '-show_entries', 'stream=codec_name,width,height', '-of', 'json', 'pipe:0'], { input: thumbnail }));
-    assert.deepEqual(probe.streams, [{ codec_name: 'webp', width: 96, height: 96 }], extension);
+    assert.deepEqual(probe.streams, [{ codec_name: 'av1', width: 192, height: 192 }], extension);
+    assert.equal((await fileTypeFromBuffer(thumbnail)).mime, 'image/avif');
     assert.ok(thumbnail.length <= 64 * 1024);
     const pixels = execFileSync(executable, ['-v', 'error', '-i', 'pipe:0', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { input: thumbnail });
-    assert.equal(pixels.length, 96 * 96 * 3);
+    assert.equal(pixels.length, 192 * 192 * 3);
     assert.ok(new Set(pixels).size > 16, `${extension} thumbnail must contain the video frame, not a blank image`);
     assert.deepEqual(await fs.readFile(filePath), original);
   }

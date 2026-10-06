@@ -635,7 +635,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     assert.equal(cover.status, thumbnailBuffer ? 200 : 500);
     if (!thumbnailBuffer) continue;
     assert.deepEqual(cover.buffer, thumbnailBuffer);
-    assert.equal(cover.headers['content-type'], 'image/webp');
+    assert.equal(cover.headers['content-type'], 'image/avif');
     assert.equal(cover.headers['cache-control'], 'private, no-cache');
     assert.equal(cover.headers['x-content-type-options'], 'nosniff');
     assert.equal((await call(artworkTrack.artworkUrl, 'GET', { ...headers, 'If-None-Match': cover.headers.etag })).status, 304);

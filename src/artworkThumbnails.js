@@ -1,39 +1,48 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { fileTypeFromBuffer } from 'file-type';
 import { readSongArtwork } from './music.js';
 import { mediaType } from './media.js';
 
-const thumbnailVersion = '96-webp-v1';
+const thumbnailVersion = '192-avif-v1';
 const maxThumbnailBytes = 64 * 1024;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const signature = (stat) => hash(`${thumbnailVersion}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`);
-const isWebp = (buffer) => buffer.length >= 12 && buffer.length <= maxThumbnailBytes
-  && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
+const isAvif = async (buffer) => buffer.length > 0 && buffer.length <= maxThumbnailBytes
+  && (await fileTypeFromBuffer(buffer).catch(() => null))?.mime === 'image/avif';
 let audioFallback;
 
-function encodeThumbnailSource(inputArguments, imageBuffer, video = false) {
+async function encodeThumbnailSource(inputArguments, imageBuffer, video = false) {
   const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
   const directory = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
   const executable = path.join(directory, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
-  return new Promise((resolve, reject) => {
-    const child = execFile(executable, ['-nostdin', '-v', 'error', '-max_alloc', '33554432',
-      ...inputArguments,
-      '-vf', ['scale=96:96:force_original_aspect_ratio=decrease', ...(video ? ['thumbnail=30'] : []),
-        'pad=96:96:(ow-iw)/2:(oh-ih)/2:color=0x00000000'].join(','),
-      '-frames:v', '1', '-threads', '1', '-c:v', 'libwebp', '-quality', '70', '-compression_level', '4',
-      '-f', 'webp', 'pipe:1'], { encoding: 'buffer', timeout: 15_000, maxBuffer: maxThumbnailBytes, windowsHide: true },
-    (error, output) => {
-      if (error) return reject(new Error(error.code === 'ENOENT' || error.code === 'EACCES'
-        ? 'Thumbnail generation requires FFmpeg; check FFMPEG_PATH.'
-        : 'FFmpeg could not generate the artwork thumbnail.'));
-      if (!isWebp(output)) return reject(new Error('Invalid artwork thumbnail output'));
-      resolve(output);
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-thumbnail-'));
+  const target = path.join(temporary, 'thumbnail.avif');
+  try {
+    await new Promise((resolve, reject) => {
+      const child = execFile(executable, ['-nostdin', '-v', 'error', '-max_alloc', '33554432',
+        ...inputArguments,
+        '-vf', ['scale=192:192:force_original_aspect_ratio=decrease', ...(video ? ['thumbnail=30'] : []),
+          'pad=192:192:(ow-iw)/2:(oh-ih)/2:color=0x00000000'].join(','),
+        '-frames:v', '1', '-threads', '1', '-c:v', 'libaom-av1', '-still-picture', '1', '-cpu-used', '8',
+        '-crf', '32', '-b:v', '0', '-pix_fmt', 'yuv420p', '-f', 'avif', target],
+      { encoding: 'buffer', timeout: 15_000, maxBuffer: maxThumbnailBytes, windowsHide: true }, (error) => {
+        if (error) return reject(new Error(error.code === 'ENOENT' || error.code === 'EACCES'
+          ? 'Thumbnail generation requires FFmpeg; check FFMPEG_PATH.'
+          : 'FFmpeg could not generate the artwork thumbnail.'));
+        resolve();
+      });
+      child.stdin.on('error', () => {});
+      child.stdin.end(imageBuffer);
     });
-    child.stdin.on('error', () => {});
-    child.stdin.end(imageBuffer);
-  });
+    if ((await fs.stat(target)).size > maxThumbnailBytes) throw new Error('Invalid artwork thumbnail output');
+    const output = await fs.readFile(target);
+    if (!await isAvif(output)) throw new Error('Invalid artwork thumbnail output');
+    return output;
+  } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
 export function encodeThumbnail(image) {
@@ -66,7 +75,7 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
       if (error.code !== 'ENOENT') throw error;
       return null;
     });
-    return cached && (!cached.length || isWebp(cached)) ? cached : null;
+    return cached && (!cached.length || await isAvif(cached)) ? cached : null;
   }
 
   async function generate(filePath, force) {
@@ -78,7 +87,7 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
         const stat = await fs.stat(filePath);
         if (!stat.isFile()) return null;
         const revision = signature(stat);
-        const target = path.join(directory, `${revision}.webp`);
+        const target = path.join(directory, `${revision}.avif`);
         if (!force) {
           const cached = await readCached(target);
           if (cached) return cached.length ? cached : null;
@@ -97,7 +106,7 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
           await fs.rename(temporary, target);
         } finally { await fs.rm(temporary, { force: true }); }
         for (const name of await fs.readdir(directory)) {
-          if (/^[a-f0-9]{64}\.webp$/.test(name) && name !== path.basename(target)) {
+          if (/^[a-f0-9]{64}\.(?:avif|webp)$/.test(name) && name !== path.basename(target)) {
             await fs.rm(path.join(directory, name), { force: true });
           }
         }
@@ -115,7 +124,7 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
     const realPath = await fs.realpath(filePath);
     if (!force) {
       const revision = signature(await fs.stat(realPath));
-      const cached = await readCached(path.join(root, hash(realPath), `${revision}.webp`));
+      const cached = await readCached(path.join(root, hash(realPath), `${revision}.avif`));
       if (cached) return cached.length ? cached : null;
     }
     const existing = pending.get(realPath);
@@ -132,7 +141,7 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
   async function read(filePath, options = {}) {
     const thumbnail = await readSource(filePath, options);
     if (thumbnail || options.fallback !== true || mediaType(filePath) !== 'audio') return thumbnail;
-    audioFallback ??= fs.readFile(new URL('./assets/audio-thumbnail.webp', import.meta.url));
+    audioFallback ??= fs.readFile(new URL('./assets/audio-thumbnail.avif', import.meta.url));
     return audioFallback;
   }
 

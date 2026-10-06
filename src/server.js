@@ -582,7 +582,7 @@ app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
     const filePath = await resolveRequestedFile(req, isPlayableFile);
     const artwork = await readSongThumbnail(filePath, { fallback: req.query.fallback === '1' });
     if (!artwork) return res.status(404).end();
-    return res.type('image/webp').send(artwork);
+    return res.type('image/avif').send(artwork);
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }

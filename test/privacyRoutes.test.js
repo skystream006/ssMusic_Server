@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import AdmZip from 'adm-zip';
 import NodeID3 from 'node-id3';
+import { fileTypeFromBuffer } from 'file-type';
 import { writeJob } from '../src/database.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
@@ -147,14 +148,13 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     if (canGenerateVideo) {
       const thumbnail = await call(video.artworkUrl, keyHeaders);
       assert.equal(thumbnail.status, 200, thumbnail.text);
-      assert.match(thumbnail.headers['content-type'], /^image\/webp/);
-      assert.equal(thumbnail.buffer.toString('ascii', 0, 4), 'RIFF');
-      assert.equal(thumbnail.buffer.toString('ascii', 8, 12), 'WEBP');
+      assert.match(thumbnail.headers['content-type'], /^image\/avif/);
+      assert.equal((await fileTypeFromBuffer(thumbnail.buffer)).mime, 'image/avif');
       assert.ok(thumbnail.buffer.length <= 64 * 1024);
       assert.deepEqual((await call(video.artworkUrl, keyHeaders)).buffer, thumbnail.buffer);
       const head = await call(video.artworkUrl, keyHeaders, 'HEAD');
       assert.equal(head.status, 200);
-      assert.match(head.headers['content-type'], /^image\/webp/);
+      assert.match(head.headers['content-type'], /^image\/avif/);
       assert.equal(head.buffer.length, 0);
     }
     assert.equal((await call(video.streamUrl, keyHeaders)).status, 200);
@@ -191,7 +191,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       initiatedBy: { id: users.Owner.id }, outputDir, files: ['Preview.mp4'], playlistTitle: 'Video thumbnail cleanup' });
     assert.equal((await call('/api/jobs/video-thumbnail-cleanup/artwork/Preview.mp4', keyHeaders)).status, 200);
     const cache = path.join(directory, 'data', 'artwork-thumbnails', createHash('sha256').update(await fs.realpath(filePath)).digest('hex'));
-    assert.ok((await fs.readdir(cache)).some((name) => name.endsWith('.webp')));
+    assert.ok((await fs.readdir(cache)).some((name) => name.endsWith('.avif')));
     assert.equal((await call('/api/jobs/video-thumbnail-cleanup', headers.Owner, 'DELETE')).status, 204);
     await assert.rejects(fs.access(cache), { code: 'ENOENT' });
   });
@@ -227,13 +227,13 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal(librarySearch.body.files[0].title, title);
     const results = (await call('/api/songs/search?q=accent%20fixture', keyHeaders)).body.files;
     assert.equal(results.length, 3);
-    const fallback = await fs.readFile(new URL('../src/assets/audio-thumbnail.webp', import.meta.url));
+    const fallback = await fs.readFile(new URL('../src/assets/audio-thumbnail.avif', import.meta.url));
     for (const song of results) {
       assert.ok(song.artworkUrl.endsWith('?fallback=1'));
       if (song.name === 'Covered.MP3' && !canGenerateVideo) continue;
       const thumbnail = await call(song.artworkUrl, keyHeaders);
       assert.equal(thumbnail.status, 200, thumbnail.text);
-      assert.match(thumbnail.headers['content-type'], /^image\/webp/);
+      assert.match(thumbnail.headers['content-type'], /^image\/avif/);
       if (song.name === 'Covered.MP3') assert.notDeepEqual(thumbnail.buffer, fallback);
       else assert.deepEqual(thumbnail.buffer, fallback);
       assert.equal((await call(song.artworkUrl, keyHeaders, 'HEAD')).status, 200);
