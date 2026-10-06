@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import NodeID3 from 'node-id3';
 import { execFileSync } from 'node:child_process';
-import { readSongArtwork, readSongSummary } from '../src/music.js';
+import { readSongArtwork, readSongMetadata, readSongSummary, updateSongMetadata } from '../src/music.js';
 import { createThumbnailCache, encodeThumbnail, encodeVideoThumbnail } from '../src/artworkThumbnails.js';
 import { audioExtensions, videoExtensions } from '../src/media.js';
 import { createThumbnailMaintenance, thumbnailSongs } from '../src/thumbnailMaintenance.js';
@@ -277,6 +277,52 @@ test('FFmpeg encodes bounded 96px WebP thumbnails without modifying original art
   assert.ok(thumbnail.length <= 64 * 1024);
   assert.deepEqual(source, original);
   await assert.rejects(encodeThumbnail({ mime: 'image/png', imageBuffer: Buffer.from('broken') }), /could not generate|Invalid artwork/);
+});
+
+test('AVIF artwork uploads round-trip through MP3 metadata and cached WebP thumbnails', async (context) => {
+  const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
+  const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  const executable = path.join(bin, `ffmpeg${suffix}`);
+  try { await fs.access(executable); }
+  catch { context.skip('FFmpeg runtime is not installed'); return; }
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-avif-artwork-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const imagePath = path.join(directory, 'Cover.avif');
+  execFileSync(executable, ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180',
+    '-frames:v', '1', '-c:v', 'libaom-av1', '-still-picture', '1', '-cpu-used', '8', '-threads', '1', imagePath]);
+  const imageBuffer = await fs.readFile(imagePath);
+  const artwork = `data:image/avif;base64,${imageBuffer.toString('base64')}`;
+  const filePath = path.join(directory, 'Song.mp3');
+  const audio = Buffer.from('original audio fixture');
+  await fs.writeFile(filePath, NodeID3.write({ title: 'Keep title', artist: 'Keep artist' }, audio));
+  const result = await updateSongMetadata(filePath, { artwork });
+  assert.equal(result.artwork, artwork);
+  assert.equal(result.title, 'Keep title');
+  assert.equal(result.artist, 'Keep artist');
+  assert.deepEqual(NodeID3.removeTagsFromBuffer(await fs.readFile(filePath)), audio);
+  const embedded = await readSongArtwork(filePath);
+  assert.equal(embedded.mime, 'image/avif');
+  assert.deepEqual(embedded.imageBuffer, imageBuffer);
+  assert.equal((await readSongMetadata(filePath, { bounded: true })).artwork, artwork);
+  const cache = createThumbnailCache({ root: path.join(directory, 'thumbnails') });
+  const thumbnail = await cache.read(filePath);
+  const probe = JSON.parse(execFileSync(path.join(bin, `ffprobe${suffix}`), ['-v', 'error',
+    '-show_entries', 'stream=codec_name,width,height', '-of', 'json', 'pipe:0'], { input: thumbnail }));
+  assert.deepEqual(probe.streams, [{ codec_name: 'webp', width: 96, height: 96 }]);
+  assert.ok(thumbnail.length <= 64 * 1024);
+  assert.deepEqual(await cache.read(filePath), thumbnail);
+  const original = await fs.readFile(filePath);
+  for (const invalidArtwork of [
+    `data:image/avif;base64,${png.toString('base64')}`,
+    `data:image/png;base64,${imageBuffer.toString('base64')}`,
+    'data:image/avif;base64,YmFk',
+    `data:image/avif;base64,${Buffer.alloc(2 * 1024 * 1024 + 1).toString('base64')}`
+  ]) await assert.rejects(updateSongMetadata(filePath, { artwork: invalidArtwork }), { statusCode: 400 });
+  assert.deepEqual(await fs.readFile(filePath), original);
+  await updateSongMetadata(filePath, { artwork: null });
+  assert.equal(await readSongArtwork(filePath), null);
+  assert.equal(await cache.read(filePath), null);
 });
 
 test('FFmpeg extracts bounded video frames including short clips and rejects non-video containers', async (context) => {

@@ -1330,7 +1330,9 @@ Authenticated library APIs (sessions and PATs):
 
 The pencil beside an MP3 song opens **Edit song metadata** in the library or job
 details. Edit title, artist, album, album artist, genre, year, track number, and disc
-number. Choose or remove artwork; uploads must be JPEG, PNG, or WebP, at most 2 MB.
+number. Choose or remove artwork; uploads must be JPEG, PNG, WebP, or AVIF, at most 2 MB.
+Artwork retains its uploaded format in the MP3; AVIF previews require browser AVIF
+support. Cached thumbnails are still generated as 96 by 96 WebP images with FFmpeg.
 MP3 ratings appear as zero to five stars in playlist songs and job files. Choose
 stars or **No rating** in the same editor to update the file's ID3 `POPM` tag.
 The existing rating owner and play count are retained. Ratings are read from the

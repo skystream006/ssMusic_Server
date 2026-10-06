@@ -104,7 +104,7 @@ export async function readSongSummary(filePath, stat) {
 export async function readSongArtwork(filePath) {
   if (path.extname(filePath).toLowerCase() !== '.mp3') return null;
   const { image } = await readBoundedId3Tags(filePath, { include: ['APIC', 'PIC'] });
-  if (!image || !['image/jpeg', 'image/png', 'image/webp'].includes(image.mime)
+  if (!image || !['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(image.mime)
     || !Buffer.isBuffer(image.imageBuffer) || !image.imageBuffer.length
     || image.imageBuffer.length > 2 * 1024 * 1024) return null;
   const type = await fileTypeFromBuffer(image.imageBuffer).catch(() => null);
@@ -137,8 +137,8 @@ export async function updateSongMetadata(filePath, value) {
     if (value.artwork === null) updates.image = null;
     else {
       if (typeof value.artwork !== 'string' || value.artwork.length > 2800000) invalid('Artwork must be at most 2 MB');
-      const match = value.artwork.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/);
-      if (!match) invalid('Artwork must be a JPEG, PNG or WebP image');
+      const match = value.artwork.match(/^data:(image\/(?:jpeg|png|webp|avif));base64,([A-Za-z0-9+/]+={0,2})$/);
+      if (!match) invalid('Artwork must be a JPEG, PNG, WebP or AVIF image');
       const imageBuffer = Buffer.from(match[2], 'base64');
       if (!imageBuffer.length || imageBuffer.length > 2 * 1024 * 1024 || imageBuffer.toString('base64') !== match[2]) invalid('Invalid artwork data or size');
       const type = await fileTypeFromBuffer(imageBuffer).catch(() => null);
@@ -193,7 +193,7 @@ export async function readSongMetadata(filePath, { bounded = false } = {}) {
     .map((line) => ({ time: line.timeStamp / 1000, text: line.text }))
     .sort((first, second) => first.time - second.time);
   const image = tags.image;
-  const artwork = image && ['image/jpeg', 'image/png', 'image/webp'].includes(image.mime)
+  const artwork = image && ['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(image.mime)
     && image.imageBuffer?.length <= 2 * 1024 * 1024
     ? `data:${image.mime};base64,${image.imageBuffer.toString('base64')}` : null;
   return {

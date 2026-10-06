@@ -356,8 +356,9 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
     event.target.value = '';
     if (!image) return;
     setError('');
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(image.type) || image.size > 2 * 1024 * 1024) {
-      setError('Choose a JPEG, PNG or WebP image no larger than 2 MB.'); return;
+    const type = image.type || (/\.avif$/i.test(image.name) ? 'image/avif' : '');
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(type) || image.size > 2 * 1024 * 1024) {
+      setError('Choose a JPEG, PNG, WebP or AVIF image no larger than 2 MB.'); return;
     }
     setReadingImage(true);
     try {
@@ -365,7 +366,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result);
         reader.onerror = () => reject(new Error('Unable to read artwork.'));
-        reader.readAsDataURL(image);
+        reader.readAsDataURL(image.type ? image : new Blob([image], { type }));
       });
       await new Promise((resolve, reject) => {
         const preview = new Image();
@@ -410,7 +411,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
       {values && (editableMetadata || readOnly) && <fieldset disabled={saving || readingImage} className="metadata-fields">
         <SongRating value={values.rating} onChange={readOnly ? undefined : (rating) => setValues((current) => ({ ...current, rating }))} />
         <div className="metadata-artwork"><div className="metadata-artwork-preview">{artwork ? <img src={artwork} alt="Song artwork preview" /> : <Music2 size={40} />}</div>
-          {!readOnly && <div><input ref={uploadRef} type="file" accept="image/jpeg,image/png,image/webp" aria-label="Artwork file" hidden onChange={chooseArtwork} />
+          {!readOnly && <div><input ref={uploadRef} type="file" accept="image/jpeg,image/png,image/webp,image/avif,.avif" aria-label="Artwork file" hidden onChange={chooseArtwork} />
             <button className="secondary-button compact-button" type="button" onClick={() => uploadRef.current.click()}><ImagePlus size={17} />Choose artwork</button>
             <button className="music-icon-button" type="button" title="Remove artwork" aria-label="Remove artwork" disabled={!artwork} onClick={() => { setArtwork(null); setArtworkChanged(true); }}><Trash2 size={17} /></button></div>}
         </div>

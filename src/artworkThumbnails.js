@@ -38,8 +38,11 @@ function encodeThumbnailSource(inputArguments, imageBuffer, video = false) {
 
 export function encodeThumbnail(image) {
   const format = { 'image/jpeg': 'mjpeg', 'image/png': 'png', 'image/webp': 'webp' }[image.mime];
-  if (!format) throw new Error('Unsupported artwork image');
-  return encodeThumbnailSource(['-protocol_whitelist', 'pipe', '-f', 'image2pipe', '-c:v', format,
+  if (!format && image.mime !== 'image/avif') throw new Error('Unsupported artwork image');
+  const input = image.mime === 'image/avif'
+    ? ['-f', 'mov', '-enable_drefs', '0', '-use_absolute_path', '0']
+    : ['-f', 'image2pipe', '-c:v', format];
+  return encodeThumbnailSource(['-protocol_whitelist', 'pipe', ...input,
     '-max_pixels', '16777216', '-threads', '1', '-i', 'pipe:0'], image.imageBuffer);
 }
 
