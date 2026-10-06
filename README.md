@@ -507,8 +507,10 @@ downloads can finish while the next backup is created.
 
 ### Scheduled backups
 
-In **Export library > Schedule**, enable **Scheduled backups**, choose **Daily** or
-**Weekly**, a time in **UTC** (and weekday for weekly runs), and the export format.
+In **Export library > Schedule**, enable **Scheduled backups**, choose **Monthly** or
+**Weekly**, a time in **UTC**, and the export format. Monthly runs use a day of the
+month from **1–31**, falling back to the last day in shorter months; weekly runs
+use a weekday.
 iTunes also needs the extraction folder on your computer. Choose **Save schedule**;
 **Back up now** generates a backup immediately using the displayed format settings
 without starting a download. Saving a schedule does not run an immediate backup.
@@ -528,6 +530,10 @@ minute and runs one catch-up backup after downtime, not every missed interval.
 Only approved accounts are processed. A failed scheduled run is retried at the
 next scheduled time; use **Back up now** or **New export** for an immediate retry.
 At most two users' archives are generated concurrently, with one run per user.
+Daily schedules are no longer supported. Existing daily schedules are automatically
+converted on startup to monthly schedules on day **1**, preserving their time,
+format, destination, and enabled state. Their next run is recalculated; saved ZIPs
+are unchanged.
 
 ZIPs are stored in `data/library-backups`. Set `LIBRARY_BACKUP_ROOT` to an absolute server directory
 to override it. The client extraction folder is never used for server storage.
@@ -547,6 +553,8 @@ asynchronously with a `202` response, and polls `GET /api/library/backup` for
 `running`, `latest`, `error`, `schedule`, and `nextRunAt`. Save scheduling with
 `PUT /api/library/backup/schedule`, for example
 `{ "enabled": true, "frequency": "weekly", "weekday": 1, "time": "03:00", "format": "android" }`.
+For monthly backups use
+`{ "enabled": true, "frequency": "monthly", "dayOfMonth": 1, "time": "03:00", "format": "android" }`.
 Weekdays are `0` (Sunday) through `6` (Saturday); `{ "enabled": false }` disables
 the schedule without deleting its backup.
 Status responses also include `progress` while running: `{ "stage": "archiving",

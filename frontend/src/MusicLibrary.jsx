@@ -27,9 +27,10 @@ export function ExportLibraryDialog({ request, onClose }) {
   const [source, setSource] = useState('new');
   const [status, setStatus] = useState(null);
   const [enabled, setEnabled] = useState(false);
-  const [frequency, setFrequency] = useState('daily');
+  const [frequency, setFrequency] = useState('monthly');
   const [time, setTime] = useState('03:00');
   const [weekday, setWeekday] = useState(0);
+  const [dayOfMonth, setDayOfMonth] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
@@ -72,9 +73,10 @@ export function ExportLibraryDialog({ request, onClose }) {
         if (!initialized) {
           initialized = true;
           setEnabled(result.schedule.enabled);
-          setFrequency(result.schedule.frequency || 'daily');
+          setFrequency(result.schedule.frequency || 'monthly');
           setTime(result.schedule.time || '03:00');
           setWeekday(result.schedule.weekday || 0);
+          setDayOfMonth(result.schedule.dayOfMonth || 1);
           setFormat(result.schedule.format || result.latest?.format || 'itunes');
           setDestination(result.schedule.destination || result.latest?.destination || '');
           setSource(result.latest ? 'latest' : 'new');
@@ -110,7 +112,7 @@ export function ExportLibraryDialog({ request, onClose }) {
   function submit(event) {
     if (view === 'export' && source === 'latest') return;
     event.preventDefault();
-    if (view === 'schedule') void mutate('/api/library/backup/schedule', { enabled, frequency, time, weekday, format, destination });
+    if (view === 'schedule') void mutate('/api/library/backup/schedule', { enabled, frequency, time, weekday, dayOfMonth, format, destination });
     else void mutate('/api/library/backup', { format, destination }, true);
   }
 
@@ -148,10 +150,13 @@ export function ExportLibraryDialog({ request, onClose }) {
       </> : <>
         <label className="backup-enabled"><input type="checkbox" checked={enabled} disabled={locked} onChange={(event) => setEnabled(event.target.checked)} />Scheduled backups</label>
         {enabled && <div className="backup-schedule-fields">
-          <label>Frequency<select value={frequency} disabled={locked} onChange={(event) => setFrequency(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
+          <label>Frequency<select value={frequency} disabled={locked} onChange={(event) => setFrequency(event.target.value)}><option value="monthly">Monthly</option><option value="weekly">Weekly</option></select></label>
           {frequency === 'weekly' && <label>Day<select value={weekday} disabled={locked} onChange={(event) => setWeekday(Number(event.target.value))}>
             {sortSelectOptions(backupWeekdays).map(({ label, value }) => <option key={value} value={value}>{label}</option>)}
           </select></label>}
+          {frequency === 'monthly' && <label>Day of month<input type="number" min="1" max="31" step="1" required value={dayOfMonth}
+            disabled={locked} onChange={(event) => setDayOfMonth(event.target.value === '' ? '' : Number(event.target.value))} /></label>}
+          {frequency === 'monthly' && <p>Uses the last day of shorter months.</p>}
           <label>Time (UTC)<input type="time" required value={time} disabled={locked} onChange={(event) => setTime(event.target.value)} /></label>
         </div>}
         {status?.nextRunAt && <p>Next backup: {new Date(status.nextRunAt).toLocaleString()} (local time)</p>}
