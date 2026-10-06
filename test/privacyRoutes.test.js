@@ -132,6 +132,50 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal((await call('/api/jobs/playlist/stream/open.mp3', { ...keyHeaders, Range: 'bytes=0-4' })).status, 206);
   });
 
+  await context.test('song title searches include public NoVocals companions even when their own tags do not match', async (subcontext) => {
+    const jobId = 'companion-search';
+    const otherJobId = 'unrelated-companion-search';
+    subcontext.after(async () => {
+      for (const id of [jobId, otherJobId]) await call(`/api/jobs/${id}`, headers.Owner, 'DELETE');
+    });
+    const title = 'N\u1ebfu Ph\u1ea3i Gi\u1eef Cho Em';
+    const originalName = 'Recording.mp3';
+    const stemName = '[NoVocals]/[NoVocals] Recording.mp3';
+    const linkedName = '[NoVocals]/instrumental.mp3';
+    const files = [originalName, stemName, linkedName, '[NoVocals]/unrelated.mp3'];
+    const sourceJob = { id: jobId, url: `import:${jobId}`, status: 'completed', isPlaylist: true,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), initiatedBy: { id: users.Owner.id },
+      outputDir: path.join(outputRoot, jobId), files, playlistTitle: 'Companion lookup',
+      songMetadata: { [originalName]: { title, artist: 'Distinct companion artist' } },
+      transcriptions: { [originalName]: { status: 'transcribed', noVocalsName: linkedName } } };
+    for (const job of [sourceJob, { ...sourceJob, id: otherJobId, url: `import:${otherJobId}`,
+      outputDir: path.join(outputRoot, otherJobId), files: [stemName], songMetadata: {}, transcriptions: {} }]) {
+      await fs.mkdir(path.join(job.outputDir, '[NoVocals]'), { recursive: true });
+      for (const name of job.files) await fs.writeFile(path.join(job.outputDir, name), `audio:${name}`);
+      await writeJob(database, job);
+    }
+    for (const query of [title, title.normalize('NFD'), 'neu phai giu cho em', 'Distinct companion artist']) {
+      const result = await call(`/api/songs/search?${new URLSearchParams({ q: query })}`, keyHeaders);
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.body.total, 3, query);
+      assert.deepEqual(result.body.files.map((file) => [file.jobId, file.name]), files.slice(0, 3).map((name) => [jobId, name]));
+    }
+    const paged = await call(`/api/songs/search?${new URLSearchParams({ q: title, pageSize: 1, page: 3 })}`, keyHeaders);
+    assert.equal(paged.body.totalPages, 3);
+    assert.equal(paged.body.page, 3);
+    assert.equal(paged.body.files[0].name, linkedName);
+    for (const url of ['streamUrl', 'downloadUrl', 'lyricsUrl', 'artworkUrl']) {
+      assert.equal((await call(paged.body.files[0][url], keyHeaders)).status, 200, url);
+    }
+    await writeJob(database, { ...sourceJob, songMetadata: { ...sourceJob.songMetadata, [linkedName]: { title } } });
+    assert.equal((await call('/api/songs/search?q=neu%20phai%20giu%20cho%20em', keyHeaders)).body.total, 3);
+    assert.equal((await call(`/api/jobs/${jobId}/files/${encodeURIComponent(linkedName)}/privacy`, headers.Owner, 'PATCH', { private: true })).status, 200);
+    const hiddenCompanion = await call('/api/songs/search?q=neu%20phai%20giu%20cho%20em', keyHeaders);
+    assert.deepEqual(hiddenCompanion.body.files.map((file) => file.name), [originalName, stemName]);
+    assert.equal((await call(`/api/jobs/${jobId}/files/${originalName}/privacy`, headers.Owner, 'PATCH', { private: true })).status, 200);
+    assert.equal((await call('/api/songs/search?q=neu%20phai%20giu%20cho%20em', keyHeaders)).body.total, 0);
+  });
+
   await context.test('search includes videos with media URLs and pagination while respecting file privacy', async () => {
     const search = await call('/api/songs/search?q=clip', keyHeaders);
     assert.equal(search.status, 200, search.text);

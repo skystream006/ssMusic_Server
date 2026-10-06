@@ -89,6 +89,13 @@ reimport or redownload is needed.
 `q` is optional (empty lists accessible media), with a maximum of 200 characters.
 Pages start at 1; `pageSize` defaults to 50 and is limited to 100.
 
+Matching original songs also return their public `[NoVocals]/` companions from
+the same job, using the saved `noVocalsName` link or a matching filename stem.
+This works even when an accompaniment file has no title or artist tags, or its
+filename differs from the original song's title. No extra parameter is required.
+Companions can still match their own indexed text directly. Results are deduplicated
+before counting and pagination; private originals and companions remain protected.
+
 The response is `{ "files": [...], "page": 1, "pageSize": 50, "total": 42,
 "totalPages": 1 }`. Files contain `jobId`, `name`, available summary metadata,
 `playlistTitle`, and relative `streamUrl`, `downloadUrl`, `artworkUrl`, and

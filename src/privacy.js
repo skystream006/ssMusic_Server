@@ -110,7 +110,7 @@ export function jobVisibilitySql(job = 'jobs', viewer = '$1') {
       AND ${job}.data->'initiatedBy'->>'id' = ${viewer}))`;
 }
 
-function stemSql(name) {
+export function stemSql(name) {
   return `lower(btrim(regexp_replace(regexp_replace(regexp_replace(${name}, '^.*/', ''), '\\.[^.]+$', ''),
     '(\\[no[ _-]?vocals\\]|[ _-]+no[ _-]?vocals)', '', 'gi')))`;
 }

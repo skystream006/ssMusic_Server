@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { openDatabase } from './database.js';
 import { normalizeSearchText, songMetadataFields } from './library.js';
-import { songVisibilitySql } from './privacy.js';
+import { songVisibilitySql, stemSql } from './privacy.js';
 
 export function attachSearchKey(req, res, next) {
   const supplied = req.headers['x-api-key'];
@@ -44,9 +44,23 @@ export async function searchSongs(req, res) {
   const search = normalizeSearchText((req.query.q || '').trim()).replace(/[\\%_]/g, '\\$&');
   const pageSize = Number(req.query.pageSize || 50);
   const database = openDatabase();
-  const from = `FROM songs JOIN jobs ON jobs.id = songs.job_id
+  const directMatches = `SELECT songs.job_id, songs.name, songs.media_type, songs.transcription
+    FROM songs JOIN jobs ON jobs.id = songs.job_id
     WHERE songs.media_type IN ('audio', 'video') AND ${songVisibilitySql('NULL')}
       AND songs.search_text LIKE $1 ESCAPE '\\'`;
+  const matchingSongs = search ? `WITH matches AS (${directMatches})
+    SELECT job_id, name FROM matches
+    UNION
+    SELECT songs.job_id, songs.name FROM matches original
+    JOIN songs ON songs.job_id = original.job_id
+      AND (songs.name = original.transcription->>'noVocalsName' OR songs.karaoke_stem = ${stemSql('original.name')})
+    JOIN jobs ON jobs.id = songs.job_id
+    WHERE original.media_type = 'audio' AND lower(original.name) NOT LIKE '[novocals]/%'
+      AND songs.media_type = 'audio' AND lower(songs.name) LIKE '[novocals]/%'
+      AND ${songVisibilitySql('NULL')}` : directMatches;
+  const from = `FROM (${matchingSongs}) matched
+    JOIN songs ON songs.job_id = matched.job_id AND songs.name = matched.name
+    JOIN jobs ON jobs.id = songs.job_id`;
   const { total } = await database.prepare(`SELECT count(*) AS total ${from}`).get(`%${search}%`);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Number(req.query.page || 1), totalPages);
