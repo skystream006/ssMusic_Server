@@ -96,6 +96,15 @@ filename differs from the original song's title. No extra parameter is required.
 Companions can still match their own indexed text directly. Results are deduplicated
 before counting and pagination; private originals and companions remain protected.
 
+To return only accompaniment audio, pass `NoVocalsOnly=true`, `NoVocalsOnly=1`,
+or a bare `NoVocalsOnly` flag, for example:
+`GET /api/songs/search?q=neu%20phai%20giu%20cho%20em&NoVocalsOnly=true`.
+Omitting the parameter or using `false` or `0` keeps the normal mixed results.
+The parameter name is case-sensitive; invalid values or repeated parameters return
+HTTP 400. This filter runs after companion matching and before counting/pagination,
+so original song titles still find untagged accompaniment files. Without `q`, it
+lists all accessible `[NoVocals]/` audio files. Privacy protections remain unchanged.
+
 The response is `{ "files": [...], "page": 1, "pageSize": 50, "total": 42,
 "totalPages": 1 }`. Files contain `jobId`, `name`, available summary metadata,
 `playlistTitle`, and relative `streamUrl`, `downloadUrl`, `artworkUrl`, and

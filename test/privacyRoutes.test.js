@@ -114,7 +114,8 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       assert.equal((await call(route, { ...headers.Admin, ...keyHeaders })).status, 403, route);
     }
     assert.equal((await call('/api/jobs/playlist/privacy', { ...headers.Owner, ...keyHeaders }, 'PATCH', { private: true })).status, 403);
-    for (const query of ['page=0', 'pageSize=101', 'page=1.5', 'q[]=x', `q=${'a'.repeat(201)}`]) {
+    for (const query of ['page=0', 'pageSize=101', 'page=1.5', 'q[]=x', `q=${'a'.repeat(201)}`,
+      'NoVocalsOnly=maybe', 'NoVocalsOnly[]=true', 'NoVocalsOnly[enabled]=1', 'NoVocalsOnly=true&NoVocalsOnly=false']) {
       assert.equal((await call(`/api/songs/search?${query}`, keyHeaders)).status, 400, query);
     }
     const result = await call('/api/songs/search?pageSize=1&page=2', keyHeaders);
@@ -130,6 +131,32 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal((await call('/api/jobs/playlist/stream/clip.mp4', keyHeaders)).status, 200);
     assert.equal((await call('/api/jobs/playlist/lyrics/open.mp3', keyHeaders)).body.canEdit, false);
     assert.equal((await call('/api/jobs/playlist/stream/open.mp3', { ...keyHeaders, Range: 'bytes=0-4' })).status, 206);
+  });
+
+  await context.test('NoVocalsOnly returns only accompaniment audio and keeps mixed results as the default', async () => {
+    for (const flag of ['', '&NoVocalsOnly=false', '&NoVocalsOnly=0']) {
+      const result = await call(`/api/songs/search?q=secret-file${flag}`, keyHeaders);
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.body.total, 2);
+      assert.deepEqual(result.body.files.map((file) => file.name), ['secret-file.mp3', '[NoVocals]/secret-file.mp3']);
+    }
+    for (const flag of ['NoVocalsOnly', 'NoVocalsOnly=true', 'NoVocalsOnly=1']) {
+      const result = await call(`/api/songs/search?q=secret-file&${flag}`, keyHeaders);
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.body.total, 1);
+      assert.deepEqual(result.body.files.map((file) => file.name), ['[NoVocals]/secret-file.mp3']);
+    }
+    const all = await call('/api/songs/search?NoVocalsOnly=true', keyHeaders);
+    assert.equal(all.status, 200, all.text);
+    assert.equal(all.body.total, 1);
+    const [song] = all.body.files;
+    assert.equal(song.name, '[NoVocals]/secret-file.mp3');
+    for (const url of ['streamUrl', 'downloadUrl', 'lyricsUrl', 'artworkUrl']) {
+      assert.equal((await call(song[url], keyHeaders)).status, 200, url);
+    }
+    const video = await call('/api/songs/search?q=clip&NoVocalsOnly=true', keyHeaders);
+    assert.equal(video.body.total, 0);
+    assert.deepEqual(video.body.files, []);
   });
 
   await context.test('song title searches include public NoVocals companions even when their own tags do not match', async (subcontext) => {
@@ -159,7 +186,16 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       assert.equal(result.status, 200, result.text);
       assert.equal(result.body.total, 3, query);
       assert.deepEqual(result.body.files.map((file) => [file.jobId, file.name]), files.slice(0, 3).map((name) => [jobId, name]));
+      const onlyCompanions = await call(`/api/songs/search?${new URLSearchParams({ q: query, NoVocalsOnly: true })}`, keyHeaders);
+      assert.equal(onlyCompanions.status, 200, onlyCompanions.text);
+      assert.equal(onlyCompanions.body.total, 2);
+      assert.deepEqual(onlyCompanions.body.files.map((file) => [file.jobId, file.name]), [[jobId, stemName], [jobId, linkedName]]);
     }
+    const companionPage = await call(`/api/songs/search?${new URLSearchParams({ q: title, NoVocalsOnly: true, pageSize: 1, page: 99 })}`, keyHeaders);
+    assert.equal(companionPage.body.total, 2);
+    assert.equal(companionPage.body.totalPages, 2);
+    assert.equal(companionPage.body.page, 2);
+    assert.deepEqual(companionPage.body.files.map((file) => file.name), [linkedName]);
     const paged = await call(`/api/songs/search?${new URLSearchParams({ q: title, pageSize: 1, page: 3 })}`, keyHeaders);
     assert.equal(paged.body.totalPages, 3);
     assert.equal(paged.body.page, 3);
@@ -169,11 +205,14 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     }
     await writeJob(database, { ...sourceJob, songMetadata: { ...sourceJob.songMetadata, [linkedName]: { title } } });
     assert.equal((await call('/api/songs/search?q=neu%20phai%20giu%20cho%20em', keyHeaders)).body.total, 3);
+    assert.equal((await call('/api/songs/search?q=neu%20phai%20giu%20cho%20em&NoVocalsOnly=true', keyHeaders)).body.total, 2);
     assert.equal((await call(`/api/jobs/${jobId}/files/${encodeURIComponent(linkedName)}/privacy`, headers.Owner, 'PATCH', { private: true })).status, 200);
     const hiddenCompanion = await call('/api/songs/search?q=neu%20phai%20giu%20cho%20em', keyHeaders);
     assert.deepEqual(hiddenCompanion.body.files.map((file) => file.name), [originalName, stemName]);
+    assert.deepEqual((await call('/api/songs/search?q=neu%20phai%20giu%20cho%20em&NoVocalsOnly=true', keyHeaders)).body.files.map((file) => file.name), [stemName]);
     assert.equal((await call(`/api/jobs/${jobId}/files/${originalName}/privacy`, headers.Owner, 'PATCH', { private: true })).status, 200);
     assert.equal((await call('/api/songs/search?q=neu%20phai%20giu%20cho%20em', keyHeaders)).body.total, 0);
+    assert.equal((await call('/api/songs/search?q=neu%20phai%20giu%20cho%20em&NoVocalsOnly=true', keyHeaders)).body.total, 0);
   });
 
   await context.test('search includes videos with media URLs and pagination while respecting file privacy', async () => {

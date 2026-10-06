@@ -36,11 +36,15 @@ export function requireSearchKey(req, res, next) {
 
 export async function searchSongs(req, res) {
   const positiveInteger = (value) => typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value));
+  if (req.query.NoVocalsOnly !== undefined && !['', 'true', 'false', '1', '0'].includes(req.query.NoVocalsOnly)) {
+    return res.status(400).json({ error: 'NoVocalsOnly must be true, false, 1, 0, or a bare flag' });
+  }
   if ((req.query.q !== undefined && (typeof req.query.q !== 'string' || req.query.q.length > 200))
     || (req.query.page !== undefined && !positiveInteger(req.query.page))
     || (req.query.pageSize !== undefined && (!positiveInteger(req.query.pageSize) || Number(req.query.pageSize) > 100))) {
     return res.status(400).json({ error: 'Invalid search or pagination' });
   }
+  const noVocalsOnly = ['', 'true', '1'].includes(req.query.NoVocalsOnly);
   const search = normalizeSearchText((req.query.q || '').trim()).replace(/[\\%_]/g, '\\$&');
   const pageSize = Number(req.query.pageSize || 50);
   const database = openDatabase();
@@ -60,14 +64,16 @@ export async function searchSongs(req, res) {
       AND ${songVisibilitySql('NULL')}` : directMatches;
   const from = `FROM (${matchingSongs}) matched
     JOIN songs ON songs.job_id = matched.job_id AND songs.name = matched.name
-    JOIN jobs ON jobs.id = songs.job_id`;
-  const { total } = await database.prepare(`SELECT count(*) AS total ${from}`).get(`%${search}%`);
+    JOIN jobs ON jobs.id = songs.job_id
+    WHERE (NOT $2::boolean OR (songs.media_type = 'audio' AND lower(songs.name) LIKE '[novocals]/%'))`;
+  const parameters = [`%${search}%`, noVocalsOnly];
+  const { total } = await database.prepare(`SELECT count(*) AS total ${from}`).get(...parameters);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const page = Math.min(Number(req.query.page || 1), totalPages);
   const rows = await database.prepare(`SELECT songs.job_id, songs.name, songs.media_type, songs.metadata,
     jobs.data->>'playlistTitle' AS playlist_title ${from}
-    ORDER BY songs.job_id, songs.file_order, songs.name LIMIT $2 OFFSET $3`)
-    .all(`%${search}%`, pageSize, (page - 1) * pageSize);
+    ORDER BY songs.job_id, songs.file_order, songs.name LIMIT $3 OFFSET $4`)
+    .all(...parameters, pageSize, (page - 1) * pageSize);
   const files = rows.map((row) => {
     const metadata = JSON.parse(row.metadata);
     const base = `/api/jobs/${encodeURIComponent(row.job_id)}`;
