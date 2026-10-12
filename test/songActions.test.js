@@ -484,6 +484,33 @@ test('music-page song rows show lazy artwork without changing playback or track 
   }
 });
 
+test('track pagination offers all page sizes at both positions and displays matching ranges', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    for (const pageSize of [50, 100, 200, 500, 1000]) {
+      for (const loading of [false, true]) {
+        const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+          libraryView: { tracks: [], title: 'Playlist', selectedId: 'playlist',
+            pagination: { page: 2, pageSize, total: 1500, totalPages: Math.ceil(1500 / pageSize), loading,
+              onChange() {}, onPageSizeChange() {} } }
+        })));
+        const selectors = [...html.matchAll(/<select aria-label="Items per page"([^>]*)>([\s\S]*?)<\/select>/g)];
+        assert.equal(selectors.length, 2);
+        for (const [, attributes, options] of selectors) {
+          assert.deepEqual([...options.matchAll(/<option value="(\d+)"/g)].map((match) => Number(match[1])), [50, 100, 200, 500, 1000]);
+          assert.match(options, new RegExp(`<option value="${pageSize}" selected="">${pageSize}</option>`));
+          assert.equal(attributes.includes('disabled=""'), loading);
+        }
+        assert.ok(html.includes(`${pageSize + 1}-${Math.min(pageSize * 2, 1500)} of 1500`));
+      }
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
 test('song artwork has music and movie placeholders when no cover is available', () => {
   for (const name of ['Song.mp3', 'Song.flac', 'Movie.mp4']) {
     const html = renderToStaticMarkup(createElement(SongArtwork, { track: { name } }));

@@ -358,7 +358,7 @@ app.get('/api/library/tracks', async (req, res) => {
     const paginated = selectedId === null || req.query.page !== undefined || req.query.pageSize !== undefined;
     const positiveInteger = (value) => typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value));
     if ((req.query.page !== undefined && !positiveInteger(req.query.page))
-      || (req.query.pageSize !== undefined && (!positiveInteger(req.query.pageSize) || Number(req.query.pageSize) > 100))
+      || (req.query.pageSize !== undefined && (!positiveInteger(req.query.pageSize) || Number(req.query.pageSize) > 1000))
       || (req.query.search !== undefined && (typeof req.query.search !== 'string' || req.query.search.length > 200))) {
       return res.status(400).json({ error: 'Invalid track pagination or search' });
     }

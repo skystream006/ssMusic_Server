@@ -274,8 +274,9 @@ with `Retry-After: 1`. Playback support still depends on the browser's codecs.
 
 ## All Music Pagination
 
-**All music** loads 50 tracks per page. Use the page controls above or below the
-list to browse. Search matches filenames, titles, artists, albums, album artists,
+Library track lists default to 50 tracks per page. Use **Items per page** above or
+below the list to choose 50, 100, 200, 500, or 1000; changing the size returns to
+page one. Use the page controls to browse. Search matches filenames, titles, artists, albums, album artists,
 genre, year, track/disc numbers, and playlist names across the whole library and
 returns to page one when changed. Embedded MP3 tags are indexed during imports
 and downloads. Existing songs receive a one-time, batched metadata index update
@@ -284,7 +285,7 @@ at server startup; searching does not scan audio files.
 the active queue. Open an individual playlist to reorder its tracks.
 
 `GET /api/library/tracks` defaults to page 1 with 50 tracks. It accepts `page`,
-`pageSize` (1-100), and `search` (up to 200 characters), and returns `files`,
+`pageSize` (1-1000), and `search` (up to 200 characters), and returns `files`,
 `version`, `page`, `pageSize`, `total`, and `totalPages`. Out-of-range pages are
 clamped after library changes. File details are loaded only for the requested
 page and its instrumental companions. Totals use the saved media inventory.
@@ -750,7 +751,7 @@ Compose configuration.
 
 Songs, per-song metadata/transcription records, ownership and playlist memberships
 have indexed tables. Library reads use SQL pagination (50 songs by default, maximum
-100), stored counts, and a trigram search index. Metadata and ordinary transcription
+1000), stored counts, and a trigram search index. Metadata and ordinary transcription
 updates write only the affected song row. Only the displayed page carries song
 transcription details. PostgreSQL uses asynchronous pooled connections;
 `DATABASE_POOL_SIZE` defaults to 10.

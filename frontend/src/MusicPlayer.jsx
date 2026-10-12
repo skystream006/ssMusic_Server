@@ -138,9 +138,12 @@ export function SongArtwork({ track }) {
 }
 
 function TrackPagination({ pagination, position }) {
-  const { page, pageSize, total, totalPages, loading, onChange } = pagination;
+  const { page, pageSize, total, totalPages, loading, onChange, onPageSizeChange } = pagination;
   return <nav className="track-pagination" aria-label={`Track pages ${position}`}>
     <span role="status">{total ? `${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, total)} of ${total}` : '0 tracks'}</span>
+    <label>Items per page<select aria-label="Items per page" value={pageSize} disabled={loading} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
+      {[50, 100, 200, 500, 1000].map((size) => <option key={size} value={size}>{size}</option>)}
+    </select></label>
     <div>
       <button className="music-icon-button" type="button" title="Previous page" aria-label="Previous track page" disabled={loading || page <= 1} onClick={() => onChange(page - 1)}><ChevronLeft size={18} /></button>
       <label>Page<select aria-label="Track page" value={page} disabled={loading || totalPages <= 1} onChange={(event) => onChange(Number(event.target.value))}>
@@ -532,12 +535,12 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             const action = libraryView.songState(track);
             const privacy = action.privacy || getFilePrivacy(track);
             const privacyLabel = privacy.inherited ? 'Inherited privacy' : privacy.private ? 'Make file public' : 'Make file private';
-            const acceptSong = (event) => allowDrop(event, !libraryView.readOnly && !libraryView.saving && !libraryView.pagination && event.dataTransfer.types.includes('application/x-ssmusic-song'));
+            const acceptSong = (event) => allowDrop(event, !libraryView.readOnly && !libraryView.saving && Boolean(libraryView.selectedId) && event.dataTransfer.types.includes('application/x-ssmusic-song'));
             return <li className={`library-song-row ${current ? 'is-current' : ''} ${selection?.active && selection.keys.has(songKey(track)) ? 'is-checked' : ''}`} key={songKey(track)}
               onDragEnter={acceptSong} onDragOver={acceptSong} onDragLeave={leaveDrop}
               onDrop={(event) => {
                 event.preventDefault();
-                if (libraryView.readOnly || libraryView.saving || libraryView.pagination) return;
+                if (libraryView.readOnly || libraryView.saving || !libraryView.selectedId) return;
                 try {
                   const moved = JSON.parse(event.dataTransfer.getData('application/x-ssmusic-song'));
                   if (moved.playlistId === track.playlistId) libraryView.onReorder(moved, songKey(track));

@@ -623,7 +623,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.deepEqual(noTracks.files, []);
   assert.equal(noTracks.total, 0);
   assert.equal(noTracks.page, 1);
-  for (const query of ['page=0', 'page=-1', 'page=1.5', 'pageSize=101', 'pageSize=0', 'page=1&page=2', 'search[]=bad']) {
+  for (const query of ['page=0', 'page=-1', 'page=1.5', 'pageSize=1001', 'pageSize=0', 'pageSize=1.5', 'pageSize=50&pageSize=100', 'page=1&page=2', 'search[]=bad']) {
     assert.equal((await call(`/api/library/tracks?${query}`, 'GET', credentials.Owner[0])).status, 400);
   }
   const encodedSong = encodeURIComponent(`[NoVocals]/${songName}`);
@@ -952,6 +952,15 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal(largeFirst.total, 1205);
   assert.equal(largeFirst.totalPages, 25);
   assert.deepEqual(largeFirst.files.map((track) => track.name), largeFiles.slice(0, 50));
+  for (const pageSize of [50, 100, 200, 500, 1000]) {
+    const result = await call(`/api/library/tracks?entryId=pagination&page=2&pageSize=${pageSize}`, 'GET', credentials.Owner[0]);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.page, 2);
+    assert.equal(result.body.pageSize, pageSize);
+    assert.equal(result.body.total, largeFiles.length);
+    assert.equal(result.body.totalPages, Math.ceil(largeFiles.length / pageSize));
+    assert.deepEqual(result.body.files.map((track) => track.name), largeFiles.slice(pageSize, pageSize * 2));
+  }
   const largeSecond = (await call('/api/library/tracks?search=Pagination%20Fixture&page=2', 'GET', credentials.Owner[1])).body;
   assert.deepEqual(largeSecond.files.map((track) => track.name), largeFiles.slice(50, 100));
   const largeLast = (await call('/api/library/tracks?search=Pagination%20Fixture&page=999', 'GET', credentials.Owner[0])).body;

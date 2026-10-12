@@ -402,6 +402,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const [selectedId, setSelectedId] = useState(new URLSearchParams(window.location.search).get('playlist'));
   const [trackResult, setTrackResult] = useState(null);
   const [trackPage, setTrackPage] = useState(1);
+  const [trackPageSize, setTrackPageSize] = useState(50);
   const [trackSearch, setTrackSearch] = useState('');
   const [debouncedTrackSearch, setDebouncedTrackSearch] = useState('');
   const [tracksLoading, setTracksLoading] = useState(true);
@@ -449,11 +450,12 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const paginated = allMusic || library?.serverPagination;
   const searchPending = paginated && trackSearch !== debouncedTrackSearch;
   const tracks = trackResult?.selectedId === selectedId && (!paginated
-    || (trackResult.page === trackPage && trackResult.search === debouncedTrackSearch)) ? trackResult.files : null;
+    || (trackResult.page === trackPage && trackResult.pageSize === trackPageSize && trackResult.search === debouncedTrackSearch)) ? trackResult.files : null;
   const pagination = paginated ? {
-    page: trackPage, pageSize: 50, total: trackResult?.selectedId === selectedId ? trackResult.total : 0,
-    totalPages: trackResult?.selectedId === selectedId ? trackResult.totalPages : 1,
-    loading: tracksLoading || searchPending, onChange: setTrackPage
+    page: trackPage, pageSize: trackPageSize, total: trackResult?.selectedId === selectedId ? trackResult.total : 0,
+    totalPages: trackResult?.selectedId === selectedId ? Math.max(1, Math.ceil(trackResult.total / trackPageSize)) : 1,
+    loading: tracksLoading || searchPending, onChange: setTrackPage,
+    onPageSizeChange: (size) => { setTrackPageSize(size); setTrackPage(1); }
   } : null;
   const jobsRevision = JSON.stringify([library?.catalogRevision, (library?.jobs || []).map((job) => [job.id, job.updatedAt, job.songCount])]);
   const playlistSelection = entries.filter((entry) => entry.type === 'playlist' && selectedPlaylists.has(entry.id));
@@ -513,7 +515,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     setTracksLoading(true);
     setTrackError('');
     const query = new URLSearchParams({ ...(owner ? { userId: owner.id } : {}), ...(selectedId ? { entryId: selectedId } : {}),
-      ...(paginated ? { page: trackPage, pageSize: 50, search: debouncedTrackSearch } : {}) });
+      ...(paginated ? { page: trackPage, pageSize: trackPageSize, search: debouncedTrackSearch } : {}) });
     request(`/api/library/tracks?${query}`, { signal: controller.signal }).then((result) => {
       if (active) {
         setTrackResult({ ...result, selectedId, search: debouncedTrackSearch });
@@ -522,7 +524,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     }).catch((loadError) => { if (active) setTrackError(loadError.message); })
       .finally(() => { if (active) setTracksLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, debouncedTrackSearch, searchPending, paginated, owner?.id]);
+  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, trackPageSize, debouncedTrackSearch, searchPending, paginated, owner?.id]);
 
   function selectEntry(id) {
     setSelectedSongs(new Set());
@@ -988,7 +990,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>
     <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: (tracksLoading || searchPending) && !trackError,
       ownerId: owner?.id, playlistPrivate: Boolean(selectedPlaylist?.private),
-      pagination, error: trackError, queueScope: JSON.stringify([owner?.id || user.id, selectedId || 'all', ...(paginated ? [trackPage, debouncedTrackSearch] : [])]),
+      pagination, error: trackError, queueScope: JSON.stringify([owner?.id || user.id, selectedId || 'all', ...(paginated ? [trackPage, debouncedTrackSearch, trackPageSize] : [])]),
       search: paginated ? trackSearch : undefined, onSearch: paginated ? setTrackSearch : undefined,
       songSelection: !readOnly && selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),
