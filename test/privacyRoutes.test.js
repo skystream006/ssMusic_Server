@@ -511,6 +511,14 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal(duplicate.body.jobId, existingId);
     assert.equal(duplicate.body.playUrl, `/api/jobs/${existingId}/stream/Party%20clip.mp4`);
     assert.equal((await call(duplicate.body.playUrl, keyHeaders)).status, 200);
+    for (const playlistId of ['party-one', 'party-two', 'party-one']) {
+      const added = await call(route, keyHeaders, 'POST', { videoURL: 'https://youtu.be/RTcsY6aIoEc', playlistId });
+      assert.equal(added.status, 200, added.text);
+      assert.equal(added.body.playlistId, playlistId);
+      assert.equal(added.body.action, 'add');
+    }
+    const references = await database.prepare('SELECT playlist_id FROM karaoke_playlist_jobs WHERE job_id = $1 ORDER BY playlist_id').all(existingId);
+    assert.deepEqual(references.map((reference) => reference.playlist_id), ['', 'party-one', 'party-two']);
     await fs.unlink(path.join(outputDir, 'Party clip.mp4'));
     const missing = await call(duplicate.body.statusUrl, keyHeaders);
     assert.equal(missing.body.ready, false);
@@ -524,6 +532,93 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     await store.updateUser(owner.id, { status: 'revoked' }, users.Admin.id);
     assert.equal((await call(route, keyHeaders, 'POST', { videoURL })).status, 403);
     await store.updateUser(owner.id, { status: 'approved' }, users.Admin.id);
+  });
+
+  await context.test('KaraokeParty add/remove tracks playlist references durably and deletes only the final owned video', async () => {
+    const route = '/api/karaoke/jobs';
+    const videoURL = 'https://youtu.be/9bZkp7q19f0';
+    const owner = (await store.listUsers()).find((user) => user.name === 'KaraokeParty');
+    const outputDir = path.join(outputRoot, 'tracked-video');
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'Tracked.mp4'), 'video');
+    const job = { id: 'tracked-video', url: videoURL, downloadType: 'video', isPlaylist: false, status: 'completed',
+      outputDir, files: ['Tracked.mp4'], initiatedBy: { id: owner.id }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    await writeJob(database, job);
+    for (const body of [{ action: 'unknown' }, { action: null }, { action: 'remove' },
+      { playlistId: '' }, { playlistId: {} }, { playlistId: 1 }, { playlistId: 'x'.repeat(201) },
+      { playlistId: 'bad\nvalue' }, { videoUrl: 'https://youtu.be/cMoRYP8EDUk' }]) {
+      assert.equal((await call(route, keyHeaders, 'POST', { videoURL, ...body })).status, 400);
+    }
+    const adds = await Promise.all(['list-a', 'list-b', 'list-a'].map((playlistId) =>
+      call(route, keyHeaders, 'POST', { action: 'Add', videoUrl: videoURL, playlistId })));
+    for (const added of adds) { assert.equal(added.status, 200, added.text); assert.equal(added.body.jobId, job.id); }
+    assert.equal(adds.at(-1).body.playlistCount, 2);
+    await stop();
+    await start();
+    assert.equal((await call(`/api/karaoke/jobs/${job.id}`, keyHeaders)).body.playlistCount, 2);
+    const remove = (playlistId) => call(route, keyHeaders, 'POST', { action: 'Remove', videoURL, playlistId });
+    const first = await remove('list-a');
+    assert.equal(first.status, 200, first.text);
+    assert.equal(first.body.removed, true);
+    assert.equal(first.body.videoDeleted, false);
+    assert.equal(first.body.playlistCount, 1);
+    assert.equal((await fs.stat(path.join(outputDir, 'Tracked.mp4'))).isFile(), true);
+    const repeated = await remove('list-a');
+    assert.equal(repeated.body.removed, false);
+    assert.equal(repeated.body.playlistCount, 1);
+    const last = await remove('list-b');
+    assert.equal(last.status, 200, last.text);
+    assert.equal(last.body.videoDeleted, true);
+    assert.equal(last.body.playlistCount, 0);
+    assert.equal(await database.prepare('SELECT id FROM jobs WHERE id = $1').get(job.id), undefined);
+    assert.equal(await fs.stat(outputDir).catch(() => null), null);
+    assert.equal((await remove('list-b')).body.removed, false);
+    await writeJob(database, { ...job, outputDir: null, files: [], status: 'running' });
+    await call(route, keyHeaders, 'POST', { videoURL, playlistId: 'busy' });
+    assert.equal((await remove('busy')).status, 409);
+    assert.equal((await database.prepare('SELECT count(*) AS count FROM karaoke_playlist_jobs WHERE job_id = $1').get(job.id)).count, 1);
+    await writeJob(database, { ...job, initiatedBy: { id: users.Owner.id }, outputDir: null, files: [] });
+    const foreign = await remove('busy');
+    assert.equal(foreign.status, 200, foreign.text);
+    assert.equal(foreign.body.videoDeleted, false);
+    assert.equal(foreign.body.retainedReason, 'other_owner');
+    assert.ok(await database.prepare('SELECT id FROM jobs WHERE id = $1').get(job.id));
+    await writeJob(database, { ...job, outputDir: null, files: [] });
+    await call(route, keyHeaders, 'POST', { videoURL });
+    await call(route, keyHeaders, 'POST', { videoURL, playlistId: 'legacy-use' });
+    const legacy = await remove('legacy-use');
+    assert.equal(legacy.body.videoDeleted, false);
+    assert.equal(legacy.body.playlistCount, 1);
+    await database.prepare('DELETE FROM karaoke_playlist_jobs WHERE job_id = $1').run(job.id);
+    await writeJob(database, { ...job, outputDir: null, files: [], contributors: [{ id: users.Owner.id }] });
+    await call(route, keyHeaders, 'POST', { videoURL, playlistId: 'shared-use' });
+    const shared = await remove('shared-use');
+    assert.equal(shared.status, 200, shared.text);
+    assert.equal(shared.body.videoDeleted, false);
+    assert.equal(shared.body.playlistCount, 0);
+    assert.equal(shared.body.retainedReason, 'library_references');
+    await database.prepare('DELETE FROM jobs WHERE id = $1').run(job.id);
+  });
+
+  await context.test('KaraokeParty reference migration protects existing jobs without duplicating legacy references', async () => {
+    const owner = (await store.listUsers()).find((user) => user.name === 'KaraokeParty');
+    const jobId = 'legacy-untracked-video';
+    await writeJob(database, { id: jobId, url: 'https://youtu.be/3JZ_D3ELwOQ', downloadType: 'video', isPlaylist: false,
+      status: 'completed', files: [], initiatedBy: { id: owner.id }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    await database.prepare("DELETE FROM migrations WHERE name = 'karaoke-playlist-references-v1'").run();
+    await stop();
+    await start();
+    assert.deepEqual(await database.prepare('SELECT playlist_id FROM karaoke_playlist_jobs WHERE job_id = $1').all(jobId), [{ playlist_id: '' }]);
+    const body = { videoUrl: 'https://youtube.com/watch?v=3JZ_D3ELwOQ', playlistId: 'migrated-list' };
+    assert.equal((await call('/api/karaoke/jobs', keyHeaders, 'POST', { ...body, action: 'add' })).body.playlistCount, 2);
+    const removed = await call('/api/karaoke/jobs', keyHeaders, 'POST', { ...body, action: 'remove' });
+    assert.equal(removed.status, 200, removed.text);
+    assert.equal(removed.body.playlistCount, 1);
+    assert.equal(removed.body.videoDeleted, false);
+    await stop();
+    await start();
+    assert.equal((await call(`/api/karaoke/jobs/${jobId}`, keyHeaders)).body.playlistCount, 1);
+    await database.prepare('DELETE FROM jobs WHERE id = $1').run(jobId);
   });
 
   await context.test('an unset key disables access, including formerly valid credentials', async () => {

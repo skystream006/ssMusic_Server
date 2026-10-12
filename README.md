@@ -135,13 +135,13 @@ The key also permits:
   `/artwork/:name`, and `/lyrics/:name` — nonprivate media, including videos
   where supported by the endpoint.
 
-The only write operation is the KaraokeParty video submission endpoint below.
+The only write operations are the KaraokeParty playlist video actions below.
 Other writes, account/admin operations, job logs, and backup downloads are denied.
 Supplying a key alongside a session or PAT never upgrades its permissions.
-Treat this key as a server-wide catalog and video-submission credential, not a public browser key;
+Treat this key as a server-wide catalog and playlist-video credential, not a public browser key;
 rotate it by replacing the environment value and restarting the server.
 
-### KaraokeParty video submission
+### KaraokeParty playlist videos
 
 With `SEARCH_API_KEY` configured, startup provisions an approved **KaraokeParty**
 account with the **ExtServer** role once an approved administrator exists. This account has no passkeys,
@@ -154,20 +154,32 @@ jobs, library, and approval/revocation status. KaraokeParty cannot be switched t
 a login-capable role. Other accounts can be assigned ExtServer by an administrator.
 It is not an administrator. Public registration cannot claim its name or the ExtServer role, and an
 existing account with that name is never taken over. Revoking the account stops
-new submissions; startup and API calls do not undo administrator changes.
+add/remove requests; startup and API calls do not undo administrator changes.
 
 Send `POST /api/karaoke/jobs` over HTTPS with `X-API-Key: <SEARCH_API_KEY>` and
 `Content-Type: application/json`:
 
 ```json
-{ "videoURL": "https://www.youtube.com/watch?v=cMoRYP8EDUk" }
+{ "action": "add", "videoURL": "https://www.youtube.com/watch?v=cMoRYP8EDUk", "playlistId": "party-123" }
 ```
 
-The endpoint always downloads a single **video**, owned by KaraokeParty, and adds
+The `add` action downloads a single **video**, owned by KaraokeParty, and adds
 the new job to that account's library. Caller-supplied owner, format, and
 metadata-only settings are ignored. YouTube watch, short-link, Shorts, embed,
 live, mobile, and Music video URLs are accepted. Tracking, timestamp, and playlist
 parameters are removed; playlist-only URLs and non-YouTube URLs return HTTP 400.
+
+`action` accepts `add` or `remove`, case-insensitively (`Add`/`Remove` also work);
+omitting it defaults to `add`. `videoUrl` is accepted as an alias for `videoURL`.
+If both URL fields are present they must identify the same video. `playlistId` is
+an external identifier, not a server library playlist: use a nonempty string of at
+most 200 characters, without control characters. Surrounding spaces are trimmed;
+IDs are case-sensitive. Invalid actions or playlist IDs return HTTP 400.
+
+Each distinct `(playlistId, video)` is stored once in PostgreSQL, including when
+the video already exists. Repeating an add is idempotent; different playlists share
+the download but retain separate references. References survive server restarts.
+Add and status responses include `playlistCount`, the number of stored references.
 
 Video jobs are deduplicated across accounts by YouTube video ID, including older
 jobs saved with alternate URL forms. Audio-only jobs do not prevent a video
@@ -182,6 +194,9 @@ starting another download; other duplicates return HTTP 200. Example ready dupli
     "jobId": "existing-job-id",
     "status": "completed",
     "duplicate": true,
+    "action": "add",
+    "playlistId": "party-123",
+    "playlistCount": 2,
     "ready": true,
     "statusUrl": "/api/karaoke/jobs/existing-job-id",
     "playUrl": "/api/jobs/existing-job-id/stream/Party%20clip.mp4",
@@ -195,13 +210,51 @@ current status and links; this returns HTTP 200 for a visible video job. Failed
 jobs are not automatically retried: an administrator can inspect and rerun them
 through the normal job-management UI. Polling returns no job logs or filesystem paths.
 
+To remove only one playlist's reference, use the same authenticated endpoint:
+
+```json
+{ "action": "remove", "videoURL": "https://www.youtube.com/watch?v=cMoRYP8EDUk", "playlistId": "party-123" }
+```
+
+`playlistId` is required for removal. Success returns HTTP 200, for example:
+
+```json
+{
+    "action": "remove",
+    "playlistId": "party-123",
+    "jobId": "existing-job-id",
+    "removed": true,
+    "videoDeleted": false,
+    "playlistCount": 1,
+    "retainedReason": "playlist_references"
+}
+```
+
+`removed` reports whether that playlist reference existed. Unknown or repeated
+removals return `removed: false` and never start a download or delete a video.
+The video/job is deleted only when its last reference is removed, it belongs to
+KaraokeParty, and no contributors or additional library memberships depend on it.
+Otherwise `videoDeleted` is false with `retainedReason` of `playlist_references`,
+`other_owner`, or `library_references`. Jobs owned by other users are never deleted.
+If final deletion is blocked by a queued/running job or an ongoing mutation, HTTP
+409 is returned and the reference is kept; retry after the job becomes idle.
+Private videos remain protected and cannot be removed through the search key.
+
+For compatibility, adds without `playlistId` remain accepted and create one
+protected, unnamed reference. Existing KaraokeParty jobs receive the same
+protection during the one-time migration. These references count toward
+`playlistCount` and cannot be removed by a playlist-scoped request; an administrator
+can still delete such a job through normal job management. Use `playlistId` on all
+new adds to enable automatic last-reference cleanup.
+
 All returned URLs are relative to the server origin. `playUrl` is the direct media
 stream and requires `X-API-Key` on every request (including range requests).
 `playerUrl` opens the existing web player and requires a normal signed-in browser
 session. No public share token is created and the secret is never placed in a URL.
 Missing/invalid keys return HTTP 401. A disabled KaraokeParty account returns
-HTTP 403 on submission; an installation without an approved administrator returns
-HTTP 503. The key still cannot submit through `POST /api/jobs` or modify existing jobs.
+HTTP 403 on add/remove; an installation without an approved administrator returns
+HTTP 503. The key still cannot submit through `POST /api/jobs`, call the general
+job-deletion API, or modify jobs outside these playlist-scoped actions.
 
 ## Public media links
 

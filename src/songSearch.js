@@ -19,7 +19,7 @@ export function attachSearchKey(req, res, next) {
     || /^\/api\/karaoke\/jobs\/[^/]+$/.test(pathname);
   const submittingVideo = req.method === 'POST' && pathname === '/api/karaoke/jobs';
   if (!submittingVideo && (!['GET', 'HEAD'].includes(req.method) || !allowed)) {
-    return res.status(403).json({ error: 'Search API keys only allow catalog and media reads and KaraokeParty video submission' });
+    return res.status(403).json({ error: 'Search API keys only allow catalog and media reads and KaraokeParty playlist video actions' });
   }
   if (['/api/library', '/api/library/tracks'].includes(pathname)
     && (typeof req.query.userId !== 'string' || !req.query.userId)) {

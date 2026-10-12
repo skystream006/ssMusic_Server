@@ -57,6 +57,17 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_url ON jobs(url, created_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at DESC, id);
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
+CREATE TABLE IF NOT EXISTS karaoke_playlist_jobs (
+  playlist_id TEXT NOT NULL, video_url TEXT NOT NULL,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  PRIMARY KEY (playlist_id, video_url)
+);
+CREATE INDEX IF NOT EXISTS karaoke_playlist_jobs_job ON karaoke_playlist_jobs(job_id);
+INSERT INTO karaoke_playlist_jobs (playlist_id, video_url, job_id)
+  SELECT '', url, id FROM jobs WHERE data->'initiatedBy'->>'id' = 'service-karaoke-party'
+    AND NOT EXISTS (SELECT 1 FROM migrations WHERE name = 'karaoke-playlist-references-v1')
+  ON CONFLICT (playlist_id, video_url) DO NOTHING;
+INSERT INTO migrations (name) VALUES ('karaoke-playlist-references-v1') ON CONFLICT DO NOTHING;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS song_count BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS jobs_output_directory ON jobs((data->>'outputDir'));
 CREATE INDEX IF NOT EXISTS jobs_private_id ON jobs(id)
