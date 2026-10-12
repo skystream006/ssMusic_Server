@@ -15,9 +15,11 @@ export function attachSearchKey(req, res, next) {
   }
   const pathname = req.path.replace(/\/+$/, '').toLowerCase();
   const allowed = ['/api/songs/search', '/api/libraries', '/api/library', '/api/library/tracks'].includes(pathname)
-    || /^\/api\/jobs\/[^/]+\/(stream|download|artwork|lyrics)\/[^/]+$/.test(pathname);
-  if (!['GET', 'HEAD'].includes(req.method) || !allowed) {
-    return res.status(403).json({ error: 'Search API keys have read-only catalog and media access' });
+    || /^\/api\/jobs\/[^/]+\/(stream|download|artwork|lyrics)\/[^/]+$/.test(pathname)
+    || /^\/api\/karaoke\/jobs\/[^/]+$/.test(pathname);
+  const submittingVideo = req.method === 'POST' && pathname === '/api/karaoke/jobs';
+  if (!submittingVideo && (!['GET', 'HEAD'].includes(req.method) || !allowed)) {
+    return res.status(403).json({ error: 'Search API keys only allow catalog and media reads and KaraokeParty video submission' });
   }
   if (['/api/library', '/api/library/tracks'].includes(pathname)
     && (typeof req.query.userId !== 'string' || !req.query.userId)) {

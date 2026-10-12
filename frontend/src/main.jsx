@@ -1361,8 +1361,8 @@ function UserSettingsPage({ userId }) {
           setDetails(updated);
           if (updated.id === currentUser.id) setUser(updated);
         }} />
-        {userId && <label className="role-control"><span>Role</span><select aria-label="User role" value={details.role} disabled={Boolean(busy) || userId === currentUser.id}
-          onChange={(event) => saveAccess({ role: event.target.value })}><option value="admin">Admin</option><option value="shared">Shared</option><option value="user">User</option></select></label>}
+        {userId && <label className="role-control"><span>Role</span><select aria-label="User role" value={details.role} disabled={Boolean(busy) || userId === currentUser.id || userId === 'service-karaoke-party'}
+          onChange={(event) => saveAccess({ role: event.target.value })}><option value="admin">Admin</option><option value="ExtServer">ExtServer</option><option value="shared">Shared</option><option value="user">User</option></select></label>}
         {userId && <OrganizerControl user={details} users={organizerUsers} disabled={Boolean(busy)} confirm={confirm}
           onChange={(organizerId) => saveAccess({ organizerId })} />}
       </section>
@@ -1510,7 +1510,7 @@ function AdminPage() {
           <div><dt>Storage</dt><dd title={user.mediaUsage ? `${user.mediaUsage.totalBytes.toLocaleString()} bytes in ${user.mediaUsage.totalFiles.toLocaleString()} audio and video files` : 'No completed scan'}>{formatBytes(user.mediaUsage?.totalBytes)}</dd></div>
         </dl>
         <div className="user-role-controls">
-          <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="admin">Admin</option><option value="shared">Shared</option><option value="user">User</option></select></label>
+          <label className="role-control"><span>Role</span><select disabled={Boolean(updating) || user.id === currentUser.id || user.id === 'service-karaoke-party'} value={user.role} onChange={(event) => changeUser(user.id, { role: event.target.value })}><option value="admin">Admin</option><option value="ExtServer">ExtServer</option><option value="shared">Shared</option><option value="user">User</option></select></label>
           <OrganizerControl user={user} users={users} disabled={Boolean(updating)} confirm={confirm}
             onChange={(organizerId) => changeUser(user.id, { organizerId })} />
         </div>
@@ -1622,7 +1622,7 @@ function App() {
   if (user === undefined) return <div className="auth-loading"><Fingerprint className="spin" size={28} />Checking passkey session</div>;
   if (!user) return <LoginPage onLogin={setUser} />;
   if (preferences?.userId !== user.id) return <div className="auth-loading"><RefreshCw className="spin" size={24} />Loading account</div>;
-  return <AuthContext.Provider value={{ user, setUser, logout, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} request={request}><Router user={user} /></PlaybackProvider></AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, setUser, logout, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} userId={user.id} request={request}><Router user={user} /></PlaybackProvider></AuthContext.Provider>;
 }
 
 initializeTouchControls();

@@ -40,6 +40,16 @@ export function normalizeJobUrl(value) {
   return playlist.href;
 }
 
+export function normalizeVideoUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048 || !isYouTubeUrl(value)) return null;
+  const source = new URL(value);
+  const parts = source.pathname.split('/').filter(Boolean);
+  const videoId = source.hostname === 'youtu.be' && parts.length === 1 ? parts[0]
+    : source.pathname === '/watch' && source.searchParams.getAll('v').length === 1 ? source.searchParams.get('v')
+      : parts.length === 2 && ['shorts', 'embed', 'live'].includes(parts[0]) ? parts[1] : null;
+  return /^[A-Za-z0-9_-]{11}$/.test(videoId || '') ? `https://www.youtube.com/watch?v=${videoId}` : null;
+}
+
 export function sanitizeFolderName(name) {
   return String(name || 'playlist')
     .trim()

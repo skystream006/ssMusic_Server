@@ -70,6 +70,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
       '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
       cwd: directory, env: { ...process.env, SEARCH_API_KEY: searchKey, YTDLP_OUTPUT_ROOT: outputRoot, FFMPEG_PATH: ffmpegLocation,
+        YTDLP_PATH: path.join(directory, 'missing-test-ytdlp'),
         LIBRARY_BACKUP_ROOT: path.join(directory, 'backups'), HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '',
         PASSKEY_RP_ID: 'localhost', PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: '' },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -462,10 +463,74 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     }
   });
 
+  await context.test('KaraokeParty video submissions authenticate, deduplicate, and return only public playable links', async () => {
+    const route = '/api/karaoke/jobs';
+    const videoURL = 'https://youtu.be/cMoRYP8EDUk?si=tracking';
+    for (const auth of [{}, headers.Admin, { 'X-API-Key': 'wrong' }]) {
+      assert.equal((await call(route, auth, 'POST', { videoURL })).status, 401);
+    }
+    for (const videoURL of [null, {}, 'https://example.com/watch?v=cMoRYP8EDUk', 'https://youtube.com/playlist?list=abc']) {
+      assert.equal((await call(route, keyHeaders, 'POST', { videoURL })).status, 400);
+    }
+    const owner = (await store.listUsers()).find((user) => user.name === 'KaraokeParty');
+    assert.equal(owner.status, 'approved');
+    assert.equal(owner.role, 'ExtServer');
+    assert.equal(owner.credentialCount, 0);
+    const results = await Promise.all([videoURL, 'https://www.youtube.com/watch?v=cMoRYP8EDUk&list=abc'].map((videoURL) =>
+      call(route, { ...headers.Admin, ...keyHeaders }, 'POST', { videoURL, userId: users.Admin.id, downloadType: 'audio' })));
+    assert.equal(results.filter((result) => result.body.duplicate === false).length, 1, JSON.stringify(results));
+    assert.equal(results[0].body.jobId, results[1].body.jobId);
+    assert.equal(results.find((result) => !result.body.duplicate).status, 202);
+    const jobId = results[0].body.jobId;
+    const stored = JSON.parse((await database.prepare('SELECT data FROM jobs WHERE id = $1').get(jobId)).data);
+    assert.equal(stored.initiatedBy.id, owner.id);
+    assert.equal(stored.downloadType, 'video');
+    assert.equal(stored.url, 'https://www.youtube.com/watch?v=cMoRYP8EDUk');
+    assert.equal(stored.isPlaylist, false);
+    const pending = await call(`/api/karaoke/jobs/${jobId}`, keyHeaders);
+    assert.equal(pending.status, 200);
+    assert.equal(pending.body.ready, false);
+    assert.equal(pending.body.playUrl, null);
+    assert.equal(pending.body.playerUrl, null);
+    assert.equal((await call(`/api/library?userId=${owner.id}`, keyHeaders)).status, 200);
+    assert.equal((await call(`/api/karaoke/jobs/${jobId}`, headers.Admin)).status, 401);
+    assert.equal((await call(`/api/jobs/${jobId}`, keyHeaders)).status, 403);
+    assert.equal((await call('/api/jobs', keyHeaders, 'POST', { url: videoURL })).status, 403);
+    const existingId = 'legacy-karaoke-video';
+    const outputDir = path.join(outputRoot, existingId);
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'Party clip.mp4'), 'video');
+    const existing = { id: existingId, url: 'https://m.youtube.com/watch?v=%52TcsY6aIoEc&t=42',
+      downloadType: 'video', isPlaylist: false, status: 'completed', outputDir, files: ['Party clip.mp4'],
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), initiatedBy: { id: users.Owner.id } };
+    await writeJob(database, existing);
+    const duplicate = await call(route, keyHeaders, 'POST', { videoURL: 'https://youtu.be/RTcsY6aIoEc' });
+    assert.equal(duplicate.status, 200, duplicate.text);
+    assert.equal(duplicate.body.duplicate, true);
+    assert.equal(duplicate.body.ready, true);
+    assert.equal(duplicate.body.jobId, existingId);
+    assert.equal(duplicate.body.playUrl, `/api/jobs/${existingId}/stream/Party%20clip.mp4`);
+    assert.equal((await call(duplicate.body.playUrl, keyHeaders)).status, 200);
+    await fs.unlink(path.join(outputDir, 'Party clip.mp4'));
+    const missing = await call(duplicate.body.statusUrl, keyHeaders);
+    assert.equal(missing.body.ready, false);
+    assert.equal(missing.body.playUrl, null);
+    await fs.writeFile(path.join(outputDir, 'Party clip.mp4'), 'video');
+    await writeJob(database, { ...existing, private: true });
+    const hidden = await call(route, keyHeaders, 'POST', { videoURL: 'https://youtube.com/shorts/RTcsY6aIoEc' });
+    assert.equal(hidden.status, 409);
+    assert.equal(hidden.body.playUrl, undefined);
+    assert.equal((await call(duplicate.body.statusUrl, keyHeaders)).status, 404);
+    await store.updateUser(owner.id, { status: 'revoked' }, users.Admin.id);
+    assert.equal((await call(route, keyHeaders, 'POST', { videoURL })).status, 403);
+    await store.updateUser(owner.id, { status: 'approved' }, users.Admin.id);
+  });
+
   await context.test('an unset key disables access, including formerly valid credentials', async () => {
     await stop();
     await start('');
     assert.equal((await call('/api/songs/search', keyHeaders)).status, 401);
     assert.equal((await call('/api/jobs/playlist/stream/open.mp3', keyHeaders)).status, 401);
+    assert.equal((await call('/api/karaoke/jobs', keyHeaders, 'POST', { videoURL: 'https://youtu.be/cMoRYP8EDUk' })).status, 401);
   });
 });

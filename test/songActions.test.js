@@ -34,6 +34,8 @@ let canChangePlaylistPrivacy;
 let getFilePrivacy;
 let MusicPlayer;
 let PlaybackProvider;
+let readPlaybackSession;
+let writePlaybackSession;
 let SharedLibraryAccess;
 let UsernameForm;
 let LibraryAccessList;
@@ -46,7 +48,7 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, PlaybackProvider, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, PlaybackProvider, readPlaybackSession, writePlaybackSession, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog, EditPlaylistDialog, FolderDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -54,6 +56,34 @@ before(async () => {
 });
 
 after(async () => { await server?.close(); });
+
+test('playback session restores the selected song and playlist queue after refresh, isolated by user and URL', () => {
+  const values = new Map();
+  const browser = { location: { pathname: '/', search: '?playlist=mix&userId=owner' }, sessionStorage: {
+    getItem: (key) => values.get(key), setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key)
+  } };
+  const songs = ['First.mp3', 'Second.mp3'].map((name) => ({ jobId: 'job', name, streamUrl: `/stream/${name}` }));
+  const selected = JSON.stringify(['job', 'Second.mp3']);
+  const scope = JSON.stringify(['owner', 'mix', 2, '']);
+  writePlaybackSession('user', songs, selected, scope, browser);
+  assert.deepEqual(readPlaybackSession('user', browser), { songs, selected, scope, url: '/?playlist=mix&userId=owner' });
+  assert.equal(readPlaybackSession('other', browser), null);
+  browser.location.search = '?playlist=another';
+  assert.equal(readPlaybackSession('user', browser), null);
+  browser.location.search = '?playlist=mix&userId=owner';
+  writePlaybackSession('user', songs, selected, Symbol('karaoke'), browser);
+  assert.equal(readPlaybackSession('user', browser).selected, selected);
+  assert.equal(readPlaybackSession('user', browser).scope, null);
+  writePlaybackSession('user', songs, null, scope, browser);
+  assert.equal(readPlaybackSession('user', browser), null);
+  for (const invalid of ['{', '{}', '{"songs":[null]}']) {
+    values.set('ssMusicPlayback:user', invalid);
+    assert.equal(readPlaybackSession('user', browser), null);
+  }
+  Object.defineProperty(browser, 'sessionStorage', { get() { throw new Error('Storage blocked'); } });
+  assert.equal(readPlaybackSession('user', browser), null);
+  assert.doesNotThrow(() => writePlaybackSession('user', songs, selected, scope, browser));
+});
 
 test('song search normalization folds Vietnamese accents and crossed D without changing literal search characters', () => {
   const title = 'Y\u00eau \u0110\u1eebng S\u1ee3 \u0110au';

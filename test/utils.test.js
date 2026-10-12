@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isPlaylistUrl, isYouTubeMusicUrl, isYouTubeUrl, normalizeJobUrl, sanitizeFolderName } from '../src/utils.js';
+import { isPlaylistUrl, isYouTubeMusicUrl, isYouTubeUrl, normalizeJobUrl, normalizeVideoUrl, sanitizeFolderName } from '../src/utils.js';
 
 test('accepts YouTube video, short, mobile and music links only over HTTP or HTTPS', () => {
   for (const host of ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be']) {
@@ -17,6 +17,17 @@ test('accepts YouTube video, short, mobile and music links only over HTTP or HTT
 test('validates YouTube Music URL host', () => {
   assert.equal(isYouTubeMusicUrl('https://music.youtube.com/watch?v=abc'), true);
   assert.equal(isYouTubeMusicUrl('https://youtube.com/watch?v=abc'), false);
+});
+
+test('video submission normalizes single-video identities without submitting their playlists', () => {
+  for (const url of ['https://youtu.be/cMoRYP8EDUk?si=tracking', 'https://music.youtube.com/watch?v=cMoRYP8EDUk&list=PL123',
+    'https://m.youtube.com/shorts/cMoRYP8EDUk', 'http://youtube.com/embed/cMoRYP8EDUk',
+    ' https://www.youtube.com/live/cMoRYP8EDUk?t=30 ']) {
+    assert.equal(normalizeVideoUrl(url), 'https://www.youtube.com/watch?v=cMoRYP8EDUk');
+  }
+  for (const url of [null, {}, 'https://example.com/watch?v=cMoRYP8EDUk', 'https://youtube.com/playlist?list=PL123',
+    'https://youtube.com/watch?v=short', 'https://youtube.com/watch?v=cMoRYP8EDUk&v=RTcsY6aIoEc',
+    'https://user:password@youtube.com/watch?v=cMoRYP8EDUk']) assert.equal(normalizeVideoUrl(url), null);
 });
 
 test('detects playlist URLs by list query parameter regardless of path', () => {

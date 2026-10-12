@@ -68,7 +68,7 @@ Saved ZIP backups made before privacy support, or before another owner's privacy
 settings changed, must be regenerated before downloading; an export is also
 rejected if those settings change while it is being prepared.
 
-## Read-only song search API
+## Search API key
 
 Set `SEARCH_API_KEY` in `.env` to a long, randomly generated secret and restart
 the server. For example, generate a value with
@@ -135,10 +135,73 @@ The key also permits:
   `/artwork/:name`, and `/lyrics/:name` — nonprivate media, including videos
   where supported by the endpoint.
 
-No writes, account/admin operations, job logs, or backup downloads are allowed.
-Supplying a key alongside a session or PAT never upgrades its read-only scope.
-Treat this key as a server-wide read credential, not a public browser key;
+The only write operation is the KaraokeParty video submission endpoint below.
+Other writes, account/admin operations, job logs, and backup downloads are denied.
+Supplying a key alongside a session or PAT never upgrades its permissions.
+Treat this key as a server-wide catalog and video-submission credential, not a public browser key;
 rotate it by replacing the environment value and restarting the server.
+
+### KaraokeParty video submission
+
+With `SEARCH_API_KEY` configured, startup provisions an approved **KaraokeParty**
+account with the **ExtServer** role once an approved administrator exists. This account has no passkeys,
+appears in admin account management, and owns jobs submitted through this API.
+ExtServer accounts cannot log in through passkeys, cookie/Bearer sessions, app
+authorization, or PATs, and cannot enroll passkeys or create login tokens.
+Converting an account to ExtServer removes its passkeys, sessions, and PATs.
+Startup migrates the existing KaraokeParty account in place, retaining its ID,
+jobs, library, and approval/revocation status. KaraokeParty cannot be switched to
+a login-capable role. Other accounts can be assigned ExtServer by an administrator.
+It is not an administrator. Public registration cannot claim its name or the ExtServer role, and an
+existing account with that name is never taken over. Revoking the account stops
+new submissions; startup and API calls do not undo administrator changes.
+
+Send `POST /api/karaoke/jobs` over HTTPS with `X-API-Key: <SEARCH_API_KEY>` and
+`Content-Type: application/json`:
+
+```json
+{ "videoURL": "https://www.youtube.com/watch?v=cMoRYP8EDUk" }
+```
+
+The endpoint always downloads a single **video**, owned by KaraokeParty, and adds
+the new job to that account's library. Caller-supplied owner, format, and
+metadata-only settings are ignored. YouTube watch, short-link, Shorts, embed,
+live, mobile, and Music video URLs are accepted. Tracking, timestamp, and playlist
+parameters are removed; playlist-only URLs and non-YouTube URLs return HTTP 400.
+
+Video jobs are deduplicated across accounts by YouTube video ID, including older
+jobs saved with alternate URL forms. Audio-only jobs do not prevent a video
+download. Concurrent submissions create at most one job. Private duplicates
+return HTTP 409 without disclosing their identity or media links.
+
+New jobs return HTTP 202. Existing queued/running jobs also return HTTP 202 without
+starting another download; other duplicates return HTTP 200. Example ready duplicate:
+
+```json
+{
+    "jobId": "existing-job-id",
+    "status": "completed",
+    "duplicate": true,
+    "ready": true,
+    "statusUrl": "/api/karaoke/jobs/existing-job-id",
+    "playUrl": "/api/jobs/existing-job-id/stream/Party%20clip.mp4",
+    "playerUrl": "/job/existing-job-id/player?song=Party+clip.mp4&play=1"
+}
+```
+
+While downloading, or when no playable file exists, `ready` is false and both
+playback URLs are null. Poll `GET /api/karaoke/jobs/:id` with the same key for the
+current status and links; this returns HTTP 200 for a visible video job. Failed
+jobs are not automatically retried: an administrator can inspect and rerun them
+through the normal job-management UI. Polling returns no job logs or filesystem paths.
+
+All returned URLs are relative to the server origin. `playUrl` is the direct media
+stream and requires `X-API-Key` on every request (including range requests).
+`playerUrl` opens the existing web player and requires a normal signed-in browser
+session. No public share token is created and the secret is never placed in a URL.
+Missing/invalid keys return HTTP 401. A disabled KaraokeParty account returns
+HTTP 403 on submission; an installation without an approved administrator returns
+HTTP 503. The key still cannot submit through `POST /api/jobs` or modify existing jobs.
 
 ## Public media links
 

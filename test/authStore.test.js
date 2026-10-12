@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { closeDatabases, openDatabase } from '../src/database.js';
+import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
 async function loadStore(testContext) {
@@ -9,6 +9,84 @@ async function loadStore(testContext) {
 }
 
 const credential = (id) => ({ id, publicKey: Buffer.from(`key-${id}`), counter: 0 });
+
+test('KaraokeParty is admin-managed, idempotent, and cannot capture first-admin registration', async (context) => {
+  const store = await loadStore(context);
+  assert.equal(await store.ensureKaraokePartyUser(), null);
+  await assert.rejects(store.registerUser('KaraokeParty', 'party', credential('party')), { statusCode: 409 });
+  const admin = await store.registerUser('Admin', 'admin', credential('admin'));
+  assert.equal(admin.role, 'admin');
+  const [party, repeated] = await Promise.all([store.ensureKaraokePartyUser(), store.ensureKaraokePartyUser()]);
+  assert.equal(party.id, repeated.id);
+  assert.equal(party.name, 'KaraokeParty');
+  assert.equal(party.role, 'ExtServer');
+  assert.equal(party.status, 'approved');
+  assert.equal(party.credentialCount, 0);
+  await assert.rejects(store.createSession(party.id), { statusCode: 403 });
+  await assert.rejects(store.createPrivateAccessToken(party.id, 'Forbidden'), { statusCode: 403 });
+  await assert.rejects(store.addCredential(party.id, credential('party-login')), { statusCode: 403 });
+  await assert.rejects(store.updateUser(party.id, { role: 'user' }, admin.id), { statusCode: 400 });
+  assert.equal((await store.listUsers()).filter((user) => user.name === 'KaraokeParty').length, 1);
+  await store.updateUser(party.id, { status: 'revoked' }, admin.id);
+  await assert.rejects(store.ensureKaraokePartyUser(), { statusCode: 403 });
+});
+
+test('ExtServer conversion removes login credentials and rejects stale sessions and PATs', async (context) => {
+  const store = await loadStore(context);
+  const admin = await store.registerUser('Admin', 'admin', credential('admin'));
+  const user = await store.registerUser('External', 'external', credential('external'));
+  await store.updateUser(user.id, { status: 'approved' }, admin.id);
+  const session = await store.createSession(user.id);
+  const pat = await store.createPrivateAccessToken(user.id, 'Existing');
+  const database = openDatabase();
+  const savedSession = await database.prepare('SELECT * FROM sessions WHERE user_id = $1').get(user.id);
+  const savedPat = await database.prepare('SELECT * FROM private_access_tokens WHERE user_id = $1').get(user.id);
+  const external = await store.updateUser(user.id, { role: 'ExtServer' }, admin.id);
+  assert.equal(external.role, 'ExtServer');
+  assert.equal(external.credentialCount, 0);
+  assert.equal(await store.findCredential('external'), null);
+  assert.equal(await store.getSessionUser(session.token), null);
+  assert.equal(await store.getPrivateAccessTokenUser(pat.token), null);
+  assert.deepEqual(await store.listPrivateAccessTokens(user.id), []);
+  await database.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)')
+    .run(savedSession.token_hash, user.id, savedSession.expires_at);
+  await database.prepare('INSERT INTO private_access_tokens (id, user_id, name, token_hash, created_at) VALUES ($1, $2, $3, $4, $5)')
+    .run(savedPat.id, user.id, savedPat.name, savedPat.token_hash, savedPat.created_at);
+  assert.equal(await store.getSessionUser(session.token), null);
+  assert.equal(await store.getPrivateAccessTokenUser(pat.token), null);
+  await assert.rejects(store.createSession(user.id), { statusCode: 403 });
+  await assert.rejects(store.createPrivateAccessToken(user.id, 'New'), { statusCode: 403 });
+  await assert.rejects(store.addCredential(user.id, credential('new-external')), { statusCode: 403 });
+  await assert.rejects(store.registerUser('Public external', 'public', credential('public'), { role: 'ExtServer' }), { statusCode: 400 });
+});
+
+test('startup migrates existing KaraokeParty to ExtServer and preserves its identity, status and jobs', async (context) => {
+  const store = await loadStore(context);
+  const admin = await store.registerUser('Admin', 'admin', credential('admin'));
+  const party = await store.ensureKaraokePartyUser();
+  const database = openDatabase();
+  await database.prepare("UPDATE users SET role = 'user', status = 'revoked' WHERE id = $1").run(party.id);
+  await database.prepare(`INSERT INTO credentials (id, user_id, public_key, counter, transports)
+    SELECT 'legacy-party', $1, public_key, counter, transports FROM credentials WHERE user_id = $2`).run(party.id, admin.id);
+  await database.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)')
+    .run('legacy-session', party.id, '2099-01-01T00:00:00.000Z');
+  await database.prepare('INSERT INTO private_access_tokens (id, user_id, name, token_hash, created_at) VALUES ($1, $2, $3, $4, $5)')
+    .run('legacy-pat', party.id, 'Old', 'legacy-hash', party.createdAt);
+  await writeJob(database, { id: 'party-job', url: 'https://youtu.be/cMoRYP8EDUk', status: 'completed',
+    initiatedBy: { id: party.id, name: party.name }, createdAt: party.createdAt, files: [] });
+  await closeDatabases();
+  const reloaded = await import(`../src/authStore.js?migration=${crypto.randomUUID()}`);
+  const migrated = await reloaded.getUser(party.id);
+  assert.equal(migrated.role, 'ExtServer');
+  assert.equal(migrated.status, 'revoked');
+  assert.equal(migrated.name, party.name);
+  assert.equal(migrated.credentialCount, 0);
+  assert.deepEqual(await reloaded.listPrivateAccessTokens(party.id), []);
+  assert.equal((await openDatabase().prepare('SELECT count(*) AS count FROM sessions WHERE user_id = $1').get(party.id)).count, 0);
+  const job = JSON.parse((await openDatabase().prepare("SELECT data FROM jobs WHERE id = 'party-job'").get()).data);
+  assert.equal(job.initiatedBy.id, party.id);
+  await assert.rejects(reloaded.ensureKaraokePartyUser(), { statusCode: 403 });
+});
 
 test('renaming preserves account identity and enforces normalized unique names', async (context) => {
   const store = await loadStore(context);

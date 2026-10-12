@@ -10,6 +10,7 @@ import {
 import {
   acceptUserLink,
   addCredential,
+  canUserLogin,
   createPrivateAccessToken,
   createSession,
   deleteCredential,
@@ -196,7 +197,7 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
         return res.status(400).json({ error: 'Invalid authorization code or PKCE verifier' });
       }
       const user = (await getUser(authorization.userId));
-      if (!user || user.status !== 'approved' || user.updatedAt !== authorization.userUpdatedAt) {
+      if (!canUserLogin(user) || user.updatedAt !== authorization.userUpdatedAt) {
         return res.status(403).json({ error: 'Account access changed. Please log in again.' });
       }
       const session = await createSession(user.id);
@@ -454,6 +455,9 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
       const challenge = takeChallenge(req.body?.requestId, 'authentication');
       const match = (await findCredential(req.body?.response?.id));
       if (!match) return res.status(401).json({ error: 'Passkey is not registered on this server' });
+      if (match.user.role === 'ExtServer' || match.user.id === 'service-karaoke-party') {
+        return res.status(403).json({ error: 'This account cannot log in', code: 'LOGIN_DISABLED' });
+      }
       const verification = await verifyAuthenticationResponse({
         response: req.body.response,
         expectedChallenge: challenge.challenge,
@@ -478,6 +482,7 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
         return res.status(403).json({ error: 'Your access has been revoked', code: 'ACCESS_REVOKED' });
       }
       const user = (await getUser(match.user.id));
+      if (!canUserLogin(user)) return res.status(403).json({ error: 'This account cannot log in', code: 'LOGIN_DISABLED' });
       if (challenge.appAuthorization) {
         const code = rememberChallenge({
           type: 'app-authorization',

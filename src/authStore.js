@@ -2,6 +2,32 @@ import crypto from 'node:crypto';
 import { openDatabase, readUser, writeUser, withTransaction } from './database.js';
 
 const database = openDatabase();
+const karaokePartyId = 'service-karaoke-party';
+
+export function canUserLogin(user) {
+  return user?.status === 'approved' && user.id !== karaokePartyId && ['admin', 'user', 'shared'].includes(user.role);
+}
+
+export async function ensureKaraokePartyUser() {
+  return withTransaction(database, async () => {
+    const existing = await readUser(database, karaokePartyId);
+    if (existing) {
+      if (existing.role !== 'ExtServer' || existing.status !== 'approved') {
+        throw Object.assign(new Error('KaraokeParty must be an approved ExtServer account'), { statusCode: 403 });
+      }
+      return publicUser(existing);
+    }
+    if (!await countApprovedAdmins()) return null;
+    if (await database.prepare("SELECT 1 FROM users WHERE name_key = 'karaokeparty'").get()) {
+      throw Object.assign(new Error('KaraokeParty is already registered to another account'), { statusCode: 409 });
+    }
+    const now = new Date().toISOString();
+    const user = { id: karaokePartyId, name: 'KaraokeParty', userHandle: crypto.randomBytes(32).toString('base64url'),
+      role: 'ExtServer', status: 'approved', credentials: [], createdAt: now, updatedAt: now };
+    await writeUser(database, user);
+    return publicUser(user);
+  });
+}
 
 function publicUser(user) {
   return {
@@ -158,6 +184,9 @@ export async function registerUser(name, userHandle, credential, account = {}) {
 async function registerUserRecord(name, userHandle, credential, account) {
   const registration = await validateRegistrationAccount(account);
   const normalizedName = normalizeName(name);
+  if (normalizedName.toLowerCase() === 'karaokeparty') {
+    throw Object.assign(new Error('That name is reserved for the admin-managed KaraokeParty account'), { statusCode: 409 });
+  }
   if ((await database.prepare('SELECT 1 FROM users WHERE name_key = $1').get(normalizedName.toLowerCase()))) {
     const error = new Error('That name is already registered');
     error.statusCode = 409;
@@ -204,8 +233,8 @@ export async function getUserPasskeys(userId) {
 export async function addCredential(userId, credential) {
   return (await withTransaction(database, async () => {
     const user = (await readUser(database, userId));
-    if (!user || user.status !== 'approved') {
-      const error = new Error('Approved user required');
+    if (!canUserLogin(user)) {
+      const error = new Error(user?.status === 'approved' ? 'This account cannot log in' : 'Approved user required');
       error.statusCode = 403;
       throw error;
     }
@@ -300,10 +329,13 @@ async function updateUserRecord(userId, changes, actorId) {
     }
     user.name = name;
   }
-  if (!['pending', 'approved', 'revoked'].includes(status) || !['user', 'admin', 'shared'].includes(role)) {
+  if (!['pending', 'approved', 'revoked'].includes(status) || !['user', 'admin', 'shared', 'ExtServer'].includes(role)) {
     const error = new Error('Invalid user role or access status');
     error.statusCode = 400;
     throw error;
+  }
+  if (user.id === karaokePartyId && role !== 'ExtServer') {
+    throw Object.assign(new Error('KaraokeParty must retain the ExtServer role'), { statusCode: 400 });
   }
   if (user.id === actorId && status !== 'approved') {
     const error = new Error('You cannot revoke your own access');
@@ -355,9 +387,13 @@ async function updateUserRecord(userId, changes, actorId) {
   user.status = status;
   user.role = role;
   user.updatedAt = new Date().toISOString();
-  if (status !== 'approved') {
+  if (!canUserLogin(user)) {
     (await database.prepare('DELETE FROM sessions WHERE user_id = $1').run(user.id));
     (await database.prepare('DELETE FROM private_access_tokens WHERE user_id = $1').run(user.id));
+  }
+  if (role === 'ExtServer') {
+    await database.prepare('DELETE FROM credentials WHERE user_id = $1').run(user.id);
+    user.credentials = [];
   }
   (await writeUser(database, user));
   return publicUser(user);
@@ -375,6 +411,9 @@ export async function createSession(userId) {
     expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
   };
   (await withTransaction(database, async () => {
+    if (!canUserLogin(await getUser(userId))) {
+      throw Object.assign(new Error('This account cannot log in'), { statusCode: 403 });
+    }
     (await database.prepare('DELETE FROM sessions WHERE expires_at <= $1').run(new Date().toISOString()));
     (await database.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)')
       .run(session.tokenHash, session.userId, session.expiresAt));
@@ -388,7 +427,7 @@ export async function getSessionUser(token) {
     .get(hashToken(token), new Date().toISOString()));
   if (!session) return null;
   const user = (await readUser(database, session.user_id));
-  if (!user || user.status !== 'approved') return null;
+  if (!canUserLogin(user)) return null;
   return publicUser(user);
 }
 
@@ -414,17 +453,20 @@ export async function createPrivateAccessToken(userId, name) {
     error.statusCode = 400;
     throw error;
   }
-  if ((await getUser(userId))?.status !== 'approved') {
-    const error = new Error('Approved user required');
-    error.statusCode = 403;
-    throw error;
-  }
-  const id = crypto.randomUUID();
-  const token = `ssyt_pat_${crypto.randomBytes(32).toString('base64url')}`;
-  const createdAt = new Date().toISOString();
-  (await database.prepare(`INSERT INTO private_access_tokens (id, user_id, name, token_hash, created_at)
-    VALUES ($1, $2, $3, $4, $5)`).run(id, userId, normalizedName, hashToken(token), createdAt));
-  return { id, name: normalizedName, token, createdAt };
+  return withTransaction(database, async () => {
+    const user = await getUser(userId);
+    if (!canUserLogin(user)) {
+      const error = new Error(user?.status === 'approved' ? 'This account cannot log in' : 'Approved user required');
+      error.statusCode = 403;
+      throw error;
+    }
+    const id = crypto.randomUUID();
+    const token = `ssyt_pat_${crypto.randomBytes(32).toString('base64url')}`;
+    const createdAt = new Date().toISOString();
+    (await database.prepare(`INSERT INTO private_access_tokens (id, user_id, name, token_hash, created_at)
+      VALUES ($1, $2, $3, $4, $5)`).run(id, userId, normalizedName, hashToken(token), createdAt));
+    return { id, name: normalizedName, token, createdAt };
+  });
 }
 
 export async function getPrivateAccessTokenUser(token) {
@@ -432,7 +474,7 @@ export async function getPrivateAccessTokenUser(token) {
   const record = (await database.prepare('SELECT user_id FROM private_access_tokens WHERE token_hash = $1').get(hashToken(token)));
   if (!record) return null;
   const user = (await readUser(database, record.user_id));
-  if (!user || user.status !== 'approved') return null;
+  if (!canUserLogin(user)) return null;
   return publicUser(user);
 }
 

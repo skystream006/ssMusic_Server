@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
-ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'user', 'shared'));
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'user', 'shared', 'ExtServer'));
 ALTER TABLE users ADD COLUMN IF NOT EXISTS organizer_id TEXT REFERENCES users(id) ON DELETE SET NULL;
 CREATE TABLE IF NOT EXISTS library_shares (
   viewer_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS private_access_tokens (
   name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS private_access_tokens_user ON private_access_tokens(user_id);
+UPDATE users SET role = 'ExtServer', updated_at = to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  WHERE id = 'service-karaoke-party' AND role <> 'ExtServer';
+DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role = 'ExtServer');
+DELETE FROM private_access_tokens WHERE user_id IN (SELECT id FROM users WHERE role = 'ExtServer');
+DELETE FROM credentials WHERE user_id IN (SELECT id FROM users WHERE role = 'ExtServer');
 CREATE TABLE IF NOT EXISTS user_preferences (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   theme TEXT NOT NULL DEFAULT 'light', theme_mode TEXT CHECK (theme_mode IN ('light', 'dark')),

@@ -153,9 +153,33 @@ function TrackPagination({ pagination, position }) {
 
 export function usePlayback() { return useContext(PlaybackContext); }
 
-export function PlaybackProvider({ children, request }) {
-  const [songs, setSongs] = useState(null);
-  const [selected, setSelected] = useState(null);
+export function readPlaybackSession(userId, browser = window) {
+  try {
+    if (!userId) return null;
+    const saved = JSON.parse(browser.sessionStorage.getItem(`ssMusicPlayback:${userId}`));
+    if (saved?.url !== `${browser.location.pathname}${browser.location.search}`
+      || !Array.isArray(saved.songs) || !saved.songs.length
+      || !saved.songs.every((track) => track && typeof track.jobId === 'string' && typeof track.name === 'string' && typeof track.streamUrl === 'string')
+      || !saved.songs.some((track) => songKey(track) === saved.selected)) return null;
+    return saved;
+  } catch { return null; }
+}
+
+export function writePlaybackSession(userId, songs, selected, scope, browser = window) {
+  try {
+    if (!userId) return;
+    const key = `ssMusicPlayback:${userId}`;
+    if (!songs?.some((track) => songKey(track) === selected)) { browser.sessionStorage.removeItem(key); return; }
+    browser.sessionStorage.setItem(key, JSON.stringify({ songs, selected,
+      scope: typeof scope === 'string' ? scope : null, url: `${browser.location.pathname}${browser.location.search}` }));
+  } catch {}
+}
+
+export function PlaybackProvider({ children, request, userId }) {
+  const [restored] = useState(() => readPlaybackSession(userId));
+  const [songs, setSongs] = useState(restored?.songs || null);
+  const [selected, setSelected] = useState(restored?.selected || null);
+  const restoredSelectionRef = useRef(restored);
   const selectedRef = useRef(null);
   selectedRef.current = selected;
   const [metadata, setMetadata] = useState(null);
@@ -173,15 +197,22 @@ export function PlaybackProvider({ children, request }) {
   const [repeatMode, setRepeatMode] = useState('off');
   const [videoOpen, setVideoOpen] = useState(true);
   const audioRef = useRef(null);
-  const autoPlayRef = useRef(new URLSearchParams(window.location.search).get('play') === '1');
+  const autoPlayRef = useRef(!restored && new URLSearchParams(window.location.search).get('play') === '1');
   const volumeRef = useRef(1);
   const mutedRef = useRef(false);
-  const queueScopeRef = useRef(undefined);
+  const queueScopeRef = useRef(restored ? restored.scope ?? Symbol('restored') : undefined);
   const index = songs?.findIndex((track) => songKey(track) === selected) ?? -1;
   const song = songs?.[index];
   const isVideo = mediaType(song?.name) === 'video';
   const lyricsText = formatLyricsForCopy(metadata, mode);
   const currentCopy = copyResult?.song === selected && copyResult?.mode === mode ? copyResult : null;
+
+  useEffect(() => {
+    const persist = () => writePlaybackSession(userId, songs, selected, queueScopeRef.current);
+    persist();
+    window.addEventListener('pagehide', persist);
+    return () => window.removeEventListener('pagehide', persist);
+  }, [userId, songs, selected]);
 
   async function copyLyrics() {
     if (copying || !lyricsText.trim()) return;
@@ -303,7 +334,7 @@ export function PlaybackProvider({ children, request }) {
   return <PlaybackContext.Provider value={{ songs, setSongs, selected, setSelected, metadata, lyricError, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
-    isVideo, videoOpen, setVideoOpen,
+    isVideo, videoOpen, setVideoOpen, restoredSelectionRef,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata, replaceFile }}>
     {children}
     <section className="movie-player" aria-label="Movie player" hidden={!isVideo || !videoOpen}>
@@ -320,7 +351,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const { songs, setSongs, selected, setSelected, metadata, lyricError, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
-    isVideo, videoOpen, setVideoOpen,
+    isVideo, videoOpen, setVideoOpen, restoredSelectionRef,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, updateMetadata } = usePlayback();
   const [job, setJob] = useState(null);
   const [loadError, setLoadError] = useState('');
@@ -363,9 +394,13 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         if (!active) return;
         setJob(loadedJob);
         const tracks = result.files.filter((file) => file.isPlayable).map((file) => ({ ...file, jobId: id, playlistTitle: loadedJob.playlistTitle }));
-        const track = tracks.find((file) => file.name === requestedSong) || tracks[0];
+        const saved = restoredSelectionRef.current;
+        const restoredTrack = saved?.scope === `job:${id}` && saved.url === `${window.location.pathname}${window.location.search}`
+          ? tracks.find((file) => songKey(file) === saved.selected) : null;
+        restoredSelectionRef.current = null;
+        const track = restoredTrack || tracks.find((file) => file.name === requestedSong) || tracks[0];
         if (track && (queueScopeRef.current !== `job:${id}` || requestedSong)) {
-          if (requestedPlay) selectSong(track, tracks, `job:${id}`);
+          if (requestedPlay && !restoredTrack) selectSong(track, tracks, `job:${id}`);
           else { queueScopeRef.current = `job:${id}`; setSongs(tracks); setSelected(songKey(track)); }
         }
       }).catch((error) => { if (active) setLoadError(error.message); });

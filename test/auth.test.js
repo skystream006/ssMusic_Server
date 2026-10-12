@@ -95,6 +95,41 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     method, headers: { ...headers, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
+  await context.test('ExtServer accounts reject retained passkeys, cookie/Bearer sessions and PAT login', async (subcontext) => {
+    const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
+    const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+    process.env.PASSKEY_RP_ID = 'localhost';
+    process.env.PASSKEY_ORIGIN = 'https://localhost';
+    delete process.env.PASSKEY_RP_ID_SECONDARY;
+    delete process.env.PASSKEY_ORIGIN_SECONDARY;
+    subcontext.after(() => {
+      for (const key of envKeys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    });
+    const external = await store.registerUser('External Server', 'external-server', credential('external-server'));
+    subcontext.after(() => store.deleteUser(external.id, admin.id));
+    await store.updateUser(external.id, { status: 'approved' }, admin.id);
+    const session = await store.createSession(external.id);
+    const pat = await store.createPrivateAccessToken(external.id, 'Legacy');
+    const changed = await call(`/api/admin/users/${external.id}`, 'PATCH', adminHeaders, { role: 'ExtServer' });
+    assert.equal(changed.status, 200);
+    assert.equal((await changed.json()).user.role, 'ExtServer');
+    const database = openDatabase();
+    await database.prepare(`INSERT INTO credentials (id, user_id, public_key, counter, transports)
+      VALUES ($1, $2, $3, 0, '[]')`).run('retained-external', external.id, Buffer.from('legacy-key').toString('base64url'));
+    const options = await call('/api/auth/login/options', 'POST', {}, {});
+    assert.equal(options.status, 200);
+    const { requestId } = await options.json();
+    const login = await call('/api/auth/login/verify', 'POST', {}, { requestId, response: { id: 'retained-external' } });
+    assert.equal(login.status, 403);
+    assert.equal((await login.json()).code, 'LOGIN_DISABLED');
+    assert.equal(login.headers.get('set-cookie'), null);
+    for (const headers of [{ Cookie: `ssmusic_session=${session.token}` }, { Authorization: `Bearer ${session.token}` }, { 'X-PAT': pat.token }]) {
+      assert.equal((await call('/api/auth/me', 'GET', headers)).status, 401);
+    }
+  });
   await context.test('renamed and legacy session cookies authenticate and log out', async () => {
     for (const cookieName of ['ssmusic_session', 'ssytdlp_session']) {
       const session = await store.createSession(user.id);
@@ -403,12 +438,14 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     const third = authenticator();
     const userHandle = crypto.randomBytes(32).toString('base64url');
     const account = await store.registerUser('Multiple Passkeys', userHandle, first.credential);
-    const session = await store.createSession(account.id);
-    const headers = { Cookie: `ssmusic_session=${session.token}`, Origin: origin };
+    await assert.rejects(store.createSession(account.id), { statusCode: 403 });
+    const headers = { Cookie: 'ssmusic_session=unapproved', Origin: origin };
     assert.equal((await call('/api/auth/passkeys/options', 'POST', headers)).status, 401);
     assert.equal((await call('/api/auth/passkeys', 'GET', headers)).status, 401);
     assert.equal((await call(`/api/auth/passkeys/${first.credential.id}`, 'DELETE', headers)).status, 401);
     await store.updateUser(account.id, { status: 'approved' }, admin.id);
+    const session = await store.createSession(account.id);
+    headers.Cookie = `ssmusic_session=${session.token}`;
     const token = await store.createPrivateAccessToken(account.id, 'No enrollment');
     for (const unauthorized of [{}, { 'X-PAT': token.token }]) {
       assert.equal((await call('/api/auth/passkeys', 'GET', unauthorized)).status, 401);

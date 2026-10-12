@@ -31,6 +31,8 @@ import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './pos
 import { adminMediaSharesRouter, createMediaShare, createPlaylistShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
 import { canReadFile, visibleJob } from './privacy.js';
 import { attachSearchKey, requireSearchKey, searchSongs } from './songSearch.js';
+import { ensureKaraokePartyUser } from './authStore.js';
+import { getKaraokeJob, submitKaraokeJob } from './karaoke.js';
 
 const app = express();
 if (process.env.TRUST_PROXY) {
@@ -129,6 +131,8 @@ app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, r
 });
 app.use('/api/health', requireAuth);
 app.get('/api/songs/search', requireSearchKey, searchSongs);
+app.post('/api/karaoke/jobs', requireSearchKey, submitKaraokeJob);
+app.get('/api/karaoke/jobs/:id', requireSearchKey, getKaraokeJob);
 app.get('/api/libraries', requireSearchKey, async (_req, res) => {
   const users = await openDatabase().prepare("SELECT id, name FROM users WHERE status = 'approved' AND role <> 'shared' ORDER BY lower(name), id").all();
   res.json({ users });
@@ -787,6 +791,9 @@ app.use((error, req, res, next) => {
 });
 
 const httpsOrigin = process.env.PASSKEY_ORIGIN || `https://localhost:${httpsPort}`;
+if (process.env.SEARCH_API_KEY) {
+  await ensureKaraokePartyUser().catch((error) => console.warn('KaraokeParty provisioning:', error.message));
+}
 const httpsOptions = await loadHttpsOptions();
 
 function protectServer(server) {

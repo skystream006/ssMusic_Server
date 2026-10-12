@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { isPlaylistUrl, normalizeJobUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
+import { isPlaylistUrl, normalizeJobUrl, normalizeVideoUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob, withTransaction } from './database.js';
 import { deletePostgresJob, indexPostgresSongMetadata, normalizePostgresSearchIndex, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
@@ -547,7 +547,12 @@ export async function createJob(url, user = null, { metadataOnly = false, downlo
 }
 
 async function createJobRecord(sourceUrl, user, metadataOnly, downloadType) {
-  const existingJob = (await database.prepare(`SELECT id, status, data FROM jobs WHERE url = $1
+  const videoUrl = downloadType === 'video' && !isPlaylistUrl(sourceUrl) && normalizeVideoUrl(sourceUrl);
+  const existingJob = videoUrl
+    ? (await database.prepare(`SELECT id, status, data, url FROM jobs WHERE data->>'downloadType' = 'video'
+      AND COALESCE(data->>'isPlaylist', 'false') <> 'true' ORDER BY created_at DESC`).all())
+      .find((record) => normalizeVideoUrl(record.url) === videoUrl)
+    : (await database.prepare(`SELECT id, status, data FROM jobs WHERE url = $1
     AND COALESCE(data->>'downloadType', 'audio') = $2
     ORDER BY created_at DESC LIMIT 1`).get(sourceUrl, downloadType));
   if (existingJob) {
