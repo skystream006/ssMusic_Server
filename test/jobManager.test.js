@@ -760,6 +760,41 @@ async function assertRerunPreservesOutput(t, isPlaylist) {
   (await writeJob(openDatabase(), job));
 
   await assert.rejects(jobManager.rerunJob(job.id, { id: 'bob-id', role: 'user' }), { statusCode: 403 });
+  assert.equal(await fs.readFile(archivePath, 'utf8'), 'youtube abc\n');
+  const spawnMock = t.mock.method(childProcess, 'spawn', (command, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    process.nextTick(async () => {
+      try {
+        if (args.includes('--dump-single-json')) {
+          child.stdout.end('{}');
+        } else {
+          const archive = await fs.readFile(archivePath, 'utf8').catch((error) => {
+            if (error.code === 'ENOENT') return '';
+            throw error;
+          });
+          if (archive.includes('youtube abc')) {
+            child.stdout.end('abc has already been recorded in the archive');
+          } else {
+            for (const name of ['old-output.mp3', 'missing-song.mp3']) {
+              await fs.writeFile(path.join(firstOutputDir, name), 'downloaded', {
+                flag: args.includes('--no-overwrites') ? 'wx' : 'w'
+              }).catch((error) => {
+                if (error.code !== 'EEXIST') throw error;
+              });
+            }
+            await fs.writeFile(archivePath, 'youtube abc\nyoutube existing\n');
+            child.stdout.end('Downloaded missing song');
+          }
+        }
+        child.emit('close', 0);
+      } catch (error) { child.emit('error', error); }
+    });
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
   const rerun = await jobManager.rerunJob(job.id, { id: 'bob-id', name: 'Bob', role: 'admin' });
 
   assert.equal(rerun.playlistSongCount, null);
@@ -774,24 +809,25 @@ async function assertRerunPreservesOutput(t, isPlaylist) {
   assert.equal(await jobManager.rerunJob('missing-job'), null);
 
   await waitForJobToFinish(rerun);
+  assert.equal(rerun.status, 'completed', rerun.error);
   assert.equal(await fs.readFile(path.join(firstOutputDir, 'old-output.mp3'), 'utf8'), 'old');
-  assert.equal(await fs.readFile(archivePath, 'utf8'), 'youtube abc\n');
-  assert.deepEqual(rerun.files, ['old-output.mp3']);
+  assert.equal(await fs.readFile(path.join(firstOutputDir, 'missing-song.mp3'), 'utf8'), 'downloaded');
+  assert.equal(await fs.readFile(archivePath, 'utf8'), 'youtube abc\nyoutube existing\n');
+  assert.deepEqual(rerun.files, ['missing-song.mp3', 'old-output.mp3']);
   assert.match(rerun.command, /--no-overwrites/);
   assert.ok(rerun.command.includes(`--download-archive ${archivePath.includes(' ') ? `"${archivePath}"` : archivePath}`));
   assert.match(rerun.command, /--ffmpeg-location/);
-  assert.match(rerun.output, /^\[stderr\]/);
-  assert.match(rerun.output, /bad option/);
+  assert.match(rerun.output, /Downloaded missing song/);
 
   t.after(async () => {
     await fs.rm(outputRoot, { recursive: true, force: true });
   });
 }
 
-test('song reruns preserve the job folder, songs and download archive', (testContext) =>
+test('song reruns preserve existing files and recover missing songs from stale archives', (testContext) =>
   assertRerunPreservesOutput(testContext, false));
 
-test('playlist reruns preserve the job folder, songs and download archive', (testContext) =>
+test('playlist reruns preserve existing files and recover missing songs from stale archives', (testContext) =>
   assertRerunPreservesOutput(testContext, true));
 
 test('deleting a finished job removes its record and output', async (t) => {

@@ -1256,15 +1256,14 @@ survive reruns and never rename output directories. The API is
 titles must contain 1-200 characters without control characters.
 
 Reruns reuse the original output folder and pass `--no-overwrites` and
-`--download-archive` to yt-dlp. Successfully downloaded video IDs are recorded in
-`.download-archive.txt` inside that folder and skipped on subsequent runs; failed
-downloads can be retried. The archive is excluded from the song list and ZIP downloads.
-Songs removed from a playlist remain on disk. Downloads made before archive tracking
-rely on existing filenames for protection until recorded in the archive. Keep the
-archive with its songs: manually deleting a song does not remove its archive entry,
-so yt-dlp will still skip it. Deleting a job still removes its folder and archive.
-Deleting an individual song through the app also retains its archive entry, so tracked
-songs stay skipped on reruns. Older songs not yet tracked may download again.
+`--download-archive` to yt-dlp. Each explicit rerun clears `.download-archive.txt`
+before starting so stale entries cannot skip missing files. Existing filenames are
+protected by `--no-overwrites`, and yt-dlp rebuilds the archive as it processes the
+source. The archive is excluded from the song list and ZIP downloads.
+Songs removed from a playlist remain on disk. Songs deleted manually or through
+the app can download again on rerun if they are still available in the source.
+Renamed files or changed source titles may produce additional files because existing
+file protection is filename-based. Deleting a job still removes its folder and archive.
 
 To remove an individual file via the API, send
 `DELETE /api/jobs/:id/files/:name` with the URL-encoded filename. This returns the

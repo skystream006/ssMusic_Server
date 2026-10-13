@@ -756,6 +756,7 @@ export async function rerunJob(id, user = null) {
 
   jobMutations.add(id);
   try {
+    if (job.outputDir) await fs.rm(path.join(job.outputDir, downloadArchiveName), { force: true });
     await persistJob(job);
     startJob(job);
     return job;
