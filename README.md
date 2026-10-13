@@ -34,6 +34,19 @@ existing job's normal rerun or details action.
 `POST /api/jobs` accepts `downloadType: "audio"` (default) or `"video"`, for example
 `{ "url": "https://www.youtube.com/watch?v=VIDEO_ID", "downloadType": "video" }`.
 
+Downloads also fetch each video's source cover into a hidden `.thumbnails` folder
+alongside the media. Supported source images (JPEG, PNG, WebP, or AVIF) are converted
+to 192 by 192 AVIF thumbnails and cached when the job finishes. Video thumbnails
+prefer this source cover and fall back to a video frame if it is unavailable or
+cannot be decoded. The source covers remain available for cache regeneration but
+are not listed as downloadable media files.
+
+For audio downloads, the AVIF image is also embedded as the MP3's front-cover
+album art before its metadata is indexed. Existing embedded covers, other tags,
+lyrics, and audio content are preserved, including on reruns. Missing or invalid
+cover art does not prevent media processing. Metadata-only jobs do not fetch artwork;
+files skipped by the download archive retain their existing covers.
+
 ## Playlist and file privacy
 
 Playlists and files are nonprivate by default, retaining their existing access
@@ -117,9 +130,10 @@ supported embedded MP3 artwork is preferred, and songs with no supported cover
 receive a bundled 192 by 192 AVIF ssMusic thumbnail. Other artwork requests retain
 their existing missing-cover behavior unless the fallback is requested.
 
-Video results provide frame thumbnails (MP4, M4V, MOV, WebM, and OGV).
-Video thumbnails are 192 by 192 AVIF images generated
-with FFmpeg on the first artwork request and reused from the disk thumbnail cache.
+Video results provide source-cover thumbnails when downloaded artwork is available,
+otherwise frame thumbnails (MP4, M4V, MOV, WebM, and OGV).
+Video thumbnails are 192 by 192 AVIF images generated with FFmpeg at job completion
+or on the first uncached artwork request, then reused from the disk thumbnail cache.
 Changing a video invalidates its cached image; deleting the video or job removes it.
 Search itself does not decode videos. Send `X-API-Key` when fetching a thumbnail,
 just as for the stream and download URLs. Private media remains protected even

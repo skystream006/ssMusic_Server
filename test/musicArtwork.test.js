@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileTypeFromBuffer } from 'file-type';
 import { readSongArtwork, readSongMetadata, readSongSummary, updateSongMetadata } from '../src/music.js';
-import { createThumbnailCache, encodeThumbnail, encodeVideoThumbnail } from '../src/artworkThumbnails.js';
+import { createThumbnailCache, encodeThumbnail, encodeVideoThumbnail, readDownloadedArtwork } from '../src/artworkThumbnails.js';
 import { audioExtensions, videoExtensions } from '../src/media.js';
 import { createThumbnailMaintenance, thumbnailSongs } from '../src/thumbnailMaintenance.js';
 
@@ -180,6 +180,54 @@ test('video thumbnails use the shared persistent cache and invalidate changed vi
     assert.equal(encoded.filter((file) => file === filePath).length, 3);
   }
   assert.equal(await cache.read(path.join(directory, 'not-video.txt')), null);
+});
+
+test('downloaded artwork is preferred for video thumbnails and remains available after cache regeneration', async (context) => {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-downloaded-artwork-')));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'Clip.mp4');
+  const artworkDirectory = path.join(directory, '.thumbnails');
+  await fs.mkdir(artworkDirectory);
+  await fs.writeFile(filePath, 'video');
+  await fs.writeFile(path.join(artworkDirectory, 'Clip.webp'), png);
+  let images = 0;
+  let frames = 0;
+  let encodingFails = false;
+  const cover = thumbnailFixture('source cover');
+  const frame = thumbnailFixture('video frame');
+  const cache = createThumbnailCache({ root: path.join(directory, 'cache'),
+    encode: async (image) => {
+      images++;
+      assert.equal(image.mime, 'image/png');
+      assert.deepEqual(image.imageBuffer, png);
+      if (encodingFails) throw new Error('Unable to decode downloaded cover');
+      return cover;
+    },
+    encodeVideo: async () => { frames++; return frame; } });
+  assert.deepEqual(await cache.read(filePath), cover);
+  assert.deepEqual(await cache.read(filePath), cover);
+  assert.equal(images, 1);
+  assert.equal(frames, 0);
+  await cache.remove(filePath);
+  assert.deepEqual(await cache.read(filePath), cover);
+  encodingFails = true;
+  assert.deepEqual(await cache.read(filePath, { force: true }), frame);
+  assert.equal(frames, 1);
+  await fs.writeFile(path.join(artworkDirectory, 'Clip.webp'), '<html>not artwork</html>');
+  assert.deepEqual(await cache.read(filePath, { force: true }), frame);
+  assert.equal(frames, 2);
+});
+
+test('downloaded artwork ignores oversized sidecars and unrelated media covers', async (context) => {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-downloaded-artwork-')));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'Song.mp3');
+  await fs.mkdir(path.join(directory, '.thumbnails'));
+  await fs.writeFile(path.join(directory, '.thumbnails', 'Other.png'), png);
+  await fs.writeFile(path.join(directory, '.thumbnails', 'Song.avif'), Buffer.alloc(2 * 1024 * 1024 + 1));
+  assert.equal(await readDownloadedArtwork(filePath), null);
+  await fs.writeFile(path.join(directory, '.thumbnails', 'Song.png'), png);
+  assert.deepEqual(await readDownloadedArtwork(filePath), { mime: 'image/png', imageBuffer: png });
 });
 
 test('thumbnail cache discards work when a source changes and retries transient encoding failures', async (context) => {

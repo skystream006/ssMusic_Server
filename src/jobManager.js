@@ -8,8 +8,8 @@ import { openDatabase, writeJob, withTransaction } from './database.js';
 import { deletePostgresJob, indexPostgresSongMetadata, normalizePostgresSearchIndex, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
-import { readSongMetadata, readSongSummary, updateSongMetadata } from './music.js';
-import { refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
+import { readSongArtwork, readSongMetadata, readSongSummary, updateSongMetadata } from './music.js';
+import { encodeThumbnail, readDownloadedArtwork, refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
 import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
 import { attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
@@ -111,13 +111,30 @@ async function refreshSongMetadata(job, names = job.files || []) {
   }
 }
 
-async function refreshJobThumbnails(job, names = job.files || []) {
+async function embedDownloadedArtwork(job) {
+  const outputDir = job.outputDir && await fs.realpath(job.outputDir).catch(() => null);
+  if (!outputDir) return;
+  for (const name of job.files || []) {
+    if (!isValidJobFileName(name) || !/\.mp3$/i.test(name)) continue;
+    const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
+    if (!filePath || !isFileInsideJobFolder({ outputDir }, filePath)) continue;
+    try {
+      if (await readSongArtwork(filePath)) continue;
+      const image = await readDownloadedArtwork(filePath);
+      if (!image) continue;
+      const artwork = await encodeThumbnail(image);
+      await updateSongMetadata(filePath, { artwork: `data:image/avif;base64,${artwork.toString('base64')}` });
+    } catch (error) { console.warn(`Unable to embed downloaded artwork for ${name}: ${error.message}`); }
+  }
+}
+
+async function refreshJobThumbnails(job, names = job.files || [], options) {
   const outputDir = job.outputDir && await fs.realpath(job.outputDir).catch(() => null);
   if (!outputDir) return;
   for (const name of names) {
-    if (!isValidJobFileName(name) || !/\.mp3$/i.test(name)) continue;
+    if (!isValidJobFileName(name) || (!/\.mp3$/i.test(name) && mediaType(name) !== 'video')) continue;
     const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
-    if (filePath && isFileInsideJobFolder({ outputDir }, filePath)) await refreshSongThumbnail(filePath);
+    if (filePath && isFileInsideJobFolder({ outputDir }, filePath)) await refreshSongThumbnail(filePath, options);
   }
 }
 
@@ -445,7 +462,11 @@ async function executeJob(job) {
     '--js-runtimes',
     `deno:${denoPath}`,
     '--output',
-    path.join(job.outputDir, '%(title)s.%(ext)s')
+    path.join(job.outputDir, '%(title)s.%(ext)s'),
+    '--write-thumbnail',
+    '--no-write-playlist-metafiles',
+    '--output',
+    `thumbnail:${path.join(job.outputDir, '.thumbnails', '%(title)s.%(ext)s')}`
   ];
 
   args.push(job.isPlaylist ? '--yes-playlist' : '--no-playlist');
@@ -479,10 +500,11 @@ async function executeJob(job) {
   } finally {
     try {
       job.playlistTitle ||= inferPlaylistTitle(job);
+      if (!job.metadataOnly) await embedDownloadedArtwork(job);
       await refreshSongMetadata(job);
       job.updatedAt = new Date().toISOString();
       await persistJob({ ...job, status: completedStatus || job.status });
-      await refreshJobThumbnails(job);
+      await refreshJobThumbnails(job, job.files, { force: !job.metadataOnly });
       if (completedStatus) job.status = completedStatus;
     } finally {
       runningJobsCount = Math.max(0, runningJobsCount - 1);

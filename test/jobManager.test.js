@@ -14,6 +14,10 @@ import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { createHash } from 'node:crypto';
+import { fileTypeFromBuffer } from 'file-type';
+import { readSongArtwork } from '../src/music.js';
+import { removeSongThumbnail } from '../src/artworkThumbnails.js';
 
 const fixtureCleanups = new WeakMap();
 let fixtureDirectory;
@@ -313,6 +317,95 @@ for (const metadataOnly of [false, true]) {
       assert.ok(args.includes('--download-archive'));
       assert.equal(args.at(-1), url);
     }
+  });
+}
+
+for (const downloadType of ['audio', 'video']) {
+  test(`downloaded artwork populates AVIF thumbnails and preserves media for ${downloadType} jobs`, async (context) => {
+    const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
+    const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
+    const executable = path.join(bin, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+    try { await fs.access(executable); }
+    catch { context.skip('FFmpeg runtime is not installed'); return; }
+    const sourceExtension = downloadType === 'audio' ? 'png' : 'avif';
+    const source = downloadType === 'audio'
+      ? childProcess.execFileSync(executable, ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180',
+        '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1'])
+      : await fs.readFile(new URL('../src/assets/audio-thumbnail.avif', import.meta.url));
+    const payload = Buffer.from('downloaded media payload');
+    const name = `Downloaded.${downloadType === 'audio' ? 'mp3' : 'mp4'}`;
+    const custom = NodeID3.write({ title: 'Custom title', image: { mime: `image/${sourceExtension}`, type: { id: 3 }, imageBuffer: source } }, payload);
+    const cachedFiles = [];
+    const calls = [];
+    fixtureCleanups.set(context, async () => {
+      for (const filePath of cachedFiles) await removeSongThumbnail(filePath);
+    });
+    const spawnMock = context.mock.method(childProcess, 'spawn', (command, args) => {
+      calls.push(args);
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      process.nextTick(async () => {
+        try {
+          if (args.includes('--dump-single-json')) child.stdout.end(JSON.stringify({ title: 'Download artwork' }));
+          else {
+            const outputDir = path.dirname(args[args.indexOf('--output') + 1]);
+            const artworkTemplate = args.find((argument) => argument.startsWith('thumbnail:'));
+            assert.ok(args.includes('--write-thumbnail'));
+            assert.ok(args.includes('--no-write-playlist-metafiles'));
+            assert.ok(artworkTemplate);
+            const artworkDir = path.dirname(artworkTemplate.slice('thumbnail:'.length));
+            assert.equal(artworkDir, path.join(outputDir, '.thumbnails'));
+            await fs.mkdir(artworkDir, { recursive: true });
+            await fs.writeFile(path.join(artworkDir, `Downloaded.${sourceExtension}`), source);
+            if (!await fs.stat(path.join(outputDir, name)).catch(() => null)) {
+              await fs.writeFile(path.join(outputDir, name), downloadType === 'audio'
+                ? NodeID3.write({ title: 'Original title', artist: 'Original artist', unsynchronisedLyrics: { language: 'eng', text: 'Keep lyrics' } }, payload)
+                : payload);
+              if (downloadType === 'audio') {
+                await fs.writeFile(path.join(outputDir, 'Custom.mp3'), custom);
+                await fs.writeFile(path.join(artworkDir, `Custom.${sourceExtension}`), source);
+                await fs.writeFile(path.join(outputDir, 'Uncovered.mp3'), payload);
+              }
+            }
+          }
+          child.emit('close', 0);
+        } catch (error) { child.emit('error', error); }
+      });
+      return child;
+    });
+    syncBuiltinESMExports();
+    context.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
+    const manager = await import(`../src/jobManager.js?downloaded-artwork=${downloadType}`);
+    const owner = { id: 'owner', role: 'user' };
+    const job = await manager.createJob('https://www.youtube.com/watch?v=cMoRYP8EDUk', owner, { downloadType });
+    await waitForJobToFinish(job);
+    const filePath = await fs.realpath(path.join(job.outputDir, name));
+    cachedFiles.push(...await Promise.all(job.files.map((file) => fs.realpath(path.join(job.outputDir, file)))));
+    assert.equal(job.status, 'completed', job.error);
+    assert.deepEqual(job.files, downloadType === 'audio' ? ['Custom.mp3', name, 'Uncovered.mp3'] : [name]);
+    const cacheDirectory = path.resolve('data', 'artwork-thumbnails', createHash('sha256').update(filePath).digest('hex'));
+    const [cached] = await fs.readdir(cacheDirectory);
+    assert.match(cached, /^[a-f0-9]{64}\.avif$/);
+    assert.equal((await fileTypeFromBuffer(await fs.readFile(path.join(cacheDirectory, cached)))).mime, 'image/avif');
+    const downloaded = await fs.readFile(filePath);
+    if (downloadType === 'audio') {
+      const image = await readSongArtwork(filePath);
+      assert.equal(image.mime, 'image/avif');
+      assert.equal((await fileTypeFromBuffer(image.imageBuffer)).mime, 'image/avif');
+      assert.deepEqual(NodeID3.removeTagsFromBuffer(downloaded), payload);
+      const tags = NodeID3.read(downloaded);
+      assert.equal(tags.title, 'Original title');
+      assert.equal(tags.artist, 'Original artist');
+      assert.equal(tags.unsynchronisedLyrics.text, 'Keep lyrics');
+      assert.deepEqual(await fs.readFile(path.join(job.outputDir, 'Custom.mp3')), custom);
+      assert.equal(await readSongArtwork(path.join(job.outputDir, 'Uncovered.mp3')), null);
+    } else assert.deepEqual(downloaded, payload);
+    const rerun = await manager.rerunJob(job.id, owner);
+    await waitForJobToFinish(rerun);
+    assert.equal(rerun.status, 'completed', rerun.error);
+    assert.deepEqual(await fs.readFile(filePath), downloaded);
+    assert.equal(calls.length, 4);
   });
 }
 

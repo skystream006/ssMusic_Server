@@ -64,6 +64,28 @@ export function encodeVideoThumbnail(filePath) {
     '-i', path.resolve(filePath), '-map', '0:v:0', '-an', '-sn', '-dn'], undefined, true);
 }
 
+export async function readDownloadedArtwork(filePath) {
+  const directory = path.join(path.dirname(filePath), '.thumbnails');
+  const stem = path.basename(filePath, path.extname(filePath));
+  for (const extension of ['.avif', '.webp', '.jpg', '.jpeg', '.png']) {
+    const source = await fs.realpath(path.join(directory, `${stem}${extension}`)).catch(() => null);
+    if (!source || path.dirname(source) !== directory) continue;
+    const handle = await fs.open(source, 'r');
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || !stat.size || stat.size > 2 * 1024 * 1024) continue;
+      const imageBuffer = Buffer.alloc(stat.size);
+      const { bytesRead } = await handle.read(imageBuffer, 0, imageBuffer.length, 0);
+      if (bytesRead !== imageBuffer.length) continue;
+      const type = await fileTypeFromBuffer(imageBuffer).catch(() => null);
+      if (['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(type?.mime)) {
+        return { mime: type.mime, imageBuffer };
+      }
+    } finally { await handle.close(); }
+  }
+  return null;
+}
+
 export function createThumbnailCache({ root = path.resolve('data', 'artwork-thumbnails'),
   readArtwork = readSongArtwork, encode = encodeThumbnail, encodeVideo = encodeVideoThumbnail } = {}) {
   const pending = new Map();
@@ -93,8 +115,14 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
           if (cached) return cached.length ? cached : null;
         }
         let thumbnail;
-        if (mediaType(filePath) === 'video') thumbnail = await encodeVideo(filePath);
-        else {
+        if (mediaType(filePath) === 'video') {
+          const image = await readDownloadedArtwork(filePath).catch(() => null);
+          if (image) {
+            try { thumbnail = await encode(image); }
+            catch {}
+          }
+          if (!thumbnail) thumbnail = await encodeVideo(filePath);
+        } else {
           const image = await readArtwork(filePath);
           thumbnail = image ? await encode(image) : Buffer.alloc(0);
         }
@@ -157,8 +185,8 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
 const thumbnails = createThumbnailCache();
 export const readSongThumbnail = (filePath, options) => thumbnails.read(filePath, options);
 
-export async function refreshSongThumbnail(filePath) {
-  try { await readSongThumbnail(filePath); }
+export async function refreshSongThumbnail(filePath, options) {
+  try { await readSongThumbnail(filePath, options); }
   catch (error) { console.warn(`Unable to refresh album artwork thumbnail: ${error.message}`); }
 }
 
