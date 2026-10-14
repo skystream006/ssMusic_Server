@@ -956,7 +956,9 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       <button className="music-icon-button" type="button" title="Reorder playlists" aria-label="Reorder playlists" aria-pressed={reordering}
         disabled={!library || saving} onClick={() => { setReordering(!reordering); setSelectingPlaylists(false); setSelectedPlaylists(new Set()); }}><GripVertical size={19} /></button>
       <button className="music-icon-button" type="button" title="New playlist folder" aria-label="New playlist folder" disabled={!library || saving}
-        onClick={() => setFolderDialog({ folder: null, parentId: selected?.type === 'folder' ? selected.id : selected?.parentId || null })}><FolderPlus size={19} /></button></>}</div></div>
+        onClick={() => setFolderDialog({ folder: null, parentId: selected?.type === 'folder' ? selected.id : selected?.parentId || null })}><FolderPlus size={19} /></button>
+      <button className="music-icon-button" type="button" title="Add Playlist" aria-label="Add Playlist" disabled={!library || saving}
+        onClick={() => setAddingPlaylist(true)}><Plus size={19} /></button></>}</div></div>
     <label className="queue-search"><Search size={15} /><input type="search" aria-label="Search playlists" placeholder="Find a playlist" value={search} disabled={reordering} onChange={(event) => setSearch(event.target.value)} /></label>
     {selectingPlaylists && <div className="library-bulk-toolbar">
       <label><input className="library-select-checkbox" type="checkbox" aria-label="Select all matching playlists" disabled={saving}
@@ -978,8 +980,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       <div className="library-header-actions"><span className="library-save-status" role="status">{saving ? 'Saving...' : saved ? 'Saved' : `${jobs.length} playlists`}</span>
         <button className="music-icon-button" type="button" title="Refresh library" aria-label="Refresh library" disabled={saving} onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={18} /></button>
         {!readOnly && <><button className="music-icon-button" type="button" title="Import media" aria-label="Import media" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setImporting(true)}><Upload size={18} /></button>
-        <button className="secondary-button compact-button library-export-button" type="button" title="Export library" aria-label="Export library" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setExportingLibrary(true)}><Download size={17} />Export library</button>
-        <button className="primary-button compact-button" type="button" title="Add Playlist" aria-label="Add Playlist" disabled={!library || saving} onClick={() => setAddingPlaylist(true)}><Plus size={17} />Add Playlist</button></>}</div></header>
+        <button className="secondary-button compact-button library-export-button" type="button" title="Export library" aria-label="Export library" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setExportingLibrary(true)}><Download size={17} />Export library</button></>}</div></header>
     {(error || trackError) && <div className="notice error library-notice" role="alert">{error || trackError}<button className="music-icon-button" type="button" title="Retry" aria-label="Retry loading library" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={16} /></button></div>}
     {actionError && <div className="notice error library-notice" role="alert">{actionError}<button className="music-icon-button" type="button" title="Dismiss error" aria-label="Dismiss song error" onClick={() => setActionError('')}><X size={16} /></button></div>}
     {transcriptionNotice && <div className="notice success library-notice" role="status">{transcriptionNotice}<button className="music-icon-button" type="button" title="Dismiss" aria-label="Dismiss transcription notice" onClick={() => setTranscriptionNotice('')}><X size={16} /></button></div>}
