@@ -28,6 +28,7 @@ let LyricsEditor;
 let ExportLibraryDialog;
 let EditPlaylistDialog;
 let FolderDialog;
+let reorderPlaylistTracks;
 let ImportMusic;
 let canRunJobAction;
 let canChangePrivacy;
@@ -50,13 +51,29 @@ before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, PlaybackProvider, readPlaybackSession, writePlaybackSession, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
-  ({ ExportLibraryDialog, EditPlaylistDialog, FolderDialog } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
+  ({ ExportLibraryDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
   ({ UsernameForm, LibraryAccessList, SharedRegistrationFields, SettingsTabs, LinkedUsers, OrganizedSharedUsers, OrganizerControl } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('optimistic song reorders preserve page numbering and other playlists without mutating tracks', () => {
+  const files = ['First', 'Second', 'Third'].map((name, index) => Object.freeze({
+    jobId: 'job', playlistId: 'mix', name: `${name}.mp3`, orderNumber: 51 + index
+  }));
+  const other = Object.freeze({ jobId: 'other', playlistId: 'other', name: 'Other.mp3', orderNumber: 1 });
+  const original = Object.freeze([files[0], other, files[1], files[2]]);
+  const moved = reorderPlaylistTracks(original, { ...files[0], target: JSON.stringify(['job', 'Third.mp3']), after: true });
+  assert.deepEqual(moved.map((track) => track.name), ['Second.mp3', 'Other.mp3', 'Third.mp3', 'First.mp3']);
+  assert.deepEqual(moved.map((track) => track.orderNumber), [51, 1, 52, 53]);
+  assert.equal(moved[1], other);
+  const restored = reorderPlaylistTracks(moved, { ...files[0], target: JSON.stringify(['job', 'Second.mp3']), after: false });
+  assert.deepEqual(restored, original);
+  assert.equal(reorderPlaylistTracks(original, { ...files[0], target: 'missing', after: true }), original);
+  assert.equal(reorderPlaylistTracks(original, { ...files[0], target: JSON.stringify(['job', 'First.mp3']), after: true }), original);
+});
 
 test('playback session restores the selected song and playlist queue after refresh, isolated by user and URL', () => {
   const values = new Map();

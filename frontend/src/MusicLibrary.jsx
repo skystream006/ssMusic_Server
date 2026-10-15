@@ -13,6 +13,24 @@ import { sortSelectOptions } from './selectOptions.js';
 const backupWeekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
   .map((label, value) => ({ label, value }));
 
+export function reorderPlaylistTracks(files, move) {
+  const playlist = files.filter((track) => track.playlistId === move.playlistId);
+  const from = playlist.findIndex((track) => songKey(track) === songKey(move));
+  const target = playlist.findIndex((track) => songKey(track) === move.target);
+  if (from < 0 || target < 0 || from === target) return files;
+  const numbers = playlist.map((track) => track.orderNumber);
+  const [moved] = playlist.splice(from, 1);
+  const destination = playlist.findIndex((track) => songKey(track) === move.target) + (move.after ? 1 : 0);
+  playlist.splice(destination, 0, moved);
+  let index = 0;
+  return files.map((track) => {
+    if (track.playlistId !== move.playlistId) return track;
+    const reordered = { ...playlist[index], orderNumber: numbers[index] };
+    index += 1;
+    return reordered;
+  });
+}
+
 export function ExportLibraryDialog({ request, onClose }) {
   const dialogRef = useRef(null);
   const headingId = useId();
@@ -438,6 +456,10 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const songMutations = useRef(new Set());
   const savingRef = useRef(false);
   const mutationRef = useRef(0);
+  const libraryVersion = useRef(0);
+  const songReorders = useRef([]);
+  const reorderSave = useRef(null);
+  libraryVersion.current = Math.max(libraryVersion.current, library?.version || 0);
   const entries = library?.entries || [];
   const jobs = library?.playlists || library?.jobs || [];
   const entryMap = new Map(entries.map((entry) => [entry.id, entry]));
@@ -518,7 +540,8 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       ...(paginated ? { page: trackPage, pageSize: trackPageSize, search: debouncedTrackSearch } : {}) });
     request(`/api/library/tracks?${query}`, { signal: controller.signal }).then((result) => {
       if (active) {
-        setTrackResult({ ...result, selectedId, sort: trackSort, search: debouncedTrackSearch });
+        const files = trackSort === 'order' ? songReorders.current.reduce(reorderPlaylistTracks, result.files) : result.files;
+        setTrackResult({ ...result, files, selectedId, sort: trackSort, search: debouncedTrackSearch });
         if (paginated && result.page !== trackPage) setTrackPage(result.page);
       }
     }).catch((loadError) => { if (active) setTrackError(loadError.message); })
@@ -628,7 +651,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       setActionError('');
       setDeletedSongNames([]);
       await persistLibrary('/api/library/songs/remove', 'POST', {
-        version: library.version, jobId: track.jobId, name: track.name, playlistId: track.playlistId
+        version: libraryVersion.current, jobId: track.jobId, name: track.name, playlistId: track.playlistId
       }, (result) => {
         if (result.fileDeleted) {
           setRemovedSong({ key });
@@ -699,8 +722,11 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     setSaved(false);
     setError('');
     try {
+      const version = libraryVersion.current;
+      await reorderSave.current;
       const result = await request(endpoint, {
-        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        method, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, version: body.version === version ? libraryVersion.current : body.version })
       });
       setLibrary((current) => ({ ...current, ...result }));
       onSaved?.(result);
@@ -716,7 +742,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
 
   function saveEntry(changes) {
     return persistLibrary('/api/library/entries', 'POST', {
-      version: library.version, ...changes
+      version: libraryVersion.current, ...changes
     });
   }
 
@@ -777,7 +803,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   function moveSong(track, playlistId) {
     if (!playlistId) { setMovingSong(track); return; }
     return persistLibrary('/api/library/songs/move', 'POST', {
-      version: library.version, jobId: track.jobId, name: track.name, sourcePlaylistId: track.playlistId, playlistId
+      version: libraryVersion.current, jobId: track.jobId, name: track.name, sourcePlaylistId: track.playlistId, playlistId
     });
   }
 
@@ -865,16 +891,43 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   }
 
   function reorderSong(track, target) {
-    if (trackSort !== 'order' || !tracks || tracksLoading || allMusic || savingRef.current) return;
+    if (readOnly || trackSort !== 'order' || !tracks || tracksLoading || allMusic || savingRef.current) return;
     const playlistTracks = tracks.filter((item) => item.playlistId === track.playlistId);
     const names = playlistTracks.map(songKey);
     const from = names.indexOf(songKey(track));
     const destination = typeof target === 'number' ? from + target : names.indexOf(target);
     if (from < 0 || destination < 0 || destination >= names.length || from === destination) return;
-    void persistLibrary('/api/library/songs/reorder', 'POST', {
-      version: library.version, playlistId: track.playlistId, jobId: track.jobId, name: track.name,
+    const move = {
+      playlistId: track.playlistId, jobId: track.jobId, name: track.name,
       target: names[destination], after: from < destination
-    });
+    };
+    mutationRef.current += 1;
+    songReorders.current.push(move);
+    setTrackResult((current) => current ? { ...current, files: reorderPlaylistTracks(current.files, move) } : current);
+    setError('');
+    setActionError('');
+    setSaved(false);
+    if (!reorderSave.current) reorderSave.current = saveSongReorders();
+  }
+
+  async function saveSongReorders() {
+    try {
+      while (songReorders.current.length) {
+        const result = await request('/api/library/songs/reorder', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...songReorders.current[0], version: libraryVersion.current })
+        });
+        libraryVersion.current = Math.max(libraryVersion.current, result.version);
+        songReorders.current.shift();
+      }
+      setSaved(true);
+    } catch (saveError) {
+      songReorders.current = [];
+      setActionError(`Unable to save song order: ${saveError.message}`);
+      setRefresh((value) => value + 1);
+    } finally {
+      reorderSave.current = null;
+    }
   }
 
   function entryTitle(entry) { return entry.type === 'folder' ? entry.name : jobMap.get(entry.id)?.playlistTitle || 'Preparing playlist'; }
@@ -970,7 +1023,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         checked={entries.some((entry) => entry.type === 'playlist' && matches(entry)) && entries.filter((entry) => entry.type === 'playlist' && matches(entry)).every((entry) => selectedPlaylists.has(entry.id))}
         onChange={(event) => { const checked = event.target.checked; setSelectedPlaylists((current) => { const next = new Set(current); for (const entry of entries.filter((item) => item.type === 'playlist' && matches(item))) { if (checked) next.add(entry.id); else next.delete(entry.id); } return next; }); }} /><span>{playlistSelection.length} selected</span></label>
       <button className="music-icon-button" type="button" title="Move selected playlists to folder" aria-label="Move selected playlists to folder" disabled={saving || !playlistSelection.length}
-        onClick={() => setBulkDialog({ type: 'playlists', version: library.version, ids: playlistSelection.map((entry) => entry.id) })}><ArrowRightLeft size={18} /></button>
+        onClick={() => setBulkDialog({ type: 'playlists', version: libraryVersion.current, ids: playlistSelection.map((entry) => entry.id) })}><ArrowRightLeft size={18} /></button>
       <button className="music-icon-button" type="button" title="Clear playlist selection" aria-label="Clear playlist selection" disabled={saving} onClick={() => setSelectedPlaylists(new Set())}><X size={18} /></button>
     </div>}
     <button className={`all-music ${selectedId === null ? 'is-selected' : ''}`} type="button" aria-current={selectedId === null ? 'true' : undefined} onClick={() => selectEntry(null)}><Library size={18} /><span>All music</span><small>{library?.songCount ?? 0}</small></button>
@@ -1001,7 +1054,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       songSelection: !readOnly && selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),
         remove: removeSelectedSongs, canRemove: songSelection.length > 0 && songSelection.every((track) => !songState(track).disabled),
-        transfer: (action) => setBulkDialog({ type: 'songs', action, version: library.version, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,
+        transfer: (action) => setBulkDialog({ type: 'songs', action, version: libraryVersion.current, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,
       songState, transcriptionActive, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
       onReplaceFile: setReplacingFile, onShareMedia: setSharingFile, onChangePrivacy: changeFilePrivacy,
       onMetadataSaved: metadataSaved, onRatingError: setActionError,
