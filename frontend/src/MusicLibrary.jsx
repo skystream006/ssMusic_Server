@@ -499,8 +499,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       } catch (loadError) { if (active) setError(loadError.message); }
     };
     load();
-    const timer = window.setInterval(load, 10000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; };
   }, [request, refresh, owner?.id]);
 
   useEffect(() => {
