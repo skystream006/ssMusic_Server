@@ -543,10 +543,13 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     const key = songKey(track);
     const transcription = pendingTranscriptions[key] || track.transcription || job?.transcriptions?.[track.name];
     const canModify = !readOnly && canModifyJob(user, job);
-    return { canModify, canChangePrivacy: canChangePrivacy(user, job, readOnly), privacy: getFilePrivacy(track, job),
+    const canRate = canModify || user.role === 'shared';
+    const busy = ['queued', 'running'].includes(job?.status)
+      || songMutations.current.has(key) || transcription?.status === 'sent';
+    return { canModify, canRate, ratingDisabled: !canRate || busy,
+      canChangePrivacy: canChangePrivacy(user, job, readOnly), privacy: getFilePrivacy(track, job),
       transcription, deleting: Boolean(deletingFiles[key]),
-      disabled: !canModify || ['queued', 'running'].includes(job?.status)
-        || songMutations.current.has(key) || transcription?.status === 'sent' };
+      disabled: !canModify || busy };
   }
 
   async function savePrivacy(endpoint, isPrivate) {

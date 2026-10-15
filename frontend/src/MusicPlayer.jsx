@@ -573,8 +573,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                   <TranscriptionStatus transcription={action.transcription} /></span>
               </button></div>
               <button className="song-playlist" type="button" title={track.playlistTitle} onClick={() => libraryView.onSelect(track.playlistId)}>{track.playlistTitle}</button>
-              <ListSongRating file={track} jobId={track.jobId} request={request} canModify={action.canModify}
-                disabled={action.disabled || libraryView.saving}
+              <ListSongRating file={track} jobId={track.jobId} request={request} canModify={action.canRate ?? action.canModify}
+                disabled={(action.ratingDisabled ?? action.disabled) || libraryView.saving}
                 onSaved={(result) => libraryView.onMetadataSaved(track, result)} onError={libraryView.onRatingError} />
               <SongActions name={track.name} className="song-order-actions">
                 <KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} showLabel />

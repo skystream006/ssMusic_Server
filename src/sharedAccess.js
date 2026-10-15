@@ -4,7 +4,9 @@ import { entryVisibilitySql, fileVisibilitySql, visibleJob } from './privacy.js'
 export function restrictSharedAccess(req, res, next) {
   const pathname = req.path.replace(/\/+$/, '').toLowerCase();
   const user = pathname.startsWith('/api/auth/') ? req.sessionUser || req.user : req.user;
-  if (user && !['GET', 'HEAD'].includes(req.method)) {
+  const sharedRating = user?.role === 'shared' && req.method === 'PATCH'
+    && /^\/api\/jobs\/[^/]+\/files\/[^/]+\/metadata$/.test(pathname);
+  if (user && !['GET', 'HEAD'].includes(req.method) && !sharedRating) {
     const targets = pathname === '/api/library' || pathname.startsWith('/api/library/')
       ? [req.query.userId, pathname.startsWith('/api/library/backup') ? undefined : req.body?.userId]
       : pathname.startsWith('/api/jobs/') ? [req.query.userId] : [];
@@ -20,7 +22,7 @@ export function restrictSharedAccess(req, res, next) {
     || /^\/api\/jobs\/[^/]+\/(stream|download|lyrics|artwork)\/[^/]+$/.test(pathname));
   const themePreferences = req.method === 'PUT' && pathname === '/api/preferences';
   const ownUsername = req.method === 'PATCH' && pathname === '/api/auth/me';
-  if (authentication || reading || themePreferences || ownUsername) return next();
+  if (authentication || reading || themePreferences || ownUsername || sharedRating) return next();
   return res.status(403).json({ error: 'Shared accounts have read-only access to granted libraries' });
 }
 

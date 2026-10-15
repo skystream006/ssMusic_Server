@@ -902,11 +902,13 @@ reassignment clears existing library grants. **Administrator managed** retains t
 admin-only grant workflow, allowing any approved User or Admin library.
 
 Shared users can switch between their granted
-libraries, browse playlists, play media, read lyrics, view song metadata, and download individual songs.
+libraries, browse playlists, play media, read lyrics, view song metadata, update or clear
+MP3 ratings, and download individual songs. Rating changes are saved to the song and
+visible to everyone with access, not stored as personal ratings.
 Shared users can see their granted library owners under **User settings > Library access**.
 They cannot access health metrics or run health polling. They can change their own
 username, color theme, and light/dark appearance. They cannot change
-libraries, jobs, metadata, ratings, other users' preferences, credentials,
+libraries, jobs, other metadata, other users' preferences, credentials,
 or access grants, create exports/backups, or browse the Jobs dashboard. Login and
 logout remain available. Restrictions apply to cookies, bearer sessions, and PATs.
 No grants means no library access. Removing a grant immediately blocks subsequent

@@ -346,6 +346,9 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal((await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: 'true' })).status, 400);
     const changed = await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: true });
     assert.equal(changed.status, 200, changed.text);
+    for (const name of ['secret-file.mp3', '[NoVocals]/secret-file.mp3']) {
+      assert.equal((await call(`/api/jobs/playlist/files/${encodeURIComponent(name)}/metadata`, headers.Reader, 'PATCH', { rating: 5 })).status, 403);
+    }
     for (const auth of [headers.Admin, headers.Contributor, headers.Linked, headers.Reader, keyHeaders]) {
       for (const action of ['stream', 'download', 'lyrics', 'artwork']) {
         const denied = await call(`/api/jobs/playlist/${action}/secret-file.mp3`, auth);
@@ -387,6 +390,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     }
     const changed = await call('/api/library/playlists/playlist/privacy', headers.Owner, 'PATCH', { private: true });
     assert.equal(changed.status, 200, changed.text);
+    assert.equal((await call('/api/jobs/playlist/files/open.mp3/metadata', headers.Reader, 'PATCH', { rating: 5 })).status, 403);
     for (const auth of [headers.Admin, headers.Contributor, headers.Linked, keyHeaders]) {
       assert.equal((await call('/api/jobs/playlist/stream/open.mp3', auth)).status, 404);
     }

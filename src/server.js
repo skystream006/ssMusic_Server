@@ -611,6 +611,7 @@ app.get('/api/jobs/:id/lyrics/:name', async (req, res) => {
 
 app.patch('/api/jobs/:id/files/:name/metadata', async (req, res) => {
   try {
+    if (req.user.role === 'shared' && req.query.userId !== undefined) await resolveRequestedFile(req, isSongFile);
     const metadata = await setSongMetadata(req.params.id, req.params.name, req.body, req.user);
     if (!metadata) return res.status(404).json({ error: 'Job not found' });
     return res.json(metadata);

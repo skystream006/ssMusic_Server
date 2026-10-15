@@ -238,7 +238,8 @@ export function ListSongRating({ file, jobId, request, canModify, disabled, onSa
     setSaving(true);
     onError('');
     try {
-      const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/metadata`, {
+      const query = file.libraryOwnerId ? `?${new URLSearchParams({ userId: file.libraryOwnerId })}` : '';
+      const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(file.name)}/metadata${query}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rating: nextRating })
       });
       setRating(result.rating);

@@ -13,6 +13,7 @@ import { encodeThumbnail, readDownloadedArtwork, refreshSongThumbnail, removeSon
 import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
 import { attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
+import { canReadSharedSong } from './sharedAccess.js';
 
 const jobs = new Map();
 const jobMutations = new Set();
@@ -895,7 +896,14 @@ async function executeTranscription(job, fileName, options, transcription, user)
 export async function setSongMetadata(id, fileName, value, user = null) {
   const storedJob = await getJob(id);
   if (!storedJob) return null;
-  await assertCanModifyJob(storedJob, user, true, fileName);
+  if (user?.role === 'shared') {
+    if (!value || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'rating')
+      || !await canReadSharedSong(user.id, id, fileName)) {
+      throw Object.assign(new Error('Shared accounts can only update ratings for granted songs'), { statusCode: 403 });
+    }
+  } else {
+    await assertCanModifyJob(storedJob, user, true, fileName);
+  }
   const job = transcriptionQueues.get(id)?.job || storedJob;
   assertJobIsIdle(job, 'edit metadata for', true);
   if (transcriptionQueues.get(id)?.files.has(fileName) || deletingFiles.has(id)) {

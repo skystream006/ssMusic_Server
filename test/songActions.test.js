@@ -847,6 +847,28 @@ test('list song ratings respect edit permission, busy files and supported format
   }
 });
 
+test('Shared rating permission enables stars without enabling other read-only row mutations', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    for (const canRate of [true, false]) {
+      for (const ratingDisabled of [true, false]) {
+        const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+          libraryView: { readOnly: true, tracks: [{ jobId: 'job', name: 'Song.mp3', rating: 3 }], title: 'Playlist', selectedId: 'playlist',
+            songState: () => ({ canModify: false, disabled: true, canRate, ratingDisabled }) }
+        })));
+        const stars = html.match(/<button[^>]*aria-label="[1-5] of 5 stars"[^>]*>/g) || [];
+        assert.equal(stars.length, canRate ? 5 : 0);
+        assert.equal(stars.filter((button) => button.includes('disabled=""')).length, canRate && ratingDisabled ? 5 : 0);
+        assert.doesNotMatch(html, /aria-label="(?:Drag|Move|Transcribe|Delete|Edit metadata|Replace File|Select songs)/);
+      }
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
 test('media import offers audio and movie uploads to playlists', () => {
   const html = renderToStaticMarkup(createElement(ImportMusic, { request() {}, onClose() {}, onImported() {} }));
   assert.match(html, />Import media<\/h2>/);
