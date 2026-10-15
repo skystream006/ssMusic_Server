@@ -856,6 +856,10 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await call('/api/jobs/music/files', 'GET', credentials.Owner[0])).body.files
     .find((file) => file.name === decodeURIComponent(encodedSong)).transcriptionLocked, true);
   assert.equal((await call(lockRoute, 'PATCH', credentials.Owner[0], { transcriptionLocked: false })).status, 200);
+  const metadataServerExited = once(server, 'exit');
+  server.kill();
+  await metadataServerExited;
+  await startServer();
   const contributorRoute = '/api/jobs/shared/contributors';
   assert.equal((await call(`${contributorRoute}/users`)).status, 401);
   assert.equal((await call(contributorRoute, 'PUT', {}, { userIds: [] })).status, 401);

@@ -378,6 +378,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const lyricsOverlayRef = useRef(null);
   const lyricsButtonRef = useRef(null);
   const lines = lyricsLoaded ? metadata?.sylt || [] : [];
+  const artwork = metadata?.artwork === undefined ? song?.artworkUrl : metadata.artwork;
   const requestedSong = new URLSearchParams(window.location.search).get('song');
   const requestedPlay = new URLSearchParams(window.location.search).get('play') === '1';
   const libraryScope = libraryView?.queueScope ?? libraryView?.selectedId;
@@ -627,7 +628,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         </section>
       </div>}
       <footer className="player-dock" aria-label="Music playback" ref={dockRef}>
-        <div className="dock-track"><div className={`dock-artwork ${playing && !isVideo ? 'is-playing' : ''}`}>{isVideo ? <Film size={30} /> : metadata?.artwork ? <img src={metadata.artwork} alt="Album cover" /> : <Disc3 size={30} />}</div>
+        <div className="dock-track"><div className={`dock-artwork ${playing && !isVideo ? 'is-playing' : ''}`}>{isVideo ? <Film size={30} /> : artwork ? <img src={artwork} alt="Album cover" /> : <Disc3 size={30} />}</div>
           <div><strong>{metadata?.title || song?.name.split('/').at(-1).replace(/\.[^.]+$/, '') || 'Nothing playing'}</strong><small>{metadata?.artist || song?.playlistTitle || 'ssMusic Player'}</small></div><KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} /></div>
         <div className="dock-controls"><div className="dock-transport">
           <button className="music-icon-button" type="button" title={shuffleLabel} aria-label="Shuffle" aria-pressed={shuffle} onClick={() => setShuffle((current) => !current)}><Shuffle size={17} /></button>
@@ -661,7 +662,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     {song && <>
       <section className="now-playing" aria-label="Now playing">
         <div className={`music-artwork ${playing ? 'is-playing' : ''}`}>
-          {song.artworkUrl ? <img src={song.artworkUrl} alt={`${metadata?.album || song.title || song.name} cover`} /> : <div className="record-art"><Disc3 size={60} strokeWidth={1.2} /></div>}
+          {artwork ? <img src={artwork} alt={`${metadata?.album || song.title || song.name} cover`} /> : <div className="record-art"><Disc3 size={60} strokeWidth={1.2} /></div>}
         </div>
         <div className="playback-main">
           <div className="track-heading"><div><span>{song.name.startsWith('[NoVocals]/') ? 'NoVocals' : 'Original'}</span>

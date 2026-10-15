@@ -88,7 +88,8 @@ test('playback session restores the selected song and playlist queue after refre
 
 test('restored playback does not open or render lyrics before a viewer requests them', () => {
   const previousWindow = globalThis.window;
-  const song = { jobId: 'job', name: 'Song.mp3', title: 'Song', artist: 'Artist', streamUrl: '/stream/song' };
+  const song = { jobId: 'job', name: 'Song.mp3', title: 'Song', artist: 'Artist',
+    streamUrl: '/stream/song', artworkUrl: '/artwork/song' };
   globalThis.window = {
     location: { pathname: '/', search: '' },
     sessionStorage: { getItem: () => JSON.stringify({ url: '/', songs: [song], selected: JSON.stringify(['job', 'Song.mp3']) }) }
@@ -98,6 +99,7 @@ test('restored playback does not open or render lyrics before a viewer requests 
       userId: 'viewer', request() { assert.fail('Rendering does not request lyrics'); }
     }, createElement(MusicPlayer, { id: 'job' })));
     assert.match(html, /Show lyrics/);
+    assert.match(html, /src="\/artwork\/song" alt="Album cover"/);
     assert.doesNotMatch(html, /class="music-lyrics"|Loading lyrics|No SYLT lyrics embedded/);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
