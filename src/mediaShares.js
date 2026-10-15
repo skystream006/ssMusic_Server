@@ -10,7 +10,7 @@ import { individualPlaylistNames } from './library.js';
 import { entryVisibilitySql, fileVisibilitySql, jobVisibilitySql } from './privacy.js';
 
 const metadataFields = ['title', 'artist', 'album', 'performerInfo', 'genre', 'year',
-  'trackNumber', 'partOfSet', 'rating', 'artwork', 'sylt', 'uslt'];
+  'trackNumber', 'partOfSet', 'rating', 'artwork'];
 const unavailable = () => Object.assign(new Error('Shared song not found'), { statusCode: 404 });
 const playlistUnavailable = () => Object.assign(new Error('Shared playlist not found'), { statusCode: 404 });
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
@@ -240,7 +240,7 @@ export function publicMediaRouter() {
         const url = `/api/public/playlists/${req.params.token}/tracks/${row.id}`;
         return { id: row.id, name: path.basename(row.name), title: metadata.title || null,
           artist: metadata.artist || null, album: metadata.album || null,
-          metadataUrl: url, streamUrl: `${url}/stream`, downloadUrl: `${url}/download` };
+          metadataUrl: url, lyricsUrl: `${url}/lyrics`, streamUrl: `${url}/stream`, downloadUrl: `${url}/download` };
       }) });
     } catch { return res.status(404).json({ error: 'Shared playlist not found' }); }
   });
@@ -250,35 +250,38 @@ export function publicMediaRouter() {
       url: (req) => `/api/public/playlists/${req.params.token}/tracks/${req.params.trackId}` }
   ];
   for (const source of sources) {
-    router.get(source.route, async (req, res) => {
-      if (metadataInFlight >= 4) {
-        return res.set('Retry-After', '1').status(503).json({ error: 'Shared song metadata is busy. Please retry.' });
-      }
-      metadataInFlight += 1;
-      let extractionDone = false;
-      let released = false;
-      const release = () => {
-        if (!released && extractionDone && (res.writableFinished || res.destroyed)) {
-          released = true;
-          metadataInFlight -= 1;
+    for (const includeLyrics of [false, true]) {
+      router.get(`${source.route}${includeLyrics ? '/lyrics' : ''}`, async (req, res) => {
+        if (metadataInFlight >= 4) {
+          return res.set('Retry-After', '1').status(503).json({ error: 'Shared song metadata is busy. Please retry.' });
         }
-      };
-      res.once('finish', release);
-      res.once('close', release);
-      try {
-        const song = await source.resolve(req);
-        const metadata = await readSongMetadata(song.filePath, { bounded: true });
-        const url = source.url(req);
-        res.json({
-          ...Object.fromEntries(metadataFields.map((field) => [field, metadata[field]])),
-          name: song.name, sizeBytes: song.sizeBytes, streamUrl: `${url}/stream`, downloadUrl: `${url}/download`
-        });
-      } catch { notFound(req, res); }
-      finally {
-        extractionDone = true;
-        release();
-      }
-    });
+        metadataInFlight += 1;
+        let extractionDone = false;
+        let released = false;
+        const release = () => {
+          if (!released && extractionDone && (res.writableFinished || res.destroyed)) {
+            released = true;
+            metadataInFlight -= 1;
+          }
+        };
+        res.once('finish', release);
+        res.once('close', release);
+        try {
+          const song = await source.resolve(req);
+          const metadata = await readSongMetadata(song.filePath, { bounded: true, includeLyrics });
+          const url = source.url(req);
+          res.json(includeLyrics ? { sylt: metadata.sylt, uslt: metadata.uslt } : {
+            ...Object.fromEntries(metadataFields.map((field) => [field, metadata[field]])),
+            name: song.name, sizeBytes: song.sizeBytes, lyricsUrl: `${url}/lyrics`,
+            streamUrl: `${url}/stream`, downloadUrl: `${url}/download`
+          });
+        } catch { notFound(req, res); }
+        finally {
+          extractionDone = true;
+          release();
+        }
+      });
+    }
     for (const action of ['stream', 'download']) {
       router.get(`${source.route}/${action}`, async (req, res) => {
         try {

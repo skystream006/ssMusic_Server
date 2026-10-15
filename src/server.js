@@ -594,12 +594,12 @@ app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
   }
 });
 
-app.get('/api/jobs/:id/lyrics/:name', async (req, res) => {
+const songMetadataHandler = (includeLyrics) => async (req, res) => {
   try {
     const filePath = await resolveRequestedFile(req, isSongFile);
     const job = await getJob(req.params.id);
     res.set('Cache-Control', 'no-store');
-    return res.json({ ...await readSongMetadata(filePath),
+    return res.json({ ...await readSongMetadata(filePath, { includeLyrics }),
       transcriptionLocked: Boolean(job.songMetadata?.[req.params.name]?.transcriptionLocked),
       canEdit: Boolean(req.user.role !== 'shared' && (req.query.userId === undefined || req.query.userId === req.user.id) && /\.mp3$/i.test(req.params.name)
         && (req.user.role === 'admin' || req.user.id === job.initiatedBy?.id || job.contributors?.some((user) => user.id === req.user.id))
@@ -607,7 +607,10 @@ app.get('/api/jobs/:id/lyrics/:name', async (req, res) => {
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
-});
+};
+
+app.get('/api/jobs/:id/lyrics/:name', songMetadataHandler(true));
+app.get('/api/jobs/:id/files/:name/metadata', songMetadataHandler(false));
 
 app.patch('/api/jobs/:id/files/:name/metadata', async (req, res) => {
   try {

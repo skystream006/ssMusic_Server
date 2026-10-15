@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -83,6 +84,37 @@ test('playback session restores the selected song and playlist queue after refre
   Object.defineProperty(browser, 'sessionStorage', { get() { throw new Error('Storage blocked'); } });
   assert.equal(readPlaybackSession('user', browser), null);
   assert.doesNotThrow(() => writePlaybackSession('user', songs, selected, scope, browser));
+});
+
+test('restored playback does not open or render lyrics before a viewer requests them', () => {
+  const previousWindow = globalThis.window;
+  const song = { jobId: 'job', name: 'Song.mp3', title: 'Song', artist: 'Artist', streamUrl: '/stream/song' };
+  globalThis.window = {
+    location: { pathname: '/', search: '' },
+    sessionStorage: { getItem: () => JSON.stringify({ url: '/', songs: [song], selected: JSON.stringify(['job', 'Song.mp3']) }) }
+  };
+  try {
+    const html = renderToStaticMarkup(createElement(PlaybackProvider, {
+      userId: 'viewer', request() { assert.fail('Rendering does not request lyrics'); }
+    }, createElement(MusicPlayer, { id: 'job' })));
+    assert.match(html, /Show lyrics/);
+    assert.doesNotMatch(html, /class="music-lyrics"|Loading lyrics|No SYLT lyrics embedded/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test('music-page sharing loads once and metadata viewing uses the lyric-free endpoint', async () => {
+  const shared = await fs.readFile(new URL('../frontend/src/SharedLibraries.jsx', import.meta.url), 'utf8');
+  assert.match(shared, /request\('\/api\/library\/shared-users'\)/);
+  assert.doesNotMatch(shared, /setInterval|setTimeout/);
+  const actions = await fs.readFile(new URL('../frontend/src/SongActions.jsx', import.meta.url), 'utf8');
+  assert.match(actions, /request\(file\.metadataUrl \|\| `\/api\/jobs\/.*\/files\/.*\/metadata`\)/);
+  assert.doesNotMatch(actions, /file\.lyricsUrl|\/lyrics\//);
+  const player = await fs.readFile(new URL('../frontend/src/MusicPlayer.jsx', import.meta.url), 'utf8');
+  assert.match(player, /if \(!lyricsViewers \|\| !song \|\| isVideo\) return;[\s\S]*?request\(song\.lyricsUrl/);
+  assert.match(player, /if \(panel !== 'lyrics'\) return;\s*setLyricsViewers/);
 });
 
 test('song search normalization folds Vietnamese accents and crossed D without changing literal search characters', () => {

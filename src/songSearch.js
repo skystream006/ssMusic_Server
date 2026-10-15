@@ -16,6 +16,7 @@ export function attachSearchKey(req, res, next) {
   const pathname = req.path.replace(/\/+$/, '').toLowerCase();
   const allowed = ['/api/songs/search', '/api/libraries', '/api/library', '/api/library/tracks'].includes(pathname)
     || /^\/api\/jobs\/[^/]+\/(stream|download|artwork|lyrics)\/[^/]+$/.test(pathname)
+    || /^\/api\/jobs\/[^/]+\/files\/[^/]+\/metadata$/.test(pathname)
     || /^\/api\/karaoke\/jobs\/[^/]+$/.test(pathname);
   const submittingVideo = req.method === 'POST' && pathname === '/api/karaoke/jobs';
   if (!submittingVideo && (!['GET', 'HEAD'].includes(req.method) || !allowed)) {
@@ -85,7 +86,7 @@ export async function searchSongs(req, res) {
       jobId: row.job_id, name: row.name, playlistTitle: row.playlist_title, readOnly: true,
       streamUrl: `${base}/stream/${name}`, downloadUrl: `${base}/download/${name}`,
       artworkUrl: `${base}/artwork/${name}${row.media_type === 'audio' ? '?fallback=1' : ''}`,
-      lyricsUrl: `${base}/lyrics/${name}`
+      lyricsUrl: `${base}/lyrics/${name}`, metadataUrl: `${base}/files/${name}/metadata`
     };
   });
   return res.json({ files, page, pageSize, total, totalPages });

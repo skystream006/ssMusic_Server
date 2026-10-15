@@ -31,11 +31,15 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
   const credentials = {};
   for (const name of ['Admin', 'Owner', 'Contributor', 'Other', 'Reader', 'Pending', 'Revoked', 'Deleted']) {
     let user = await store.registerUser(name, name, { id: name, publicKey: Buffer.from(name), counter: 0 });
-    if (!['Admin', 'Pending'].includes(name)) {
-      user = await store.updateUser(user.id, { status: name === 'Revoked' ? 'revoked' : 'approved' }, users.Admin.id);
+    if (name !== 'Admin') {
+      user = await store.updateUser(user.id, { status: 'approved' }, users.Admin.id);
     }
     users[name] = user;
     const session = await store.createSession(user.id);
+    if (['Pending', 'Revoked'].includes(name)) {
+      user = await store.updateUser(user.id, { status: name.toLowerCase() }, users.Admin.id);
+      users[name] = user;
+    }
     credentials[name] = [{ Cookie: `ssmusic_session=${session.token}` }, { Authorization: ['Bearer', session.token].join(' ') }];
     if (user.status === 'approved') {
       const pat = await store.createPrivateAccessToken(user.id, 'Song sharing tests');
@@ -146,7 +150,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     assert.ok(response.headers['content-security-policy']);
   }
   async function unavailable(token) {
-    for (const suffix of ['', '/stream', '/download']) {
+    for (const suffix of ['', '/lyrics', '/stream', '/download']) {
       const response = await call(`${mediaPath(token)}${suffix}`);
       assert.equal(response.status, 404, response.text);
       assert.deepEqual(response.body, { error: 'Shared song not found' });
@@ -285,6 +289,19 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     const metadata = await call(track.metadataUrl);
     assert.equal(metadata.status, 200, metadata.text);
     assert.equal(metadata.body.title, 'Shared song');
+    assert.equal(Object.hasOwn(metadata.body, 'sylt'), false);
+    assert.equal(Object.hasOwn(metadata.body, 'uslt'), false);
+    assert.equal(metadata.body.lyricsUrl, track.lyricsUrl);
+    assert.equal(track.lyricsUrl, `${track.metadataUrl}/lyrics`);
+    assert.ok(listing.body.tracks.every((item) => !Object.hasOwn(item, 'sylt') && !Object.hasOwn(item, 'uslt')));
+    const lyrics = await call(track.lyricsUrl);
+    assert.equal(lyrics.status, 200, lyrics.text);
+    assert.deepEqual(lyrics.body, { sylt: [{ time: 1, text: 'First line' }, { time: 2.5, text: 'Second line' }],
+      uslt: 'First line\nSecond line' });
+    privacyHeaders(lyrics);
+    assert.ok(lyrics.headers.ratelimit);
+    assert.equal((await call(track.lyricsUrl, 'POST')).status, 404);
+    assert.equal((await call(`${endpointPublic}/tracks/${'0'.repeat(64)}/lyrics`)).status, 404);
     assert.deepEqual((await call(track.downloadUrl)).buffer, audio);
     const partial = await call(track.streamUrl, 'GET', { Range: 'bytes=0-4' });
     assert.equal(partial.status, 206);
@@ -310,6 +327,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     assert.equal((await call(privacyPath, 'PATCH', ownerHeaders, { private: true })).status, 200);
     assert.equal((await call(endpointPublic)).status, 404);
     assert.equal((await call(track.streamUrl)).status, 404);
+    assert.equal((await call(track.lyricsUrl)).status, 404);
     assert.equal((await call(endpoint, 'POST', ownerHeaders)).status, 404);
     const privateLinks = (await call('/api/admin/media-shares', 'GET', credentials.Admin[0])).body;
     assert.ok(!privateLinks.shares.some((item) => item.id === hash(token)));
@@ -337,16 +355,18 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     await store.updateUser(creator.id, { status: 'revoked' }, users.Admin.id);
     assert.equal((await call(endpointPublic)).status, 404);
     assert.equal((await call(track.downloadUrl)).status, 404);
+    assert.equal((await call(track.lyricsUrl)).status, 404);
   });
   await context.test('public metadata is a flat allowlist and ignores missing, expired, malformed or shared authentication', async () => {
     await database.prepare('UPDATE sessions SET expires_at = $1 WHERE user_id = $2')
       .run('2000-01-01T00:00:00.000Z', users.Other.id);
-    const expected = { ...await readSongMetadata(path.join(job.outputDir, songName)),
+    const { sylt, uslt, ...details } = await readSongMetadata(path.join(job.outputDir, songName));
+    const expected = { ...details,
       name: songName, sizeBytes: audio.length, streamUrl: `${mediaPath(ownerToken)}/stream`,
-      downloadUrl: `${mediaPath(ownerToken)}/download` };
+      downloadUrl: `${mediaPath(ownerToken)}/download`, lyricsUrl: `${mediaPath(ownerToken)}/lyrics` };
     assert.equal(expected.rating, 4);
     assert.ok(expected.artwork.startsWith('data:image/png;base64,'));
-    assert.deepEqual(expected.sylt, [{ time: 1, text: 'First line' }, { time: 2.5, text: 'Second line' }]);
+    assert.deepEqual(sylt, [{ time: 1, text: 'First line' }, { time: 2.5, text: 'Second line' }]);
     for (const headers of [{}, credentials.Other[0], credentials.Reader[0],
       { Cookie: 'ssmusic_session=%broken' }, { Authorization: ['Bearer', 'invalid'].join(' '), 'X-PAT': 'invalid' }]) {
       const response = await call(mediaPath(ownerToken), 'GET', headers);
@@ -355,6 +375,12 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
       privacyHeaders(response);
       assert.ok(response.headers.ratelimit);
       assert.equal(response.headers['set-cookie'], undefined);
+      const lyrics = await call(expected.lyricsUrl, 'GET', headers);
+      assert.equal(lyrics.status, 200, lyrics.text);
+      assert.deepEqual(lyrics.body, { sylt, uslt });
+      privacyHeaders(lyrics);
+      assert.ok(lyrics.headers.ratelimit);
+      assert.equal(lyrics.headers['set-cookie'], undefined);
       const page = await call(`/share/${ownerToken}`, 'GET', headers);
       assert.equal(page.status, 200, page.text);
       assert.match(page.text, /Share test shell/);
@@ -365,7 +391,9 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
       const metadata = (await call(mediaPath(token))).body;
       assert.equal(metadata.title, path.parse(name).name);
       assert.equal(metadata.artist, '');
-      assert.deepEqual(metadata.sylt, []);
+      assert.equal(Object.hasOwn(metadata, 'sylt'), false);
+      assert.equal(Object.hasOwn(metadata, 'uslt'), false);
+      assert.deepEqual((await call(metadata.lyricsUrl)).body, { sylt: [], uslt: '' });
       assert.equal(metadata.artwork, null);
       for (const suffix of ['/stream', '/download']) {
         const response = await call(`${mediaPath(token)}${suffix}`);
@@ -580,9 +608,11 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
       const token = await share(credentials.Owner[0], largeJob.id, name);
       const response = await call(mediaPath(token));
       assert.equal(response.status, 200, response.text);
-      const metadata = name === 'Large.mp3' ? expected : { ...defaults, title: path.basename(name, '.mp3') };
+      const { sylt, uslt, ...metadata } = name === 'Large.mp3' ? expected : { ...defaults, title: path.basename(name, '.mp3') };
       assert.deepEqual(response.body, { ...metadata, name, sizeBytes: (await fs.stat(file(name))).size,
-        streamUrl: `${mediaPath(token)}/stream`, downloadUrl: `${mediaPath(token)}/download` });
+        streamUrl: `${mediaPath(token)}/stream`, downloadUrl: `${mediaPath(token)}/download`,
+        lyricsUrl: `${mediaPath(token)}/lyrics` });
+      assert.deepEqual((await call(response.body.lyricsUrl)).body, { sylt, uslt });
       privacyHeaders(response);
       const head = await call(mediaPath(token), 'HEAD');
       assert.equal(head.status, 200);
@@ -601,7 +631,9 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     const pending = [];
     try {
       await Promise.race([locked.promise, transaction]);
-      for (const method of ['GET', 'HEAD', 'GET', 'HEAD']) pending.push(call(mediaPath(ownerToken), method));
+      for (const [method, suffix] of [['GET', ''], ['HEAD', ''], ['GET', '/lyrics'], ['HEAD', '/lyrics']]) {
+        pending.push(call(`${mediaPath(ownerToken)}${suffix}`, method));
+      }
       let waiting = 0;
       for (let attempt = 0; attempt < 100; attempt += 1) {
         waiting = (await database.prepare(`SELECT count(*) AS count FROM pg_stat_activity
@@ -611,10 +643,10 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       assert.equal(waiting, 4);
-      for (const method of ['GET', 'HEAD']) {
+      for (const [method, suffix] of [['GET', ''], ['HEAD', ''], ['GET', '/lyrics'], ['HEAD', '/lyrics']]) {
         let timer;
         try {
-          const busy = await Promise.race([call(mediaPath(ownerToken), method),
+          const busy = await Promise.race([call(`${mediaPath(ownerToken)}${suffix}`, method),
             new Promise((_resolve, reject) => {
               timer = setTimeout(() => reject(new Error('Metadata overload request was queued instead of rejected')), 2000);
             })]);

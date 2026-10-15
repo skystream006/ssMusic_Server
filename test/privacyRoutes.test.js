@@ -50,7 +50,11 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     const files = id === 'playlist' ? ['open.mp3', 'secret-file.mp3', '[NoVocals]/secret-file.mp3', 'clip.mp4'] : ['elsewhere.mp3'];
     await fs.mkdir(path.join(outputDir, '[NoVocals]'), { recursive: true });
     for (const name of files) await fs.writeFile(path.join(outputDir, name), name === 'open.mp3'
-      ? NodeID3.write({ title: 'A 100% song', artist: 'Test Artist' }, Buffer.from(`audio:${name}`)) : `audio:${name}`);
+      ? NodeID3.write({ title: 'A 100% song', artist: 'Test Artist',
+        unsynchronisedLyrics: { language: 'eng', text: 'Private lyric payload' },
+        synchronisedLyrics: [{ language: 'eng', timeStampFormat: 2, contentType: 1,
+          synchronisedText: [{ timeStamp: 1000, text: 'Timed lyric payload' }] }]
+      }, Buffer.from(`audio:${name}`)) : `audio:${name}`);
     await writeJob(database, { id, url: `https://music.youtube.com/playlist?list=${id}`, status: 'completed',
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), isPlaylist: true,
       initiatedBy: { id: users[id === 'playlist' ? 'Owner' : 'Linked'].id },
@@ -126,6 +130,28 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal(result.body.page, 2);
     const literal = await call('/api/songs/search?q=100%25', keyHeaders);
     assert.deepEqual(literal.body.files.map((file) => file.name), ['open.mp3']);
+    assert.ok(literal.body.files.every((file) => !Object.hasOwn(file, 'sylt') && !Object.hasOwn(file, 'uslt')));
+    const metadataUrl = literal.body.files[0].metadataUrl;
+    assert.equal(metadataUrl, '/api/jobs/playlist/files/open.mp3/metadata');
+    const metadata = await call(metadataUrl, keyHeaders);
+    assert.equal(metadata.status, 200, metadata.text);
+    assert.equal(metadata.headers['cache-control'], 'no-store');
+    assert.equal(metadata.body.title, 'A 100% song');
+    assert.equal(metadata.body.canEdit, false);
+    assert.equal(Object.hasOwn(metadata.body, 'sylt'), false);
+    assert.equal(Object.hasOwn(metadata.body, 'uslt'), false);
+    const head = await call(metadataUrl, keyHeaders, 'HEAD');
+    assert.equal(head.status, 200);
+    assert.equal(head.buffer.length, 0);
+    assert.equal((await call(metadataUrl, {})).status, 401);
+    assert.equal((await call(metadataUrl, { 'X-API-Key': 'wrong' })).status, 401);
+    assert.equal((await call(metadataUrl, keyHeaders, 'PATCH', { rating: 5 })).status, 403);
+    for (const route of [`${metadataUrl}/extra`, '/api/jobs/playlist/files/open.mp3', '/api/jobs/playlist/files/open.mp3/privacy']) {
+      assert.equal((await call(route, keyHeaders)).status, 403, route);
+    }
+    const lyrics = (await call('/api/jobs/playlist/lyrics/open.mp3', keyHeaders)).body;
+    assert.equal(lyrics.uslt, 'Private lyric payload');
+    assert.deepEqual(lyrics.sylt, [{ time: 1, text: 'Timed lyric payload' }]);
     assert.ok((await call('/api/libraries', keyHeaders)).body.users.some((user) => user.id === users.Linked.id));
     assert.equal((await call('/api/library', keyHeaders)).status, 400);
     assert.equal((await call(`/api/library?userId=${users.Linked.id}`, keyHeaders)).status, 200);
@@ -152,7 +178,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal(all.body.total, 1);
     const [song] = all.body.files;
     assert.equal(song.name, '[NoVocals]/secret-file.mp3');
-    for (const url of ['streamUrl', 'downloadUrl', 'lyricsUrl', 'artworkUrl']) {
+    for (const url of ['streamUrl', 'downloadUrl', 'lyricsUrl', 'metadataUrl', 'artworkUrl']) {
       assert.equal((await call(song[url], keyHeaders)).status, 200, url);
     }
     const video = await call('/api/songs/search?q=clip&NoVocalsOnly=true', keyHeaders);
@@ -201,7 +227,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal(paged.body.totalPages, 3);
     assert.equal(paged.body.page, 3);
     assert.equal(paged.body.files[0].name, linkedName);
-    for (const url of ['streamUrl', 'downloadUrl', 'lyricsUrl', 'artworkUrl']) {
+    for (const url of ['streamUrl', 'downloadUrl', 'lyricsUrl', 'metadataUrl', 'artworkUrl']) {
       assert.equal((await call(paged.body.files[0][url], keyHeaders)).status, 200, url);
     }
     await writeJob(database, { ...sourceJob, songMetadata: { ...sourceJob.songMetadata, [linkedName]: { title } } });
@@ -350,6 +376,12 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       assert.equal((await call(`/api/jobs/playlist/files/${encodeURIComponent(name)}/metadata`, headers.Reader, 'PATCH', { rating: 5 })).status, 403);
     }
     for (const auth of [headers.Admin, headers.Contributor, headers.Linked, headers.Reader, keyHeaders]) {
+      for (const name of ['secret-file.mp3', '[NoVocals]/secret-file.mp3']) {
+        for (const method of ['GET', 'HEAD']) {
+          const denied = await call(`/api/jobs/playlist/files/${encodeURIComponent(name)}/metadata`, auth, method);
+          assert.ok([403, 404].includes(denied.status), `${method} metadata: ${denied.status}`);
+        }
+      }
       for (const action of ['stream', 'download', 'lyrics', 'artwork']) {
         const denied = await call(`/api/jobs/playlist/${action}/secret-file.mp3`, auth);
         assert.ok([403, 404].includes(denied.status), `${action}: ${denied.status}`);
@@ -357,6 +389,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       assert.ok([403, 404].includes((await call('/api/jobs/playlist/stream/%5BNoVocals%5D%2Fsecret-file.mp3', auth)).status));
     }
     assert.equal((await call('/api/jobs/playlist/stream/secret-file.mp3')).status, 200);
+    assert.equal((await call('/api/jobs/playlist/files/secret-file.mp3/metadata')).status, 200);
     assert.equal((await call('/api/jobs/playlist/stream/secret-file.mp3', keyHeaders, 'HEAD')).status, 404);
     assert.equal((await call(`/api/public/media/${share}`, {})).status, 404);
     assert.equal((await call(`/api/public/media/${share}/download`, {})).status, 404);
@@ -393,7 +426,9 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     assert.equal((await call('/api/jobs/playlist/files/open.mp3/metadata', headers.Reader, 'PATCH', { rating: 5 })).status, 403);
     for (const auth of [headers.Admin, headers.Contributor, headers.Linked, keyHeaders]) {
       assert.equal((await call('/api/jobs/playlist/stream/open.mp3', auth)).status, 404);
+      assert.equal((await call('/api/jobs/playlist/files/open.mp3/metadata', auth)).status, 404);
     }
+    assert.equal((await call('/api/jobs/playlist/files/open.mp3/metadata', headers.Reader)).status, 403);
     assert.equal((await call('/api/jobs/playlist', headers.Contributor)).status, 404);
     assert.equal((await call('/api/jobs/playlist/download-all', headers.Admin)).status, 404);
     const library = await call(`/api/library?userId=${users.Owner.id}`, headers.Linked);

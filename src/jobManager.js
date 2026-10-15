@@ -920,6 +920,7 @@ export async function setSongMetadata(id, fileName, value, user = null) {
     throw Object.assign(new Error('Transcription lock must be a boolean'), { statusCode: 400 });
   }
   const { transcriptionLocked, ...changes } = value;
+  const includeLyrics = Object.hasOwn(changes, 'sylt') || Object.hasOwn(changes, 'uslt');
   jobMutations.add(id);
   try {
     return await mutateJobFiles(id, async () => {
@@ -929,7 +930,9 @@ export async function setSongMetadata(id, fileName, value, user = null) {
       if (!isFileInsideJobFolder({ outputDir: await fs.realpath(job.outputDir) }, realPath)) {
         throw Object.assign(new Error('Invalid song path'), { statusCode: 400 });
       }
-      const metadata = Object.keys(changes).length ? await updateSongMetadata(realPath, changes) : await readSongMetadata(realPath);
+      const metadata = Object.keys(changes).length
+        ? await updateSongMetadata(realPath, changes, { includeLyrics })
+        : await readSongMetadata(realPath, { includeLyrics });
       metadata.transcriptionLocked = transcriptionLocked ?? job.songMetadata?.[fileName]?.transcriptionLocked ?? false;
       job.songMetadata = { ...job.songMetadata, [fileName]: { ...job.songMetadata?.[fileName],
         ...Object.fromEntries(songMetadataFields.map((field) => [field, metadata[field]])), rating: metadata.rating,

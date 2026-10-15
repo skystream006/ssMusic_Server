@@ -10,6 +10,7 @@ const summaryCache = new Map();
 const summaryFrames = ['TIT2', 'TPE1', 'TALB', 'TPE2', 'TCON', 'TYER', 'TRCK', 'TPOS', 'POPM'];
 const publicMetadataFrames = [...summaryFrames, 'APIC', 'SYLT', 'USLT',
   'TT2', 'TP1', 'TAL', 'TP2', 'TCO', 'TYE', 'TRK', 'TPA', 'POP', 'PIC', 'SLT', 'ULT'];
+const lyricFrames = ['SYLT', 'USLT', 'SLT', 'ULT'];
 const maxId3TagBytes = 16 * 1024 ** 2;
 
 function synchsafeSize(bytes) {
@@ -111,7 +112,7 @@ export async function readSongArtwork(filePath) {
   return type?.mime === image.mime ? image : null;
 }
 
-export async function updateSongMetadata(filePath, value) {
+export async function updateSongMetadata(filePath, value, { includeLyrics = true } = {}) {
   const invalid = (message) => { throw Object.assign(new Error(message), { statusCode: 400 }); };
   if (path.extname(filePath).toLowerCase() !== '.mp3') invalid('Metadata editing is supported for MP3 files');
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -147,7 +148,9 @@ export async function updateSongMetadata(filePath, value) {
     }
   }
   const original = await fs.readFile(filePath);
-  const tags = NodeID3.read(original);
+  const tags = NodeID3.read(original, {
+    include: ['POPM', 'POP', ...(Object.hasOwn(value, 'sylt') || Object.hasOwn(value, 'uslt') ? lyricFrames : [])]
+  });
   if (Object.hasOwn(value, 'rating')) {
     const popularity = tags.popularimeter;
     updates.popularimeter = { email: popularity?.email || 'Windows Media Player 9 Series',
@@ -178,20 +181,24 @@ export async function updateSongMetadata(filePath, value) {
     await fs.rename(temporary, filePath);
     summaryCache.delete(filePath);
   } finally { await fs.rm(temporary, { force: true }); }
-  return readSongMetadata(filePath);
+  return readSongMetadata(filePath, { includeLyrics });
 }
 
-export async function readSongMetadata(filePath, { bounded = false } = {}) {
+export async function readSongMetadata(filePath, { bounded = false, includeLyrics = true } = {}) {
   const tags = path.extname(filePath).toLowerCase() === '.mp3'
     ? bounded
-      ? await readBoundedId3Tags(filePath, { include: publicMetadataFrames })
-      : await NodeID3.Promise.read(filePath)
+      ? await readBoundedId3Tags(filePath, { include: publicMetadataFrames, exclude: includeLyrics ? [] : lyricFrames })
+      : await NodeID3.Promise.read(filePath, { exclude: includeLyrics ? [] : lyricFrames })
     : {};
-  const frame = tags.synchronisedLyrics?.find((lyrics) => lyrics.timeStampFormat === 2 && lyrics.contentType === 1);
-  const sylt = (frame?.synchronisedText || [])
-    .filter((line) => Number.isFinite(line.timeStamp) && line.timeStamp >= 0 && typeof line.text === 'string')
-    .map((line) => ({ time: line.timeStamp / 1000, text: line.text }))
-    .sort((first, second) => first.time - second.time);
+  const lyrics = {};
+  if (includeLyrics) {
+    const frame = tags.synchronisedLyrics?.find((lyrics) => lyrics.timeStampFormat === 2 && lyrics.contentType === 1);
+    lyrics.sylt = (frame?.synchronisedText || [])
+      .filter((line) => Number.isFinite(line.timeStamp) && line.timeStamp >= 0 && typeof line.text === 'string')
+      .map((line) => ({ time: line.timeStamp / 1000, text: line.text }))
+      .sort((first, second) => first.time - second.time);
+    lyrics.uslt = tags.unsynchronisedLyrics?.text || '';
+  }
   const image = tags.image;
   const artwork = image && ['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(image.mime)
     && image.imageBuffer?.length <= 2 * 1024 * 1024
@@ -207,7 +214,6 @@ export async function readSongMetadata(filePath, { bounded = false } = {}) {
     partOfSet: tags.partOfSet || '',
     rating: songRating(tags),
     artwork,
-    sylt,
-    uslt: tags.unsynchronisedLyrics?.text || ''
+    ...lyrics
   };
 }
