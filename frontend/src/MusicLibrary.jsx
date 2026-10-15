@@ -403,6 +403,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const [trackResult, setTrackResult] = useState(null);
   const [trackPage, setTrackPage] = useState(1);
   const [trackPageSize, setTrackPageSize] = useState(50);
+  const [trackSort, setTrackSort] = useState('order');
   const [trackSearch, setTrackSearch] = useState('');
   const [debouncedTrackSearch, setDebouncedTrackSearch] = useState('');
   const [tracksLoading, setTracksLoading] = useState(true);
@@ -449,7 +450,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const allMusic = selectedId === null;
   const paginated = allMusic || library?.serverPagination;
   const searchPending = paginated && trackSearch !== debouncedTrackSearch;
-  const tracks = trackResult?.selectedId === selectedId && (!paginated
+  const tracks = trackResult?.selectedId === selectedId && trackResult.sort === trackSort && (!paginated
     || (trackResult.page === trackPage && trackResult.pageSize === trackPageSize && trackResult.search === debouncedTrackSearch)) ? trackResult.files : null;
   const pagination = paginated ? {
     page: trackPage, pageSize: trackPageSize, total: trackResult?.selectedId === selectedId ? trackResult.total : 0,
@@ -514,17 +515,17 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     const controller = new AbortController();
     setTracksLoading(true);
     setTrackError('');
-    const query = new URLSearchParams({ ...(owner ? { userId: owner.id } : {}), ...(selectedId ? { entryId: selectedId } : {}),
+    const query = new URLSearchParams({ sort: trackSort, ...(owner ? { userId: owner.id } : {}), ...(selectedId ? { entryId: selectedId } : {}),
       ...(paginated ? { page: trackPage, pageSize: trackPageSize, search: debouncedTrackSearch } : {}) });
     request(`/api/library/tracks?${query}`, { signal: controller.signal }).then((result) => {
       if (active) {
-        setTrackResult({ ...result, selectedId, search: debouncedTrackSearch });
+        setTrackResult({ ...result, selectedId, sort: trackSort, search: debouncedTrackSearch });
         if (paginated && result.page !== trackPage) setTrackPage(result.page);
       }
     }).catch((loadError) => { if (active) setTrackError(loadError.message); })
       .finally(() => { if (active) setTracksLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, trackPageSize, debouncedTrackSearch, searchPending, paginated, owner?.id]);
+  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, trackPageSize, trackSort, debouncedTrackSearch, searchPending, paginated, owner?.id]);
 
   function selectEntry(id) {
     setSelectedSongs(new Set());
@@ -580,6 +581,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
 
   function metadataSaved(file, result) {
     playback.updateMetadata(file.jobId, file.name, result);
+    if (trackSort !== 'order') setRefresh((value) => value + 1);
     setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(file)
       ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating,
         transcriptionLocked: result.transcriptionLocked } : track) } : current);
@@ -861,7 +863,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   }
 
   function reorderSong(track, target) {
-    if (!tracks || tracksLoading || allMusic || savingRef.current) return;
+    if (trackSort !== 'order' || !tracks || tracksLoading || allMusic || savingRef.current) return;
     const playlistTracks = tracks.filter((item) => item.playlistId === track.playlistId);
     const names = playlistTracks.map(songKey);
     const from = names.indexOf(songKey(track));
@@ -991,7 +993,8 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>
     <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: (tracksLoading || searchPending) && !trackError,
       ownerId: owner?.id, playlistPrivate: Boolean(selectedPlaylist?.private),
-      pagination, error: trackError, queueScope: JSON.stringify([owner?.id || user.id, selectedId || 'all', ...(paginated ? [trackPage, debouncedTrackSearch, trackPageSize] : [])]),
+      sort: trackSort, onSort: (value) => { setTrackSort(value); setTrackPage(1); },
+      pagination, error: trackError, queueScope: JSON.stringify([owner?.id || user.id, selectedId || 'all', trackSort, ...(paginated ? [trackPage, debouncedTrackSearch, trackPageSize] : [])]),
       search: paginated ? trackSearch : undefined, onSearch: paginated ? setTrackSearch : undefined,
       songSelection: !readOnly && selected?.type === 'playlist' ? { active: selectingSongs, keys: selectedSongs, count: songSelection.length,
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),

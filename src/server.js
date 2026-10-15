@@ -355,6 +355,8 @@ app.get('/api/library/tracks', async (req, res) => {
   try {
     const selectedId = req.query.entryId ?? null;
     if (selectedId !== null && typeof selectedId !== 'string') return res.status(400).json({ error: 'Invalid library selection' });
+    const sort = req.query.sort ?? 'order';
+    if (!['order', 'name', 'rating'].includes(sort)) return res.status(400).json({ error: 'Invalid track sort' });
     const paginated = selectedId === null || req.query.page !== undefined || req.query.pageSize !== undefined;
     const positiveInteger = (value) => typeof value === 'string' && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value));
     if ((req.query.page !== undefined && !positiveInteger(req.query.page))
@@ -365,7 +367,7 @@ app.get('/api/library/tracks', async (req, res) => {
     const search = (req.query.search || '').trim().toLowerCase();
     const ownerId = await libraryReaderId(req.user, req.query.userId);
     const result = await pagePostgresTracks(openDatabase(), ownerId, { entryId: selectedId,
-      page: Number(req.query.page || 1), pageSize: paginated ? Number(req.query.pageSize || 50) : null, search, viewerId: req.user.id });
+      page: Number(req.query.page || 1), pageSize: paginated ? Number(req.query.pageSize || 50) : null, search, sort, viewerId: req.user.id });
     const pageJobs = await postgresPageJobs(openDatabase(), result.files, req.user.id);
     const available = new Map((await Promise.all([...pageJobs.values()].map(async (job) =>
       (await listJobFiles(job)).map((file) => [songKey({ jobId: job.id, name: file.name }), file])))).flat());

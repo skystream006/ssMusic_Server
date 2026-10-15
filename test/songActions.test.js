@@ -484,6 +484,30 @@ test('music-page song rows show lazy artwork without changing playback or track 
   }
 });
 
+test('song sorting offers order, name and rating while disabling drag outside saved order', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    for (const sort of ['order', 'name', 'rating']) {
+      const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+        libraryView: { tracks: [{ jobId: 'job', playlistId: 'playlist', name: 'Song.mp3', orderNumber: 55 }],
+          title: 'Playlist', selectedId: 'playlist', sort, onSort() {}, songState: () => ({ canModify: false }) }
+      })));
+      assert.match(html, /aria-label="Sort songs"/);
+      for (const value of ['order', 'name', 'rating']) {
+        assert.match(html, new RegExp(`<option value="${value}"${sort === value ? ' selected=""' : ''}>`));
+      }
+      const handle = html.match(/<button[^>]*class="music-icon-button song-drag"[^>]*>/)[0];
+      assert.equal(handle.includes('draggable="true"'), sort === 'order');
+      assert.equal(handle.includes('disabled=""'), sort !== 'order');
+      assert.match(html, /class="song-number">55<\/span>/);
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
 test('track pagination offers all page sizes at both positions and displays matching ranges', () => {
   const previousWindow = globalThis.window;
   globalThis.window = { location: { search: '' } };

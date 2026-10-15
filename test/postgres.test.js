@@ -250,6 +250,27 @@ test('PostgreSQL serves authenticated library, metadata, organization and duplic
   assert.equal((await request(lyricsRoute, { user: otherId })).body.canEdit, false);
   assert.equal((await request('/api/library/tracks?search=Fresh')).body.total, 1);
   assert.equal((await request('/api/library/tracks?search=Fresh%20album')).body.files[0].transcriptionLocked, true);
+  const lastMetadataRoute = `/api/jobs/${jobId}/files/${encodeURIComponent(files[54])}/metadata`;
+  assert.equal((await request(lastMetadataRoute, { method: 'PATCH', body: { title: 'A first song', rating: 5 } })).status, 200);
+  for (const sort of ['name', 'rating']) {
+    const sorted = await request(`/api/library/tracks?sort=${sort}&pageSize=1`);
+    assert.equal(sorted.status, 200, sorted.text);
+    assert.equal(sorted.body.total, 55);
+    assert.equal(sorted.body.files[0].name, files[54]);
+    assert.equal(sorted.body.files[0].orderNumber, 55);
+    const second = await request(`/api/library/tracks?sort=${sort}&pageSize=1&page=2`);
+    assert.equal(second.body.files[0].name, files[0]);
+    const playlist = await request(`/api/library/tracks?entryId=${jobId}&sort=${sort}`);
+    assert.equal(playlist.body.files[0].name, files[54]);
+    const searched = await request(`/api/library/tracks?sort=${sort}&search=Fresh&pageSize=1`);
+    assert.equal(searched.body.files[0].name, files[0]);
+  }
+  const ordered = await request('/api/library/tracks?sort=order&pageSize=1');
+  assert.equal(ordered.body.files[0].name, first.body.files[0].name);
+  assert.equal(ordered.body.files[0].orderNumber, 1);
+  for (const query of ['sort=invalid', 'sort=name&sort=rating']) {
+    assert.equal((await request(`/api/library/tracks?${query}`)).status, 400);
+  }
   assert.equal((await request(metadataRoute, { method: 'PATCH', body: { transcriptionLocked: false } })).body.transcriptionLocked, false);
   const duplicate = await request('/api/jobs', { method: 'POST', body: { url: job.url } });
   assert.equal(duplicate.status, 409, duplicate.text);

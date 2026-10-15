@@ -212,7 +212,7 @@ export async function readPostgresLibrary(database, userId, viewerId = userId) {
       updatedAt: jobMap.get(entry.id)?.updatedAt, songCount: counts.get(entry.id) || 0 })) };
 }
 
-export async function pagePostgresTracks(database, userId, { entryId = null, page = 1, pageSize = 50, search = '', viewerId = userId } = {}) {
+export async function pagePostgresTracks(database, userId, { entryId = null, page = 1, pageSize = 50, search = '', sort = 'order', viewerId = userId } = {}) {
   const entries = (await database.prepare(`SELECT entry.data FROM library_entries entry WHERE user_id = $1
     AND ${entryVisibilitySql('entry', '$2')} ORDER BY position, id`).all(userId, viewerId)).map((row) => JSON.parse(row.data));
   if (entryId !== null && !entries.some((entry) => entry.id === entryId)) throw Object.assign(new Error('Library selection not found'), { statusCode: 404 });
@@ -240,15 +240,19 @@ export async function pagePostgresTracks(database, userId, { entryId = null, pag
   const count = (await database.prepare(`SELECT count(*) AS count ${from} ${filter}`).get(...parameters)).count;
   const totalPages = pageSize === null ? 1 : Math.max(1, Math.ceil(count / pageSize));
   const selectedPage = Math.min(page, totalPages);
+  const savedOrder = 'membership.playlist_position, membership.position, membership.job_id, membership.name';
+  const nameOrder = "lower(coalesce(nullif(songs.metadata->>'title', ''), regexp_replace(regexp_replace(songs.name, '^.*/', ''), '\\.[^.]+$', '')))";
+  const sortOrder = sort === 'name' ? `${nameOrder}, ${savedOrder}`
+    : sort === 'rating' ? `coalesce((songs.metadata->>'rating')::numeric, 0) DESC, ${savedOrder}` : savedOrder;
   const orderedPage = `SELECT membership.* ${from} ${filter}
-    ORDER BY membership.playlist_position, membership.position, membership.job_id, membership.name LIMIT $${parameters.length + 1} OFFSET $${parameters.length + 2}`;
+    ORDER BY ${sortOrder} LIMIT $${parameters.length + 1} OFFSET $${parameters.length + 2}`;
   const rows = await database.prepare(`SELECT membership.*, songs.metadata, songs.transcription,
     jobs.data - 'output' - 'command' AS job_data,
     EXISTS (SELECT 1 FROM songs pending WHERE pending.job_id = jobs.id AND pending.transcription->>'status' = 'sent'
       AND ${fileVisibilitySql('jobs', 'pending.name', '$3')}) AS transcription_pending
     FROM (${orderedPage}) membership JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
     JOIN jobs ON jobs.id = songs.job_id
-    ORDER BY membership.playlist_position, membership.position, membership.job_id, membership.name`)
+    ORDER BY ${sortOrder}`)
     .all(...parameters, pageSize, pageSize === null ? 0 : (selectedPage - 1) * pageSize);
   const version = (await database.prepare('SELECT library_version FROM user_preferences WHERE user_id = $1').get(userId))?.library_version || 0;
   const sourceJobs = await attachPrivacyAliases(database, rows.map((row) => JSON.parse(row.job_data)));
@@ -257,6 +261,7 @@ export async function pagePostgresTracks(database, userId, { entryId = null, pag
     const transcription = row.transcription ? JSON.parse(row.transcription) : null;
     if (transcription?.noVocalsName && !canReadFile(job, transcription.noVocalsName, viewerId)) delete transcription.noVocalsName;
     return { ...JSON.parse(row.metadata), jobId: row.job_id, name: row.name, playlistId: row.playlist_id,
+      orderNumber: row.position + 1,
       playlistTitle: Object.hasOwn(individualPlaylistNames, row.playlist_id) ? individualPlaylistNames[row.playlist_id] : job.playlistTitle,
       private: !canReadFile(job, row.name, null), transcription,
       sourceJob: { ...visibleJob(job, viewerId), transcriptionPending: row.transcription_pending } };

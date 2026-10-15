@@ -610,8 +610,11 @@ code { font: 400 11px 'DM Mono', monospace; }
 .round-play { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 50%; flex: none; padding: 0; color: var(--on-accent, white); background: var(--royal); cursor: pointer; }
 .round-play:hover:not(:disabled) { filter: brightness(1.12); }
 .round-play:disabled { opacity: .4; cursor: not-allowed; }
-.songs-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.songs-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
 .songs-toolbar h3 { margin: 0; font-size: 12px; }
+.song-sort { display: flex; align-items: center; gap: 8px; max-width: 100%; color: var(--muted); font-size: 12px; }
+.song-sort select { width: 170px; min-width: 0; min-height: 36px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--field); font: inherit; }
+.song-sort select:focus-visible { outline: 2px solid var(--royal); outline-offset: 2px; }
 .songs-toolbar > .music-icon-button { flex: none; }
 .songs-toolbar [aria-pressed="true"] { color: var(--royal); background: color-mix(in srgb, var(--royal) 12%, transparent); }
 .library-select-checkbox { width: 18px; height: 18px; min-height: 0; padding: 0; margin: 3px; flex: none; accent-color: var(--royal); cursor: pointer; }

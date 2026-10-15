@@ -492,6 +492,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
 
   if (libraryView || dockOnly) {
     const tracks = libraryView?.tracks || [];
+    const trackSort = libraryView?.sort || 'order';
+    const canDragSongs = trackSort === 'order' && !libraryView?.readOnly && !libraryView?.saving;
     const trackSearch = libraryView?.search ?? search;
     const visibleTracks = libraryView?.pagination ? tracks : tracks.filter((track) => songSearchText(track).includes(normalizeSearchText(trackSearch.trim())));
     const totalTracks = libraryView?.pagination?.total ?? tracks.length;
@@ -511,6 +513,11 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           </header>
           <div className="songs-toolbar"><h3>Tracks</h3>
             <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search tracks" placeholder="Search tracks" maxLength={libraryView.pagination ? 200 : undefined} value={trackSearch} onChange={(event) => (libraryView.onSearch || setSearch)(event.target.value)} /></label>
+            <label className="song-sort">Sort by<select aria-label="Sort songs" value={trackSort} disabled={libraryView.saving} onChange={(event) => libraryView.onSort(event.target.value)}>
+              <option value="name">Name (A-Z)</option>
+              <option value="order">Order number</option>
+              <option value="rating">Rating (highest first)</option>
+            </select></label>
             {libraryView.type === 'playlist' && libraryView.selectedId && <a className="music-icon-button"
               href={`/api/library/playlists/${encodeURIComponent(libraryView.selectedId)}/download${libraryView.ownerId ? `?${new URLSearchParams({ userId: libraryView.ownerId })}` : ''}`}
               target="_blank" rel="noreferrer" title="Download playlist (ZIP)" aria-label="Download playlist (ZIP)"><ArrowDownToLine size={19} /></a>}
@@ -535,12 +542,12 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             const action = libraryView.songState(track);
             const privacy = action.privacy || getFilePrivacy(track);
             const privacyLabel = privacy.inherited ? 'Inherited privacy' : privacy.private ? 'Make file public' : 'Make file private';
-            const acceptSong = (event) => allowDrop(event, !libraryView.readOnly && !libraryView.saving && Boolean(libraryView.selectedId) && event.dataTransfer.types.includes('application/x-ssmusic-song'));
+            const acceptSong = (event) => allowDrop(event, canDragSongs && Boolean(libraryView.selectedId) && event.dataTransfer.types.includes('application/x-ssmusic-song'));
             return <li className={`library-song-row ${current ? 'is-current' : ''} ${selection?.active && selection.keys.has(songKey(track)) ? 'is-checked' : ''}`} key={songKey(track)}
               onDragEnter={acceptSong} onDragOver={acceptSong} onDragLeave={leaveDrop}
               onDrop={(event) => {
                 event.preventDefault();
-                if (libraryView.readOnly || libraryView.saving || !libraryView.selectedId) return;
+                if (!canDragSongs || !libraryView.selectedId) return;
                 try {
                   const moved = JSON.parse(event.dataTransfer.getData('application/x-ssmusic-song'));
                   if (moved.playlistId === track.playlistId) libraryView.onReorder(moved, songKey(track));
@@ -548,8 +555,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 } catch {}
               }}>
               {selection?.active ? <label className="library-row-check"><input className="library-select-checkbox" type="checkbox" aria-label={`Select song ${track.name}`} checked={selection.keys.has(songKey(track))} disabled={libraryView.saving}
-                onChange={(event) => selection.change([songKey(track)], event.target.checked)} /></label> : libraryView.readOnly ? <span aria-hidden="true" /> : <button className="music-icon-button song-drag" type="button" draggable={!libraryView.saving} disabled={libraryView.saving}
+                onChange={(event) => selection.change([songKey(track)], event.target.checked)} /></label> : libraryView.readOnly ? <span aria-hidden="true" /> : <button className="music-icon-button song-drag" type="button" draggable={canDragSongs} disabled={!canDragSongs}
                 title={`Drag ${track.name}`} aria-label={`Drag ${track.name}`} onDragStart={(event) => {
+                  if (!canDragSongs) { event.preventDefault(); return; }
                   const row = event.currentTarget.closest('.library-song-row');
                   row.dataset.dragging = 'true';
                   event.dataTransfer.setData('application/x-ssmusic-song', JSON.stringify({ jobId: track.jobId, name: track.name, playlistId: track.playlistId }));
@@ -558,7 +566,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 }}><GripVertical size={16} /></button>}
               <div className="song-title-actions"><button className="song-select" type="button" title={track.name} aria-label={`Play ${track.name}`} aria-current={current ? 'true' : undefined}
                 onClick={() => selectSong(track, tracks, libraryScope)}>
-                <span className="song-number">{mediaType(track.name) === 'video' ? <Film size={15} aria-label="Movie" /> : current && playing ? <Music2 size={15} /> : trackIndex + 1}</span>
+                <span className="song-number">{mediaType(track.name) === 'video' ? <Film size={15} aria-label="Movie" /> : current && playing ? <Music2 size={15} /> : track.orderNumber ?? trackIndex + 1}</span>
                 <SongArtwork track={track} />
                 <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><small>{track.artist || (track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original')}</small>
                   {privacy.private && <small><Lock size={12} /> {privacy.inherited ? 'Inherited privacy — owner only' : 'Private file — owner only'}</small>}
