@@ -37,7 +37,40 @@ export function seekPublicAudio(audio, seconds) {
   return position;
 }
 
-export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onSeek }) {
+export function createPublicLyricsLoader(request, url, onChange) {
+  let active = true;
+  let loaded = false;
+  let pending = false;
+  let controller;
+  return {
+    async load() {
+      if (!active || loaded || pending) return;
+      pending = true;
+      controller = new AbortController();
+      onChange({ loading: true, lyrics: null, error: '' });
+      try {
+        if (!url) throw new Error('Missing lyrics link');
+        const lyrics = await request(url, { signal: controller.signal });
+        if (!lyrics || !Array.isArray(lyrics.sylt) || typeof lyrics.uslt !== 'string') throw new Error('Invalid lyrics');
+        if (active) {
+          loaded = true;
+          onChange({ loading: false, lyrics, error: '' });
+        }
+      } catch {
+        if (active) onChange({ loading: false, lyrics: null, error: 'Lyrics could not be loaded. Please try again.' });
+      } finally {
+        pending = false;
+      }
+    },
+    stop() {
+      active = false;
+      controller?.abort();
+    }
+  };
+}
+
+export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onSeek,
+  expanded = false, loading = false, error = '', onToggle, onRetry }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState('sylt');
   const dialogRef = useRef(null);
@@ -81,19 +114,27 @@ export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onS
   return <section className="public-media-panel public-media-lyrics" aria-labelledby="public-media-lyrics">
     <div className="public-media-section-heading">
       <h2 id="public-media-lyrics">Lyrics</h2>
-      {hasLyrics && <button ref={fullscreenButtonRef} className="secondary-button compact-button" type="button" aria-haspopup="dialog"
+      <button className="secondary-button compact-button" type="button" aria-expanded={expanded}
+        aria-controls="public-media-lyrics-content" onClick={onToggle}>{expanded ? 'Hide lyrics' : 'Show lyrics'}</button>
+      {expanded && hasLyrics && <button ref={fullscreenButtonRef} className="secondary-button compact-button" type="button" aria-haspopup="dialog"
         onClick={showFullscreen}><Maximize2 size={17} aria-hidden="true" />Fullscreen lyrics</button>}
     </div>
-    {lines.length > 0 && <section aria-labelledby="public-media-timed-heading">
-      <h3 id="public-media-timed-heading">Synchronized lyrics</h3>
-      <p className="public-media-help">Choose a line to seek to that moment in the track.</p>
-      <LyricTimeline lines={lines} position={position} disabled={!canSeek} onSeek={onSeek} formatTime={formatTime} />
-    </section>}
-    {plainLyrics.trim() && <section className="public-media-plain-section" aria-labelledby="public-media-plain-heading">
-      <h3 id="public-media-plain-heading">Plain text lyrics</h3>
-      <p className="public-media-plain-lyrics">{plainLyrics}</p>
-    </section>}
-    {!hasLyrics && <p className="public-media-empty">No lyrics are available for this track.</p>}
+    <div id="public-media-lyrics-content" hidden={!expanded} aria-busy={loading}>
+      {expanded && (loading ? <p role="status">Loading lyrics…</p> : error ? <div role="alert">
+        <p>{error}</p><button className="secondary-button" type="button" onClick={onRetry}>Retry lyrics</button>
+      </div> : <>
+        {lines.length > 0 && <section aria-labelledby="public-media-timed-heading">
+          <h3 id="public-media-timed-heading">Synchronized lyrics</h3>
+          <p className="public-media-help">Choose a line to seek to that moment in the track.</p>
+          <LyricTimeline lines={lines} position={position} disabled={!canSeek} onSeek={onSeek} formatTime={formatTime} />
+        </section>}
+        {plainLyrics.trim() && <section className="public-media-plain-section" aria-labelledby="public-media-plain-heading">
+          <h3 id="public-media-plain-heading">Plain text lyrics</h3>
+          <p className="public-media-plain-lyrics">{plainLyrics}</p>
+        </section>}
+        {!hasLyrics && <p className="public-media-empty">No lyrics are available for this track.</p>}
+      </>)}
+    </div>
     <dialog ref={dialogRef} className="lyrics-overlay public-lyrics-overlay" aria-label="Fullscreen lyrics"
       onCancel={(event) => { event.preventDefault(); closeLyrics(); }}
       onClose={() => { setOpen(false); fullscreenButtonRef.current?.focus(); }}>
@@ -121,7 +162,8 @@ export function PublicLyrics({ lines, plainLyrics, title, position, canSeek, onS
 export function PublicMediaView({
   media, loading = false, error = '', playbackError = '', elapsed = 0, duration = 0,
   audioRef, onProgress, onPlaybackError, onPlaybackReady, onSeek, onRetry,
-  embedded = false, autoPlay = false, onEnded, navigation
+  embedded = false, autoPlay = false, onEnded, navigation,
+  lyrics, lyricsExpanded = false, lyricsLoading = false, lyricsError = '', onToggleLyrics, onRetryLyrics
 }) {
   const Container = embedded ? 'section' : 'main';
   const Heading = embedded ? 'h2' : 'h1';
@@ -129,10 +171,10 @@ export function PublicMediaView({
   const knownDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   const position = Math.min(knownDuration, Math.max(0, Number.isFinite(elapsed) ? elapsed : 0));
   const canSeek = Boolean(media?.streamUrl && knownDuration && !playbackError);
-  const lines = useMemo(() => (Array.isArray(media?.sylt) ? media.sylt : [])
+  const lines = useMemo(() => (Array.isArray(lyrics?.sylt) ? lyrics.sylt : [])
     .filter((line) => Number.isFinite(line?.time) && line.time >= 0 && typeof line.text === 'string')
-    .sort((a, b) => a.time - b.time), [media?.sylt]);
-  const plainLyrics = typeof media?.uslt === 'string' ? media.uslt : '';
+    .sort((a, b) => a.time - b.time), [lyrics?.sylt]);
+  const plainLyrics = typeof lyrics?.uslt === 'string' ? lyrics.uslt : '';
   const rating = Number(media?.rating);
 
   return <Container className={`public-media-page${embedded ? ' public-media-embedded' : ''}`} aria-busy={loading}>
@@ -194,7 +236,8 @@ export function PublicMediaView({
         </section>
 
         <PublicLyrics lines={lines} plainLyrics={plainLyrics} title={title} position={position}
-          canSeek={canSeek} onSeek={onSeek} />
+          canSeek={canSeek} onSeek={onSeek} expanded={lyricsExpanded} loading={lyricsLoading}
+          error={lyricsError} onToggle={onToggleLyrics} onRetry={onRetryLyrics} />
       </div>
     </>}
     {!embedded && <footer className="public-media-footer">Shared for listening. No account needed.</footer>}
@@ -207,6 +250,9 @@ function PublicMediaPage({ token, request, endpoint, embedded = false, autoPlay 
   const [elapsed, setElapsed] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playbackError, setPlaybackError] = useState('');
+  const [lyricsState, setLyricsState] = useState({ lyrics: null, loading: false, error: '' });
+  const [lyricsExpanded, setLyricsExpanded] = useState(false);
+  const lyricsLoaderRef = useRef(null);
   const internalAudioRef = useRef(null);
   const audioRef = playbackRef || internalAudioRef;
 
@@ -231,6 +277,19 @@ function PublicMediaPage({ token, request, endpoint, embedded = false, autoPlay 
     return () => { active = false; };
   }, [token, endpoint, request, attempt]);
 
+  useEffect(() => {
+    setLyricsExpanded(false);
+    setLyricsState({ lyrics: null, loading: false, error: '' });
+    const loader = createPublicLyricsLoader(request, state.media?.lyricsUrl, setLyricsState);
+    lyricsLoaderRef.current = loader;
+    return () => { loader.stop(); };
+  }, [request, state.media]);
+
+  function toggleLyrics() {
+    if (!lyricsExpanded) lyricsLoaderRef.current?.load();
+    setLyricsExpanded(!lyricsExpanded);
+  }
+
   function updateProgress(event) {
     const audio = event.currentTarget;
     setElapsed(Number.isFinite(audio.currentTime) ? audio.currentTime : 0);
@@ -247,6 +306,8 @@ function PublicMediaPage({ token, request, endpoint, embedded = false, autoPlay 
   }
 
   return <PublicMediaView {...state} audioRef={audioRef} elapsed={elapsed} duration={duration} playbackError={playbackError}
+    lyrics={lyricsState.lyrics} lyricsExpanded={lyricsExpanded} lyricsLoading={lyricsState.loading}
+    lyricsError={lyricsState.error} onToggleLyrics={toggleLyrics} onRetryLyrics={() => lyricsLoaderRef.current?.load()}
     embedded={embedded} autoPlay={autoPlay} onEnded={onEnded} navigation={navigation}
     onProgress={updateProgress} onSeek={seek}
     onPlaybackError={() => setPlaybackError('This audio could not be played. The link may no longer be available, or your browser may not support this format. Try saving the file to listen locally.')}

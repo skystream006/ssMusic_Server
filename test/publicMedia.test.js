@@ -11,6 +11,7 @@ let PublicMediaView;
 let PublicPlaylist;
 let PublicPlaylistView;
 let seekPublicAudio;
+let createPublicLyricsLoader;
 let AdminMediaSharesView;
 let AdminArtworkThumbnails;
 let AdminArtworkThumbnailsView;
@@ -21,7 +22,7 @@ let appIcon;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ default: PublicMedia, PublicMediaView, PublicPlaylist, PublicPlaylistView, seekPublicAudio } = await server.ssrLoadModule('/src/PublicMedia.jsx'));
+  ({ default: PublicMedia, PublicMediaView, PublicPlaylist, PublicPlaylistView, seekPublicAudio, createPublicLyricsLoader } = await server.ssrLoadModule('/src/PublicMedia.jsx'));
   ({ AdminMediaSharesView, AdminArtworkThumbnails, AdminArtworkThumbnailsView, watchArtworkThumbnails } = await server.ssrLoadModule('/src/AdminMediaShares.jsx'));
   ({ default: LyricTimeline, scrollToActiveLyric } = await server.ssrLoadModule('/src/LyricTimeline.jsx'));
   ({ default: appIcon } = await server.ssrLoadModule('/src/assets/ic_launcher.png'));
@@ -35,12 +36,91 @@ const media = {
   partOfSet: '1/2', rating: 4, artwork: 'data:image/png;base64,aGVsbG8=',
   sylt: [{ time: 0, text: 'First line' }, { time: 12.5, text: 'Second line' }],
   uslt: 'First line\nSecond line\n\nLast verse',
-  streamUrl: '/api/public/media/token/stream', downloadUrl: '/api/public/media/token/download'
+  streamUrl: '/api/public/media/token/stream', downloadUrl: '/api/public/media/token/download',
+  lyricsUrl: '/api/public/media/token/lyrics'
 };
 
 function render(props = {}) {
-  return renderToStaticMarkup(createElement(PublicMediaView, { media, ...props }));
+  return renderToStaticMarkup(createElement(PublicMediaView, {
+    media, lyricsExpanded: true, lyrics: props.media || media, ...props
+  }));
 }
+
+test('public lyrics stay collapsed and exclude embedded lyric data until explicitly opened', () => {
+  let requests = 0;
+  const html = renderToStaticMarkup(createElement(PublicMediaView, { media }));
+  const loader = createPublicLyricsLoader(() => { requests += 1; }, media.lyricsUrl, () => {});
+  assert.match(html, /aria-expanded="false" aria-controls="public-media-lyrics-content"/);
+  assert.match(html, />Show lyrics<\/button>/);
+  assert.doesNotMatch(html, /First line|Second line|No lyrics are available|Loading lyrics/);
+  assert.equal(requests, 0);
+  loader.stop();
+});
+
+test('public lyrics fetch only when opened, deduplicate requests and reuse loaded results', async () => {
+  for (const url of [media.lyricsUrl, '/api/public/playlists/token/tracks/track/lyrics']) {
+    const calls = [];
+    const updates = [];
+    const deferred = Promise.withResolvers();
+    const loader = createPublicLyricsLoader((endpoint, options) => {
+      calls.push({ endpoint, options });
+      return deferred.promise;
+    }, url, (state) => updates.push(state));
+    assert.equal(calls.length, 0);
+    const pending = loader.load();
+    await loader.load();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].endpoint, url);
+    assert.equal(updates.at(-1).loading, true);
+    deferred.resolve({ sylt: media.sylt, uslt: media.uslt });
+    await pending;
+    assert.deepEqual(updates.at(-1).lyrics, { sylt: media.sylt, uslt: media.uslt });
+    await loader.load();
+    assert.equal(calls.length, 1);
+    loader.stop();
+  }
+});
+
+test('public lyrics show loading, error, retry and empty states without changing playback', async () => {
+  const updates = [];
+  let fail = true;
+  const loader = createPublicLyricsLoader(async () => {
+    if (fail) throw new Error('Revoked');
+    return { sylt: [], uslt: '' };
+  }, media.lyricsUrl, (state) => updates.push(state));
+  await loader.load();
+  assert.match(updates.at(-1).error, /could not be loaded/);
+  const failed = render({ lyrics: null, lyricsError: updates.at(-1).error });
+  assert.match(failed, /role="alert"/);
+  assert.match(failed, />Retry lyrics<\/button>/);
+  assert.match(failed, /<audio/);
+  assert.match(render({ lyrics: null, lyricsLoading: true }), /role="status">Loading lyrics/);
+  fail = false;
+  await loader.load();
+  assert.equal(updates.at(-1).error, '');
+  assert.match(render({ lyrics: updates.at(-1).lyrics }), /No lyrics are available/);
+  loader.stop();
+});
+
+test('changing public tracks aborts lyric requests and ignores stale success and failure', async () => {
+  for (const reject of [false, true]) {
+    const deferred = Promise.withResolvers();
+    const updates = [];
+    let signal;
+    const loader = createPublicLyricsLoader((_url, options) => {
+      signal = options.signal;
+      return deferred.promise;
+    }, media.lyricsUrl, (state) => updates.push(state));
+    const pending = loader.load();
+    loader.stop();
+    assert.equal(signal.aborted, true);
+    if (reject) deferred.reject(new Error('Late error'));
+    else deferred.resolve({ sylt: media.sylt, uslt: media.uslt });
+    await pending;
+    await loader.load();
+    assert.equal(updates.length, 1);
+  }
+});
 
 test('public playlists render ordered read-only songs, downloads and bounded page controls', () => {
   const playlist = { title: 'Evening collection', page: 1, pageSize: 50, total: 51, totalPages: 2,
@@ -138,9 +218,10 @@ test('public media exposes no editing, rating, account or other mutation control
   const inputs = html.match(/<input\b[^>]*>/g) || [];
   assert.equal(inputs.length, 0);
   const buttons = html.match(/<button\b[^>]*>/g) || [];
-  assert.equal(buttons.length, 3);
-  assert.match(buttons[0], /aria-haspopup="dialog"/);
-  for (const button of buttons.slice(1)) assert.match(button, /aria-label="Seek to/);
+  assert.equal(buttons.length, 4);
+  assert.match(buttons[0], /aria-expanded="true"/);
+  assert.match(buttons[1], /aria-haspopup="dialog"/);
+  for (const button of buttons.slice(2)) assert.match(button, /aria-label="Seek to/);
   assert.doesNotMatch(html, /<form\b|<textarea\b|<select\b|contentEditable|type="radio"|type="file"|aria-pressed/);
   assert.doesNotMatch(html, /Edit metadata|Save metadata|Rate |Clear rating|Delete|Replace File|Transcribe|Log in|Sign in|\/api\/auth/);
 });
@@ -185,7 +266,8 @@ test('missing metadata, artwork and lyrics have readable fallbacks, retaining sa
   assert.match(html, /No lyrics are available for this track/);
   assert.match(html, /<audio /);
   assert.match(html, /download="Unknown.mp3"/);
-  assert.doesNotMatch(html, /<button\b|undefined|null/);
+  assert.doesNotMatch(html, /undefined|null/);
+  assert.equal((html.match(/<button\b/g) || []).length, 1);
   assert.equal((html.match(/<img\b/g) || []).length, 1, 'only the app logo should render without artwork');
 });
 

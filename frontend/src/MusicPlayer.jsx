@@ -186,6 +186,8 @@ export function PlaybackProvider({ children, request, userId }) {
   const selectedRef = useRef(null);
   selectedRef.current = selected;
   const [metadata, setMetadata] = useState(null);
+  const [lyricsViewers, setLyricsViewers] = useState(0);
+  const [lyricsLoaded, setLyricsLoaded] = useState(false);
   const [lyricError, setLyricError] = useState('');
   const [playError, setPlayError] = useState('');
   const [mode, setMode] = useState('sylt');
@@ -232,23 +234,29 @@ export function PlaybackProvider({ children, request, userId }) {
   }
 
   useEffect(() => {
-    let active = true;
-    setMetadata(null);
+    setMetadata(song ? { title: song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, ''),
+      artist: song.artist || '', album: song.album || '' } : null);
+    setLyricsLoaded(false);
     setLyricError('');
     setPlayError('');
     setPosition(0);
     setDuration(0);
     setPlaying(false);
     if (song && isVideo) {
-      setMetadata({ title: song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, ''), artist: song.artist || '', sylt: [], uslt: '' });
       setVideoOpen(true);
-    } else if (song) {
-      request(song.lyricsUrl || `/api/jobs/${encodeURIComponent(song.jobId)}/lyrics/${encodeURIComponent(song.name)}`)
-        .then((result) => { if (active) setMetadata(result); })
-        .catch((error) => { if (active) setLyricError(error.message); });
     }
-    return () => { active = false; };
   }, [song?.jobId, song?.name, song?.streamUrl, song?.lyricsUrl, request]);
+
+  useEffect(() => {
+    if (!lyricsViewers || !song || isVideo) return;
+    let active = true;
+    setLyricsLoaded(false);
+    setLyricError('');
+    request(song.lyricsUrl || `/api/jobs/${encodeURIComponent(song.jobId)}/lyrics/${encodeURIComponent(song.name)}`)
+      .then((result) => { if (active) { setMetadata(result); setLyricsLoaded(true); } })
+      .catch((error) => { if (active) setLyricError(error.message); });
+    return () => { active = false; };
+  }, [Boolean(lyricsViewers), song?.jobId, song?.name, song?.streamUrl, song?.lyricsUrl, request]);
 
   function selectSong(track, queue = songs, scope = queueScopeRef.current) {
     autoPlayRef.current = true;
@@ -334,7 +342,7 @@ export function PlaybackProvider({ children, request, userId }) {
     setSelected((current) => current && JSON.parse(current)[0] === jobId ? null : current);
   }
 
-  return <PlaybackContext.Provider value={{ songs, setSongs, selected, setSelected, metadata, lyricError, playError, setPlayError,
+  return <PlaybackContext.Provider value={{ songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, restoredSelectionRef,
@@ -351,7 +359,7 @@ export function PlaybackProvider({ children, request, userId }) {
 }
 
 export default function MusicPlayer({ id, request, libraryView = null, dockOnly = false }) {
-  const { songs, setSongs, selected, setSelected, metadata, lyricError, playError, setPlayError,
+  const { songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, restoredSelectionRef,
@@ -369,7 +377,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const dockRef = useRef(null);
   const lyricsOverlayRef = useRef(null);
   const lyricsButtonRef = useRef(null);
-  const lines = metadata?.sylt || [];
+  const lines = lyricsLoaded ? metadata?.sylt || [] : [];
+  const artwork = metadata?.artwork === undefined ? song?.artworkUrl : metadata.artwork;
   const requestedSong = new URLSearchParams(window.location.search).get('song');
   const requestedPlay = new URLSearchParams(window.location.search).get('play') === '1';
   const libraryScope = libraryView?.queueScope ?? libraryView?.selectedId;
@@ -377,6 +386,12 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const shuffleLabel = shuffle ? 'Shuffle on: turn off' : 'Shuffle off: turn on';
   const repeatLabel = repeatMode === 'off' ? 'Repeat off: repeat queue' : repeatMode === 'all' ? 'Repeat queue: repeat one song' : 'Repeat one song: turn off';
   const RepeatIcon = repeatMode === 'one' ? Repeat1 : Repeat;
+
+  useEffect(() => {
+    if (panel !== 'lyrics') return;
+    setLyricsViewers((count) => count + 1);
+    return () => setLyricsViewers((count) => count - 1);
+  }, [panel, setLyricsViewers]);
 
   useEffect(() => {
     if (isVideo && panel === 'lyrics') setPanel(null);
@@ -441,7 +456,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   }, [dockOnly]);
 
   useEffect(() => {
-    if (panel !== 'lyrics') return;
+    if (!dockOnly || panel !== 'lyrics') return;
     const overlay = lyricsOverlayRef.current;
     const content = document.querySelector('.app-shell');
     const overflow = document.body.style.overflow;
@@ -456,7 +471,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
       document.removeEventListener('keydown', closeOnEscape);
       if (overlay?.contains(document.activeElement) || document.activeElement === document.body) lyricsButtonRef.current?.focus();
     };
-  }, [panel]);
+  }, [dockOnly, panel]);
 
   const lyricsPanel = <section className="music-lyrics" aria-label="Lyrics">
     <div className="section-title"><div><h2>Lyrics</h2></div>
@@ -465,10 +480,10 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <button type="button" aria-pressed={mode === 'sylt'} onClick={() => setMode('sylt')}>SYLT</button>
           <button type="button" aria-pressed={mode === 'uslt'} onClick={() => setMode('uslt')}>USLT</button>
         </div>
-        {metadata?.canEdit && !song?.readOnly && !editingLyrics && <button className="lyrics-copy" type="button" title="Edit lyrics" aria-label="Edit lyrics"
+        {lyricsLoaded && metadata?.canEdit && !song?.readOnly && !editingLyrics && <button className="lyrics-copy" type="button" title="Edit lyrics" aria-label="Edit lyrics"
           disabled={!song || song.transcription?.status === 'sent'} onClick={() => setEditingLyrics({ song, metadata })}><Pencil size={17} /></button>}
         <button className="lyrics-copy" type="button" title={currentCopy && !currentCopy.error ? 'Lyrics copied' : 'Copy lyrics'} aria-label="Copy lyrics"
-          disabled={Boolean(editingLyrics) || copying || !lyricsText.trim()} onClick={copyLyrics}>
+          disabled={!lyricsLoaded || Boolean(editingLyrics) || copying || !lyricsText.trim()} onClick={copyLyrics}>
           {copying ? <RefreshCw className="spin" size={17} /> : currentCopy && !currentCopy.error ? <Check size={17} /> : <Copy size={17} />}
         </button>
         {dockOnly && <button className="music-icon-button" type="button" title="Close lyrics" aria-label="Close lyrics" onClick={() => setPanel(null)}><X size={20} /></button>}
@@ -483,10 +498,10 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates)
         });
         updateMetadata(target.jobId, target.name, result);
-      }} /> : <LyricTimeline lines={lines} position={position} mode={mode} uslt={metadata?.uslt}
+      }} /> : <LyricTimeline lines={lines} position={position} mode={mode} uslt={lyricsLoaded ? metadata?.uslt : ''}
         onSeek={(time) => { if (audioRef.current) audioRef.current.currentTime = time; }}>
         {lyricError ? <p className="notice error" role="alert">{lyricError}</p>
-          : !metadata ? <p className="music-empty" role="status">{song ? 'Loading lyrics...' : 'No song selected.'}</p> : null}
+          : !lyricsLoaded ? <p className="music-empty" role="status">{song ? 'Loading lyrics...' : 'No song selected.'}</p> : null}
       </LyricTimeline>}
   </section>;
 
@@ -613,7 +628,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         </section>
       </div>}
       <footer className="player-dock" aria-label="Music playback" ref={dockRef}>
-        <div className="dock-track"><div className={`dock-artwork ${playing && !isVideo ? 'is-playing' : ''}`}>{isVideo ? <Film size={30} /> : metadata?.artwork ? <img src={metadata.artwork} alt="Album cover" /> : <Disc3 size={30} />}</div>
+        <div className="dock-track"><div className={`dock-artwork ${playing && !isVideo ? 'is-playing' : ''}`}>{isVideo ? <Film size={30} /> : artwork ? <img src={artwork} alt="Album cover" /> : <Disc3 size={30} />}</div>
           <div><strong>{metadata?.title || song?.name.split('/').at(-1).replace(/\.[^.]+$/, '') || 'Nothing playing'}</strong><small>{metadata?.artist || song?.playlistTitle || 'ssMusic Player'}</small></div><KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} /></div>
         <div className="dock-controls"><div className="dock-transport">
           <button className="music-icon-button" type="button" title={shuffleLabel} aria-label="Shuffle" aria-pressed={shuffle} onClick={() => setShuffle((current) => !current)}><Shuffle size={17} /></button>
@@ -647,7 +662,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     {song && <>
       <section className="now-playing" aria-label="Now playing">
         <div className={`music-artwork ${playing ? 'is-playing' : ''}`}>
-          {metadata?.artwork ? <img src={metadata.artwork} alt={`${metadata.album || metadata.title} cover`} /> : <div className="record-art"><Disc3 size={60} strokeWidth={1.2} /></div>}
+          {artwork ? <img src={artwork} alt={`${metadata?.album || song.title || song.name} cover`} /> : <div className="record-art"><Disc3 size={60} strokeWidth={1.2} /></div>}
         </div>
         <div className="playback-main">
           <div className="track-heading"><div><span>{song.name.startsWith('[NoVocals]/') ? 'NoVocals' : 'Original'}</span>
@@ -676,7 +691,11 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             {!songs.some((track) => songSearchText(track).includes(normalizeSearchText(search.trim()))) && <p className="music-empty">No matching songs.</p>}
           </div>
         </section>
-        {lyricsPanel}
+        <section>
+          <button className="secondary-button" type="button" aria-pressed={panel === 'lyrics'} disabled={isVideo}
+            onClick={() => setPanel(panel === 'lyrics' ? null : 'lyrics')}>{panel === 'lyrics' ? 'Hide lyrics' : 'Show lyrics'}</button>
+          {panel === 'lyrics' && lyricsPanel}
+        </section>
       </div>
     </>}
   </div>;

@@ -17,8 +17,7 @@ export default function SharedLibraries({ user, request, confirm }) {
       if (active) { setOwners(result.users); setError(''); }
     }).catch((loadError) => { if (active) { setOwners(null); setError(loadError.message); } });
     load();
-    const timer = window.setInterval(load, 10000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; };
   }, [request]);
   const available = user.role === 'shared' ? owners : [{ id: user.id, name: user.name }, ...(owners || [])];
   const owner = ownerId ? available?.find((item) => item.id === ownerId) : available?.[0];

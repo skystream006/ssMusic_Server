@@ -19,6 +19,7 @@ export function restrictSharedAccess(req, res, next) {
   const reading = ['GET', 'HEAD'].includes(req.method) && (
     ['/api/auth/me', '/api/auth/pats', '/api/auth/passkeys', '/api/preferences', '/api/library', '/api/library/tracks', '/api/library/shared-users'].includes(pathname)
     || /^\/api\/library\/playlists\/[^/]+\/download$/.test(pathname)
+    || /^\/api\/jobs\/[^/]+\/files\/[^/]+\/metadata$/.test(pathname)
     || /^\/api\/jobs\/[^/]+\/(stream|download|lyrics|artwork)\/[^/]+$/.test(pathname));
   const themePreferences = req.method === 'PUT' && pathname === '/api/preferences';
   const ownUsername = req.method === 'PATCH' && pathname === '/api/auth/me';
@@ -78,7 +79,8 @@ export function readOnlyLibraryFile(file, ownerId) {
   };
   return { ...file, libraryOwnerId: ownerId, readOnly: true,
     streamUrl: scopedUrl(file.streamUrl), downloadUrl: scopedUrl(file.downloadUrl), artworkUrl: scopedUrl(file.artworkUrl),
-    lyricsUrl: scopedUrl(`/api/jobs/${encodeURIComponent(file.jobId)}/lyrics/${encodeURIComponent(file.name)}`) };
+    lyricsUrl: scopedUrl(`/api/jobs/${encodeURIComponent(file.jobId)}/lyrics/${encodeURIComponent(file.name)}`),
+    metadataUrl: scopedUrl(`/api/jobs/${encodeURIComponent(file.jobId)}/files/${encodeURIComponent(file.name)}/metadata`) };
 }
 
 export async function canReadSharedSong(userId, jobId, name) {

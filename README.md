@@ -146,7 +146,7 @@ The key also permits:
 - `GET /api/library/tracks?userId=<id>` — the existing track pagination,
   `entryId`, and `search` parameters, filtered by privacy.
 - `GET`/`HEAD /api/jobs/:id/stream/:name`, `/download/:name`,
-  `/artwork/:name`, and `/lyrics/:name` — nonprivate media, including videos
+  `/artwork/:name`, `/files/:name/metadata`, and `/lyrics/:name` — nonprivate media, including videos
   where supported by the endpoint.
 
 The only write operations are the KaraokeParty playlist video actions below.
@@ -275,7 +275,7 @@ job-deletion API, or modify jobs outside these playlist-scoped actions.
 Open a song's **Share Media** action, review the privacy warning, then choose
 **Generate public link** and **Copy link**. Recipients can open the link without
 signing in, play the song, or choose **Save file** on the public page to download it.
-Synchronized (SYLT) lyrics use the music player's highlighting and autoscroll;
+Choose **Show lyrics** to load lyrics on demand. Synchronized (SYLT) lyrics use the music player's highlighting and autoscroll;
 select a lyric line to seek. Choose **Fullscreen lyrics** to expand the lyrics
 without interrupting playback, switch between SYLT and plain-text USLT, and
 return using the close button or Escape. A full-page overlay is available when
@@ -331,7 +331,10 @@ Deletion returns HTTP 204, or 404 if the link is already gone.
 Playlist rows include `kind: "playlist"` and use the same listing and deletion API.
 
 `GET /api/public/media/:token` returns flat song metadata plus `name`,
-`sizeBytes`, `streamUrl`, and `downloadUrl`; streaming supports HTTP ranges and
+`sizeBytes`, `streamUrl`, `downloadUrl`, and `lyricsUrl`, without lyric text.
+`GET /api/public/media/:token/lyrics` returns lyrics on explicit request;
+playlist tracks use `/api/public/playlists/:token/tracks/:trackId/lyrics`.
+Streaming supports HTTP ranges and
 HEAD requests. Embedded tag, artwork, and lyric reading currently supports MP3;
 other supported audio formats use a filename title and empty metadata defaults.
 Public MP3 metadata reads only the leading ID3 tag, capped at 16 MiB; absent,
@@ -1176,7 +1179,8 @@ File listings and library tracks return relative `streamUrl` and `downloadUrl`
 values. Resolve these against the server base URL and attach the bearer header to
 media/download requests too. Configure the Android Media3/ExoPlayer HTTP data
 source to send this header, including byte-range requests for seeking (`206`
-responses). `/api/jobs/:id/lyrics/:name` supplies lyrics and artwork metadata.
+responses). `/api/jobs/:id/files/:name/metadata` supplies metadata without lyrics;
+`/api/jobs/:id/lyrics/:name` supplies lyrics when explicitly requested.
 Do not forward credentials when following redirects to another host. Native HTTP
 clients do not need CORS changes; passkeys run in the external browser and
 authenticated feature requests use native networking.
@@ -1501,6 +1505,10 @@ Other audio formats offer the transcription lock control, but not MP3 tag editin
 Shared users can choose **View song metadata** (the info icon) on songs in their
 granted libraries. The dialog shows metadata, artwork, rating, and transcription
 lock status read-only, with no save, artwork, rating, or lock editing controls.
+It uses `GET /api/jobs/:id/files/:name/metadata`, which omits `sylt` and `uslt`.
+Song lists also omit lyric text. Selecting or playing a song does not fetch lyrics;
+opening its lyric section does. The music page loads shared-library users once
+on entry rather than polling.
 
 Edits update the source MP3, including for personally moved songs, and therefore
 are visible to everyone using that source. Filenames, audio data, embedded lyrics,
@@ -1515,7 +1523,9 @@ The lock icon in the editor toggles transcription locking when changes are saved
 `trackNumber`, and `partOfSet` (disc number). Text fields are limited to 500
 characters. Include `artwork` as a base64 image data URL to replace it, `null` to
 remove it, or omit it to preserve the current cover. The response contains the
-updated song metadata, including `rating`. Include integer `rating` from `0`
+updated song metadata, including `rating`. It includes `sylt` and `uslt` only
+when the request updates either lyric format, including clearing it.
+Include integer `rating` from `0`
 (unrated) to `5`, or omit it to retain the original rating. Both job-file and
 library-track responses include MP3 ratings. URL-encode the full filename,
 including `[NoVocals]/`.
@@ -1554,7 +1564,8 @@ validation tools leave the original file unchanged.
 `POST /api/jobs/:id/files/:name/replace` accepts `multipart/form-data` with exactly
 one `file` field and no other fields. URL-encode the full server filename,
 including `[NoVocals]/`. A successful response contains the refreshed `file`
-descriptor (including its versioned `streamUrl`) and song `metadata`.
+descriptor (including its versioned `streamUrl`) and song `metadata` without
+lyrics. Replacement lyrics remain in the file and can be fetched from the lyrics endpoint.
 Missing, invalid, or mismatched audio returns `400`; files over 512 MB return `413`.
 
 ## Transcription and job player
@@ -1673,7 +1684,8 @@ Only changed formats are saved. Edits remain attached to the original song
 even if playback advances, and saving does not restart playback.
 Title, artist, album and supported embedded cover artwork are read from MP3 tags.
 Streaming uses authenticated, byte-range-enabled `/api/jobs/:id/stream/:name`;
-metadata is available at `/api/jobs/:id/lyrics/:name`. All approved users can listen.
+metadata without lyrics is available at `/api/jobs/:id/files/:name/metadata`,
+and lyrics at `/api/jobs/:id/lyrics/:name`. All approved users can listen.
 Accompaniment files also support individual downloads, deletion, ZIP downloads,
 and are preserved across reruns.
 
