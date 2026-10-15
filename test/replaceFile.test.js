@@ -340,8 +340,8 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
     assert.equal(result.body.file.downloadUrl, before.downloadUrl);
     assert.equal(result.body.metadata.title, result.body.file.title);
     assert.equal(result.body.metadata.transcriptionLocked, true);
-    assert.equal(result.body.metadata.uslt, 'New plain lyrics');
-    assert.deepEqual(result.body.metadata.sylt, [{ time: 1, text: 'New timed line' }]);
+    assert.equal(Object.hasOwn(result.body.metadata, 'uslt'), false);
+    assert.equal(Object.hasOwn(result.body.metadata, 'sylt'), false);
     assert.equal(result.body.metadata.artwork, `data:image/png;base64,${imageBuffer.toString('base64')}`);
     const cacheFiles = await fs.readdir(path.join(directory, 'data', 'artwork-thumbnails'), { recursive: true });
     const cachedCovers = await Promise.all(cacheFiles.filter((file) => file.endsWith('.avif'))
@@ -357,8 +357,10 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
     assert.equal(ranged.status, 206);
     assert.deepEqual(ranged.buffer, replacement.subarray(0, 16));
     const metadata = (await call(`/api/jobs/${job.id}/lyrics/${encodeURIComponent(songName)}`)).body;
-    const { canEdit, ...storedMetadata } = metadata;
+    const { canEdit, sylt, uslt, ...storedMetadata } = metadata;
     assert.equal(canEdit, true);
+    assert.equal(uslt, 'New plain lyrics');
+    assert.deepEqual(sylt, [{ time: 1, text: 'New timed line' }]);
     assert.deepEqual(storedMetadata, result.body.metadata);
     assert.deepEqual((await call(`/api/jobs/${job.id}/files`)).body.files.find((file) => file.name === songName), result.body.file);
     const stored = await readPostgresJob(database, job.id);
@@ -388,8 +390,8 @@ test('Replace File HTTP uploads preserve song identity and fail safely', { timeo
     }
     assert.equal(result.body.metadata.artwork, null);
     assert.equal((await call(result.body.file.artworkUrl)).status, 404);
-    assert.equal(result.body.metadata.uslt, '');
-    assert.deepEqual(result.body.metadata.sylt, []);
+    assert.equal(Object.hasOwn(result.body.metadata, 'uslt'), false);
+    assert.equal(Object.hasOwn(result.body.metadata, 'sylt'), false);
     assert.deepEqual(stored.transcriptions[songName], { noVocalsName });
     assert.deepEqual((await call(result.body.file.streamUrl)).buffer, untagged);
     await assertClean();

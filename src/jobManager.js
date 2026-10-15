@@ -982,7 +982,7 @@ export async function replaceJobFile(id, fileName, user, receiveFile) {
       const staged = path.join(directory, path.basename(fileName));
       const backup = path.join(directory, 'original');
       await receiveFile(staged);
-      const metadata = await readSongMetadata(staged);
+      const metadata = await readSongMetadata(staged, { includeLyrics: false });
       const indexed = { ...Object.fromEntries(songMetadataFields.map((field) => [field, metadata[field]])),
         rating: metadata.rating };
       const updatedAt = new Date().toISOString();

@@ -16,7 +16,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { fileTypeFromBuffer } from 'file-type';
-import { readSongArtwork } from '../src/music.js';
+import { readSongArtwork, readSongMetadata } from '../src/music.js';
 import { removeSongThumbnail } from '../src/artworkThumbnails.js';
 
 const fixtureCleanups = new WeakMap();
@@ -1067,6 +1067,41 @@ test('metadata search indexes existing embedded tags once and includes new impor
   assert.equal(result.total, 1);
   assert.equal(result.files[0].jobId, imported.id);
   assert.equal(result.files[0].artist, 'Imported artist');
+});
+
+test('file replacement omits lyric payloads while preserving uploaded lyrics and transcription locks', async () => {
+  const outputDir = path.join(fixtureDirectory, 'replacement-metadata');
+  await fs.mkdir(outputDir);
+  const name = 'Song.mp3';
+  const filePath = path.join(outputDir, name);
+  await fs.writeFile(filePath, 'old audio');
+  const manager = await import('../src/jobManager.js?replacement-metadata');
+  const owner = { id: 'owner', role: 'user' };
+  const job = { id: 'replacement-metadata', url: 'import:replacement-metadata', status: 'completed',
+    outputDir, files: [name], initiatedBy: owner, createdAt: new Date().toISOString(),
+    songMetadata: { [name]: { transcriptionLocked: true } } };
+  await writeJob(openDatabase(), job);
+  const replacement = NodeID3.write({
+    title: 'Replacement', artist: 'New artist',
+    unsynchronisedLyrics: { language: 'eng', text: 'New plain lyrics' },
+    synchronisedLyrics: [{ language: 'eng', timeStampFormat: 2, contentType: 1,
+      synchronisedText: [{ timeStamp: 1000, text: 'New timed lyrics' }] }]
+  }, Buffer.from('replacement audio'));
+  const result = await manager.replaceJobFile(job.id, name, owner, (staged) => fs.writeFile(staged, replacement));
+  assert.equal(result.metadata.title, 'Replacement');
+  assert.equal(result.metadata.artist, 'New artist');
+  assert.equal(result.metadata.transcriptionLocked, true);
+  assert.equal(Object.hasOwn(result.metadata, 'sylt'), false);
+  assert.equal(Object.hasOwn(result.metadata, 'uslt'), false);
+  assert.equal(Object.hasOwn(result.job.songMetadata[name], 'sylt'), false);
+  assert.equal(Object.hasOwn(result.job.songMetadata[name], 'uslt'), false);
+  assert.deepEqual(await fs.readFile(filePath), replacement);
+  const lyrics = await readSongMetadata(filePath);
+  assert.deepEqual(lyrics.sylt, [{ time: 1, text: 'New timed lyrics' }]);
+  assert.equal(lyrics.uslt, 'New plain lyrics');
+  const persisted = await manager.getJob(job.id);
+  assert.equal(persisted.songMetadata[name].title, 'Replacement');
+  assert.equal(persisted.songMetadata[name].transcriptionLocked, true);
 });
 
 test('transcription locks persist, preserve audio and reject transcription until unlocked', async (testContext) => {

@@ -1564,7 +1564,8 @@ validation tools leave the original file unchanged.
 `POST /api/jobs/:id/files/:name/replace` accepts `multipart/form-data` with exactly
 one `file` field and no other fields. URL-encode the full server filename,
 including `[NoVocals]/`. A successful response contains the refreshed `file`
-descriptor (including its versioned `streamUrl`) and song `metadata`.
+descriptor (including its versioned `streamUrl`) and song `metadata` without
+lyrics. Replacement lyrics remain in the file and can be fetched from the lyrics endpoint.
 Missing, invalid, or mismatched audio returns `400`; files over 512 MB return `413`.
 
 ## Transcription and job player
