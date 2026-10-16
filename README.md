@@ -201,7 +201,9 @@ download. Concurrent submissions create at most one job. Private duplicates
 return HTTP 409 without disclosing their identity or media links.
 
 New jobs return HTTP 202. Existing queued/running jobs also return HTTP 202 without
-starting another download; other duplicates return HTTP 200. Example ready duplicate:
+starting another download. Failed duplicates are rerun using the same job ID before
+responding, subject to KaraokeParty's job modification permissions, and return HTTP
+202 while queued/running. Other duplicates return HTTP 200. Example ready duplicate:
 
 ```json
 {
@@ -220,9 +222,9 @@ starting another download; other duplicates return HTTP 200. Example ready dupli
 
 While downloading, or when no playable file exists, `ready` is false and both
 playback URLs are null. Poll `GET /api/karaoke/jobs/:id` with the same key for the
-current status and links; this returns HTTP 200 for a visible video job. Failed
-jobs are not automatically retried: an administrator can inspect and rerun them
-through the normal job-management UI. Polling returns no job logs or filesystem paths.
+current status and links; this returns HTTP 200 for a visible video job. To retry a
+failed job, repeat the add request. Status polling does not trigger retries and
+returns no job logs or filesystem paths.
 
 To remove only one playlist's reference, use the same authenticated endpoint:
 

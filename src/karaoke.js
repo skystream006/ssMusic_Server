@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import { openDatabase, withTransaction } from './database.js';
 import { ensureKaraokePartyUser } from './authStore.js';
-import { createJob, deleteJob, getJob, getJobs, getFilePath, isFileInsideJobFolder, isValidJobFileName } from './jobManager.js';
+import { createJob, deleteJob, getJob, getJobs, getFilePath, isFileInsideJobFolder, isValidJobFileName, rerunJob } from './jobManager.js';
 import { linkLibraryJob } from './libraryStore.js';
 import { mediaType } from './media.js';
 import { canReadAllFiles } from './privacy.js';
@@ -97,6 +97,7 @@ export async function submitKaraokeJob(req, res) {
       if (!job || !canReadAllFiles(job, req.user)) {
         return res.status(409).json({ error: 'This source URL is unavailable' });
       }
+      if (job.status === 'failed') job = await rerunJob(job.id, owner);
       if (!duplicate) await linkLibraryJob(owner.id, job, await getJobs(owner.id));
       const playlistCount = await withTransaction(database, async () => {
         await database.prepare(`INSERT INTO karaoke_playlist_jobs (playlist_id, video_url, job_id) VALUES ($1, $2, $3)

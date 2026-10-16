@@ -573,6 +573,40 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     await store.updateUser(owner.id, { status: 'approved' }, users.Admin.id);
   });
 
+  await context.test('KaraokeParty add retries failed video jobs before responding but status polling does not', async () => {
+    const owner = (await store.listUsers()).find((user) => user.name === 'KaraokeParty');
+    for (const tracked of [false, true]) {
+      const jobId = tracked ? 'failed-tracked-video' : 'failed-untracked-video';
+      const videoURL = tracked ? 'https://www.youtube.com/watch?v=failed00001' : 'https://www.youtube.com/watch?v=failed00002';
+      const outputDir = path.join(outputRoot, jobId);
+      const archive = path.join(outputDir, '.download-archive.txt');
+      await fs.mkdir(outputDir, { recursive: true });
+      await fs.writeFile(archive, 'previous attempt');
+      await writeJob(database, { id: jobId, url: videoURL, downloadType: 'video', isPlaylist: false,
+        status: 'failed', error: 'Previous download failed', outputDir, files: [], initiatedBy: { id: owner.id },
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      if (tracked) {
+        await database.prepare('INSERT INTO karaoke_playlist_jobs (playlist_id, video_url, job_id) VALUES ($1, $2, $3)')
+          .run('retry-list', videoURL, jobId);
+      }
+      const polled = await call(`/api/karaoke/jobs/${jobId}`, keyHeaders);
+      assert.equal(polled.status, 200);
+      assert.equal(polled.body.status, 'failed');
+      assert.equal(await fs.readFile(archive, 'utf8'), 'previous attempt');
+      const retried = await call('/api/karaoke/jobs', keyHeaders, 'POST', { videoURL, playlistId: 'retry-list' });
+      assert.equal(retried.status, 202, retried.text);
+      assert.ok(['queued', 'running'].includes(retried.body.status), retried.text);
+      assert.equal(retried.body.jobId, jobId);
+      assert.equal(retried.body.duplicate, true);
+      assert.equal(retried.body.ready, false);
+      assert.equal(retried.body.playUrl, null);
+      assert.equal(retried.body.playerUrl, null);
+      assert.equal(retried.body.playlistCount, 1);
+      assert.equal(await fs.stat(archive).catch(() => null), null);
+      assert.equal((await database.prepare('SELECT count(*) AS count FROM jobs WHERE url = $1').get(videoURL)).count, 1);
+    }
+  });
+
   await context.test('KaraokeParty add/remove tracks playlist references durably and deletes only the final owned video', async () => {
     const route = '/api/karaoke/jobs';
     const videoURL = 'https://youtu.be/9bZkp7q19f0';
