@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Router } from 'express';
 import { openDatabase } from './database.js';
 import { getFilePath, isFileInsideJobFolder, isValidJobFileName } from './jobManager.js';
-import { isSongFile } from './transcription.js';
+import { isPlayableFile } from './media.js';
 import { readSongMetadata } from './music.js';
 import { individualPlaylistNames } from './library.js';
 import { entryVisibilitySql, fileVisibilitySql, jobVisibilitySql } from './privacy.js';
@@ -34,7 +34,7 @@ function canShare(job, user) {
 }
 
 async function resolveSong(job, name) {
-  if (!job.outputDir || !isValidJobFileName(name) || !isSongFile(name)) throw unavailable();
+  if (!job.outputDir || !isValidJobFileName(name) || !isPlayableFile(name)) throw unavailable();
   const filePath = getFilePath(job, name);
   const [outputDir, realPath] = await Promise.all([fs.realpath(job.outputDir), fs.realpath(filePath)]);
   if (outputDir !== path.resolve(job.outputDir) || realPath !== filePath
@@ -60,7 +60,7 @@ export async function createMediaShare(req, res) {
       const creator = await database.prepare('SELECT id, role, status FROM users WHERE id = $1').get(req.user.id);
       const record = await database.prepare(`SELECT jobs.data FROM jobs
         JOIN songs ON songs.job_id = jobs.id
-        WHERE jobs.id = $1 AND songs.name = $2 AND songs.media_type = 'audio'
+        WHERE jobs.id = $1 AND songs.name = $2 AND songs.media_type IN ('audio', 'video')
           AND ${fileVisibilitySql('jobs', 'songs.name', 'NULL')}`)
         .get(req.params.id, req.params.name);
       if (!record) throw unavailable();
@@ -140,7 +140,7 @@ async function resolveShare(token) {
     JOIN songs ON songs.job_id = shares.job_id AND songs.name = shares.name
     JOIN jobs ON jobs.id = songs.job_id
     JOIN users ON users.id = shares.creator_id
-    WHERE shares.token_hash = $1 AND songs.media_type = 'audio'
+    WHERE shares.token_hash = $1 AND songs.media_type IN ('audio', 'video')
       AND ${fileVisibilitySql('jobs', 'songs.name', 'NULL')}`).get(hashToken(token));
   if (!record) throw unavailable();
   const job = JSON.parse(record.data);

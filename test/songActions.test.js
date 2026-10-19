@@ -653,6 +653,11 @@ test('sharing explains unauthenticated read-only access before generating a link
   assert.match(html, /Generate public link/);
   assert.match(html, /Cancel/);
   assert.doesNotMatch(html, /Copy link|href="\/share\//);
+  const video = renderToStaticMarkup(createElement(ShareMediaDialog, {
+    file: { name: 'Movie.mp4' }, jobId: 'job', request() {}, onClose() {}
+  }));
+  assert.match(video, /Anyone with this link can watch/);
+  assert.match(video, /Generate public link/);
 });
 
 test('privacy changes require ownership, never contributor, linked or administrator privileges', () => {
@@ -755,7 +760,7 @@ test('music file privacy controls reflect ownership, inherited privacy, read-onl
   }
 });
 
-test('share media dropdown actions respect audio formats, permissions and busy states', () => {
+test('share media dropdown actions respect audio and video formats, permissions and busy states', () => {
   const previousWindow = globalThis.window;
   globalThis.window = { location: { search: '' } };
   try {
@@ -765,7 +770,7 @@ test('share media dropdown actions respect audio formats, permissions and busy s
           songState: () => ({ canModify, disabled }) }
       })));
     const buttons = (html) => html.match(/<button[^>]*aria-label="Share Media [^"]*"[^>]*>/g) || [];
-    for (const name of ['Song.mp3', '[NoVocals]/Song.mp3', 'Song.wav', 'Song.flac']) {
+    for (const name of ['Song.mp3', '[NoVocals]/Song.mp3', 'Song.wav', 'Song.flac', 'Movie.mp4', 'Movie.M4V', 'Movie.webm', 'Movie.mov', 'Movie.ogv']) {
       const actions = buttons(render({ name }));
       assert.equal(actions.length, 1, name);
       for (const button of actions) {
@@ -773,12 +778,15 @@ test('share media dropdown actions respect audio formats, permissions and busy s
         assert.match(button, /aria-haspopup="dialog"/);
       }
     }
-    for (const options of [{ disabled: true }, { saving: true }]) {
-      for (const button of buttons(render(options))) assert.match(button, /disabled=""/);
+    for (const name of ['Song.mp3', 'Movie.mp4']) {
+      for (const options of [{ disabled: true }, { saving: true }]) {
+        assert.match(buttons(render({ name, ...options }))[0], /disabled=""/);
+      }
+      for (const options of [{ canModify: false }, { readOnly: true }]) {
+        assert.equal(buttons(render({ name, ...options })).length, 0);
+      }
     }
-    for (const options of [{ canModify: false }, { readOnly: true }, { name: 'Movie.mp4' }, { name: 'Notes.txt' }]) {
-      assert.equal(buttons(render(options)).length, 0);
-    }
+    assert.equal(buttons(render({ name: 'Notes.txt' })).length, 0);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;

@@ -2,6 +2,7 @@ import { Children, cloneElement, useEffect, useId, useRef, useState } from 'reac
 import { Check, CircleAlert, Clock3, Copy, ExternalLink, FileAudio, ImagePlus, Info, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Share2, Star, Trash2, Upload, X } from 'lucide-react';
 import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
 import { individualSongsId, individualVideosId } from '../../src/library.js';
+import { mediaType } from '../../src/media.js';
 import { sortSelectOptions } from './selectOptions.js';
 
 export const transcriptionInactiveMessage = 'Transciption service is currently inactive. Refresh the page when transcription service is available';
@@ -166,7 +167,7 @@ export function ShareMediaDialog({ file, jobId, playlist, request, onClose }) {
     aria-describedby={`${headingId}-help`} onCancel={(event) => { event.preventDefault(); if (!generatingRef.current) onClose(); }}>
     <h2 id={headingId}>{playlist ? 'Share Playlist' : 'Share Media'}</h2>
     <p className="metadata-filename">{playlist ? playlist.playlistTitle : file.title || file.name}</p>
-    <p id={`${headingId}-help`}>Anyone with this link can listen, read lyrics and metadata, and save {playlist ? 'the public songs in this playlist' : 'this file'} without signing in. They cannot edit {playlist ? 'the playlist' : 'it'}. Only share content you have permission to share.</p>
+    <p id={`${headingId}-help`}>Anyone with this link can {mediaType(file?.name) === 'video' ? 'watch' : 'listen'}, read lyrics and metadata, and save {playlist ? 'the public songs in this playlist' : 'this file'} without signing in. They cannot edit {playlist ? 'the playlist' : 'it'}. Only share content you have permission to share.</p>
     {privateFile && <p className="notice warning" role="status">{playlist ? 'Private playlists cannot be shared. Only the owner can access this playlist.' : 'Private files cannot be shared. Only the owner can access this file.'}</p>}
     {url && !privateFile && <>
       <label className="sr-only" htmlFor={`${headingId}-link`}>{playlist ? 'Public playlist link' : 'Public media link'}</label>

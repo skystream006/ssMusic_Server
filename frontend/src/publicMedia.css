@@ -59,6 +59,7 @@
 .public-media-section-heading > span { color: var(--muted); font-size: 11px; }
 .public-media-player { margin-bottom: 24px; }
 .public-media-player audio { display: block; width: 100%; min-width: 0; height: 54px; }
+.public-media-player video { display: block; width: 100%; min-width: 0; aspect-ratio: 16 / 9; max-height: 70dvh; object-fit: contain; background: #000; }
 .public-media-error { margin: 16px 0 0; padding: 12px 14px; border-left: 3px solid var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--danger); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 
 .public-media-columns { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 1.7fr); align-items: start; gap: 24px; }
@@ -88,7 +89,7 @@
 .public-media-state p { max-width: 620px; margin: 0; color: var(--muted); font-size: 14px; line-height: 1.8; }
 .public-media-retry { margin-top: 4px; }
 .public-media-footer { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); text-align: center; font-size: 11px; line-height: 1.7; }
-.public-media-page :is(a, button, audio):focus-visible { outline: 2px solid var(--royal); outline-offset: 3px; }
+.public-media-page :is(a, button, audio, video):focus-visible { outline: 2px solid var(--royal); outline-offset: 3px; }
 
 .public-playlist-page { width: min(1380px, calc(100% - 48px)); }
 .public-playlist-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px 24px; margin: 30px 0; }

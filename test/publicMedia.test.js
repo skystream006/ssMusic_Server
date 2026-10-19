@@ -206,6 +206,24 @@ test('playback and saving use only the public URLs, without autoplay', () => {
   assert.match(html, />Save file<\/a>/);
 });
 
+test('public videos use responsive native video controls and public download links', () => {
+  for (const name of ['Movie.mp4', 'Movie.M4V', 'Movie.webm', 'Movie.mov', 'Movie.ogv']) {
+    const html = render({ media: { ...media, name }, duration: 180, elapsed: 15 });
+    const video = html.match(/<video[^>]*>/)?.[0];
+    assert.match(video, /controls=""/);
+    assert.match(video, /preload="metadata"/);
+    assert.match(video, /playsInline=""/i);
+    assert.match(video, /src="\/api\/public\/media\/token\/stream"/);
+    assert.match(video, /aria-label="Video player for Evening song"/);
+    assert.doesNotMatch(video, /autoplay/i);
+    assert.doesNotMatch(html, /<audio\b/);
+    assert.match(html, />Watch<\/h2>/);
+    assert.match(html, /Shared video/);
+    assert.ok(html.includes(`download="${name}"`));
+    assert.match(html, /No account needed/);
+  }
+});
+
 test('shared playback retains native controls without a duplicate position slider', () => {
   const html = render({ duration: 180, elapsed: 15 });
   assert.equal((html.match(/<audio\b/g) || []).length, 1);
@@ -366,13 +384,13 @@ test('loading, unavailable and playback failures have accessible non-authenticat
   const loading = renderToStaticMarkup(createElement(PublicMedia, { token: 'shared-token', request() { requests++; } }));
   assert.match(loading, /aria-busy="true"/);
   assert.match(loading, /role="status"/);
-  assert.match(loading, /Loading shared audio/);
+  assert.match(loading, /Loading shared media/);
   assert.doesNotMatch(loading, /<audio\b|<form\b/);
   assert.equal(requests, 0);
 
   const unavailable = render({ media: null, error: 'The file is no longer available.', onRetry() {} });
   assert.match(unavailable, /role="alert"/);
-  assert.match(unavailable, /Shared audio unavailable/);
+  assert.match(unavailable, /Shared media unavailable/);
   assert.match(unavailable, /The file is no longer available/);
   assert.match(unavailable, />Try again<\/button>/);
   assert.doesNotMatch(unavailable, /<audio\b|type="range"|Log in|Sign in/);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Download, Headphones, ListMusic, Maximize2, Music2, Play, SkipBack, SkipForward, X } from 'lucide-react';
 import LyricTimeline from './LyricTimeline.jsx';
+import { mediaType } from '../../src/media.js';
 import appIcon from './assets/ic_launcher.png';
 import './publicMedia.css';
 
@@ -167,7 +168,9 @@ export function PublicMediaView({
 }) {
   const Container = embedded ? 'section' : 'main';
   const Heading = embedded ? 'h2' : 'h1';
-  const title = displayText(media?.title, displayText(media?.name, 'Shared audio'));
+  const isVideo = mediaType(media?.name) === 'video';
+  const MediaElement = isVideo ? 'video' : 'audio';
+  const title = displayText(media?.title, displayText(media?.name, 'Shared media'));
   const knownDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   const position = Math.min(knownDuration, Math.max(0, Number.isFinite(elapsed) ? elapsed : 0));
   const canSeek = Boolean(media?.streamUrl && knownDuration && !playbackError);
@@ -180,15 +183,15 @@ export function PublicMediaView({
   return <Container className={`public-media-page${embedded ? ' public-media-embedded' : ''}`} aria-busy={loading}>
     {!embedded && <header className="public-media-masthead">
       <span className="public-media-brand"><img src={appIcon} alt="" width="34" height="34" />ssMusic</span>
-      <span className="public-media-badge"><Headphones size={14} aria-hidden="true" />Shared listening</span>
+      <span className="public-media-badge"><Headphones size={14} aria-hidden="true" />{isVideo ? 'Shared video' : 'Shared listening'}</span>
     </header>}
 
     {loading ? <section className="public-media-state" role="status">
       <Music2 size={32} aria-hidden="true" />
-      <Heading>Loading shared audio…</Heading>
+      <Heading>Loading shared media…</Heading>
       <p>Getting the track and its details ready.</p>
     </section> : error || !media ? <section className="public-media-state" role="alert">
-      <Heading>Shared audio unavailable</Heading>
+      <Heading>Shared media unavailable</Heading>
       <p>{error || 'This link may have expired, been revoked, or the file is no longer available.'}</p>
       {onRetry && <button className="secondary-button public-media-retry" type="button" onClick={onRetry}>Try again</button>}
     </section> : <>
@@ -198,11 +201,11 @@ export function PublicMediaView({
             : <Music2 size={72} strokeWidth={1} aria-hidden="true" />}
         </div>
         <div className="public-media-summary">
-          <p className="public-media-eyebrow">A track shared with you</p>
+          <p className="public-media-eyebrow">{isVideo ? 'A video shared with you' : 'A track shared with you'}</p>
           <Heading id="public-media-title">{title}</Heading>
           <p className="public-media-artist">{displayText(media.artist, 'Unknown artist')}</p>
           <p className="public-media-album">{displayText(media.album, 'Unknown album')}</p>
-          <p className="public-media-file"><span>{displayText(media.name, 'Audio file')}</span><span>{formatSize(media.sizeBytes)}</span></p>
+          <p className="public-media-file"><span>{displayText(media.name, 'Media file')}</span><span>{formatSize(media.sizeBytes)}</span></p>
           {media.downloadUrl && <a className="primary-button public-media-download" href={media.downloadUrl} download={media.name || true}>
             <Download size={17} aria-hidden="true" />Save file
           </a>}
@@ -211,16 +214,16 @@ export function PublicMediaView({
 
       <section className="public-media-player public-media-panel" aria-labelledby="public-media-listen">
         <div className="public-media-section-heading">
-          <h2 id="public-media-listen">Listen</h2>
+          <h2 id="public-media-listen">{isVideo ? 'Watch' : 'Listen'}</h2>
           {navigation || <span>Press play when you’re ready</span>}
         </div>
-        {media.streamUrl ? <audio ref={audioRef} controls preload="metadata" src={media.streamUrl} autoPlay={autoPlay || undefined}
-          aria-label={`Audio player for ${title}`}
+        {media.streamUrl ? <MediaElement ref={audioRef} controls preload="metadata" src={media.streamUrl} autoPlay={autoPlay || undefined}
+          playsInline={isVideo || undefined} aria-label={`${isVideo ? 'Video' : 'Audio'} player for ${title}`}
           onLoadedMetadata={onProgress} onDurationChange={onProgress} onTimeUpdate={onProgress}
           onSeeked={onProgress} onEnded={onEnded || onProgress} onError={onPlaybackError}
           onCanPlay={onPlaybackReady} onPlaying={onPlaybackReady}>
-          Your browser does not support audio playback. Use Save file to listen locally.
-        </audio> : <p className="public-media-error" role="alert">Audio playback is unavailable. You can still save the file.</p>}
+          Your browser does not support {isVideo ? 'video' : 'audio'} playback. Use Save file to play it locally.
+        </MediaElement> : <p className="public-media-error" role="alert">Playback is unavailable. You can still save the file.</p>}
         {playbackError && <p className="public-media-error" role="alert">{playbackError}</p>}
       </section>
 
@@ -240,7 +243,7 @@ export function PublicMediaView({
           error={lyricsError} onToggle={onToggleLyrics} onRetry={onRetryLyrics} />
       </div>
     </>}
-    {!embedded && <footer className="public-media-footer">Shared for listening. No account needed.</footer>}
+    {!embedded && <footer className="public-media-footer">Shared for {isVideo ? 'viewing' : 'listening'}. No account needed.</footer>}
   </Container>;
 }
 
@@ -301,7 +304,7 @@ function PublicMediaPage({ token, request, endpoint, embedded = false, autoPlay 
       const position = seekPublicAudio(audioRef.current, seconds);
       if (position !== null) setElapsed(position);
     } catch {
-      setPlaybackError('Could not seek this audio. Try the audio controls or save the file to listen locally.');
+      setPlaybackError('Could not seek this media. Try the playback controls or save the file to play it locally.');
     }
   }
 
@@ -310,7 +313,7 @@ function PublicMediaPage({ token, request, endpoint, embedded = false, autoPlay 
     lyricsError={lyricsState.error} onToggleLyrics={toggleLyrics} onRetryLyrics={() => lyricsLoaderRef.current?.load()}
     embedded={embedded} autoPlay={autoPlay} onEnded={onEnded} navigation={navigation}
     onProgress={updateProgress} onSeek={seek}
-    onPlaybackError={() => setPlaybackError('This audio could not be played. The link may no longer be available, or your browser may not support this format. Try saving the file to listen locally.')}
+    onPlaybackError={() => setPlaybackError('This media could not be played. The link may no longer be available, or your browser may not support this format. Try saving the file to play it locally.')}
     onPlaybackReady={() => setPlaybackError('')} onRetry={token || endpoint ? () => setAttempt((value) => value + 1) : undefined} />;
 }
 

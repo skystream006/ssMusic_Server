@@ -50,6 +50,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
   const outputRoot = path.join(directory, 'output');
   const songName = 'Song 100% #1.mp3';
   const nestedName = `[NoVocals]/${songName}`;
+  const videoNames = ['movie.mp4', 'Movie.M4V', 'Movie.webm', 'Movie.mov', 'Movie.ogv'];
   const audio = NodeID3.write({
     title: 'Shared song', artist: 'An artist', album: 'An album', performerInfo: 'Album artist',
     genre: 'Rock', year: '2026', trackNumber: '2/8', partOfSet: '1/2',
@@ -75,7 +76,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     return job;
   }
   const job = await seedJob('shared-song', users.Owner,
-    [songName, nestedName, 'Other.mp3', 'Track.flac', 'Layer II.MP2', 'metadata.json', 'movie.mp4', 'missing.mp3', 'directory.mp3'],
+    [songName, nestedName, 'Other.mp3', 'Track.flac', 'Layer II.MP2', 'metadata.json', ...videoNames, 'missing.mp3', 'directory.mp3'],
     [{ id: users.Contributor.id, name: users.Contributor.name }]);
   await fs.unlink(path.join(job.outputDir, 'missing.mp3'));
   await fs.unlink(path.join(job.outputDir, 'directory.mp3'));
@@ -175,7 +176,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     contributorToken = await share(credentials.Contributor[0]);
     adminToken = await share(credentials.Admin[0], 'unowned');
     assert.equal((await call(createPath('unowned'), 'POST', credentials.Owner[0])).status, 403);
-    for (const name of ['metadata.json', 'movie.mp4', 'unlisted.mp3', 'missing.mp3', 'directory.mp3',
+    for (const name of ['metadata.json', 'unlisted.mp3', 'missing.mp3', 'directory.mp3',
       '../Other.mp3', 'bad\\path.mp3', '.download-archive.txt', 'bad\0.mp3']) {
       const response = await call(createPath(job.id, name), 'POST', credentials.Owner[0]);
       assert.equal(response.status, 404, response.text);
@@ -401,6 +402,54 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
         assert.equal(response.text, 'non-mp3 fixture');
         if (name.endsWith('.MP2')) assert.match(response.headers['content-type'], /^audio\/mpeg/);
       }
+    }
+  });
+  await context.test('video links support metadata, streaming, ranges, downloads, privacy and revocation', async (subcontext) => {
+    subcontext.after(async () => {
+      await stopServer();
+      await startServer();
+    });
+    for (const headers of [credentials.Other.at(-1), ...credentials.Reader]) {
+      assert.equal((await call(createPath(job.id, videoNames[0]), 'POST', headers)).status, 403);
+    }
+    for (const name of videoNames) {
+      await stopServer();
+      await startServer();
+      const token = await share(credentials.Owner[0], job.id, name);
+      const metadata = await call(mediaPath(token));
+      assert.equal(metadata.status, 200, metadata.text);
+      assert.equal(metadata.body.name, path.basename(name));
+      assert.equal(metadata.body.title, path.parse(name).name);
+      assert.deepEqual((await call(metadata.body.lyricsUrl)).body, { sylt: [], uslt: '' });
+      privacyHeaders(metadata);
+      for (const action of ['stream', 'download']) {
+        const route = `${mediaPath(token)}/${action}`;
+        const full = await call(route);
+        assert.equal(full.status, 200, full.text);
+        assert.equal(full.text, 'non-mp3 fixture');
+        assert.match(full.headers['content-type'], /^video\//);
+        privacyHeaders(full);
+        const head = await call(route, 'HEAD');
+        assert.equal(head.status, 200);
+        assert.equal(head.buffer.length, 0);
+        assert.equal(Number(head.headers['content-length']), full.buffer.length);
+        const partial = await call(route, 'GET', { Range: 'bytes=0-3' });
+        assert.equal(partial.status, 206);
+        assert.equal(partial.headers['content-range'], `bytes 0-3/${full.buffer.length}`);
+        assert.equal(partial.text, 'non-');
+        if (action === 'download') assert.match(full.headers['content-disposition'], /attachment/);
+      }
+      const current = await readPostgresJob(database, job.id);
+      for (const privacy of [{ private: true }, { privateFiles: [name] }]) {
+        await writeJob(database, { ...current, ...privacy });
+        assert.equal((await call(createPath(job.id, name), 'POST', credentials.Owner[0])).status, 404);
+        await unavailable(token);
+      }
+      await writeJob(database, current);
+      assert.equal((await call(mediaPath(token))).status, 200);
+      const revoked = await call(`/api/admin/media-shares/${hash(token)}`, 'DELETE', credentials.Admin[0]);
+      assert.equal(revoked.status, 204, revoked.text);
+      await unavailable(token);
     }
   });
   await context.test('streaming, ranges, HEAD and attachment downloads work for nested song names', async () => {

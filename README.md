@@ -274,21 +274,22 @@ job-deletion API, or modify jobs outside these playlist-scoped actions.
 
 ## Public media links
 
-Open a song's **Share Media** action, review the privacy warning, then choose
+Open an audio or video file's **Share Media** action, review the privacy warning, then choose
 **Generate public link** and **Copy link**. Recipients can open the link without
-signing in, play the song, or choose **Save file** on the public page to download it.
+signing in, play the media, or choose **Save file** on the public page to download it.
 Choose **Show lyrics** to load lyrics on demand. Synchronized (SYLT) lyrics use the music player's highlighting and autoscroll;
 select a lyric line to seek. Choose **Fullscreen lyrics** to expand the lyrics
 without interrupting playback, switch between SYLT and plain-text USLT, and
 return using the close button or Escape. A full-page overlay is available when
 the browser does not support native fullscreen.
 
-Approved song owners, contributors, and administrators can create a public link
+Approved media owners, contributors, and administrators can create a public link
 with `POST /api/jobs/:id/files/:name/share` (URL-encode the complete filename).
-It returns `{ "url": "/share/<token>" }`. Anyone with this link can listen to and
-download that one audio file without signing in, and see its embedded metadata,
-artwork, rating, and lyrics. Other songs, playlists, job details, and editing
-remain private; videos and non-audio files cannot be shared this way.
+It returns `{ "url": "/share/<token>" }`. Anyone with this link can play and
+download that one audio or video file without signing in, and see its available metadata,
+artwork, rating, and lyrics. Supported video formats are MP4, M4V, WebM, MOV, and OGV;
+in-browser playback depends on the browser's codec support. Other files, playlists,
+job details, and editing remain private; non-media files cannot be shared this way.
 
 For a playlist, open its row's pencil, choose **Share Playlist** in **Edit playlist**,
 then **Generate public link** and **Copy link**. Save any pending edits first.
