@@ -136,6 +136,17 @@ test('music-page sharing loads once and metadata viewing uses the lyric-free end
   assert.match(player, /if \(panel !== 'lyrics'\) return;\s*setLyricsViewers/);
 });
 
+test('music-page metadata saves update rows in place without refreshing the sorted list', async () => {
+  const library = await fs.readFile(new URL('../frontend/src/MusicLibrary.jsx', import.meta.url), 'utf8');
+  const handler = library.match(/function metadataSaved\(file, result\) \{([\s\S]*?)\n  \}/)?.[1];
+  assert.ok(handler);
+  assert.match(handler, /playback\.updateMetadata\(file\.jobId, file\.name, result\)/);
+  assert.match(handler, /current\.files\.map\(/);
+  assert.match(handler, /title: result\.title/);
+  assert.match(handler, /rating: result\.rating/);
+  assert.doesNotMatch(handler, /setRefresh|request\(|\.sort\(|setTrackSort/);
+});
+
 test('song search normalization folds Vietnamese accents and crossed D without changing literal search characters', () => {
   const title = 'Y\u00eau \u0110\u1eebng S\u1ee3 \u0110au';
   for (const value of [title, title.normalize('NFD'), title.toUpperCase(), 'yeu dung so dau']) {

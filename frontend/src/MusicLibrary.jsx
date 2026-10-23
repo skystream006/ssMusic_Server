@@ -606,7 +606,6 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
 
   function metadataSaved(file, result) {
     playback.updateMetadata(file.jobId, file.name, result);
-    if (trackSort !== 'order') setRefresh((value) => value + 1);
     setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(file)
       ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating,
         transcriptionLocked: result.transcriptionLocked } : track) } : current);
