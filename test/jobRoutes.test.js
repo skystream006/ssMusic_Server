@@ -519,6 +519,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await call('/api/preferences', 'PUT', mobileHeaders.Owner, { theme: 'light', mode: 'light' })).status, 200);
   assert.equal((await call('/api/jobs/owned/title', 'PATCH', mobileHeaders.Other, { playlistTitle: 'Denied' })).status, 403);
   assert.equal((await call('/api/library', 'PUT', {}, {})).status, 401);
+  assert.equal((await call('/api/library/playlists', 'POST', {}, { playlistTitle: 'Denied' })).status, 401);
   assert.equal((await call('/api/library/links', 'POST', {}, { jobId: 'music' })).status, 401);
   assert.equal((await call('/api/library/songs/move', 'POST', {}, {})).status, 401);
   assert.equal((await call('/api/preferences', 'PUT', {}, { theme: 'black' })).status, 401);
@@ -529,6 +530,18 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.deepEqual((await call('/api/preferences', 'GET', credentials.Other[0])).body, { theme: 'midnight', mode: 'light' });
   assert.equal((await call('/api/preferences', 'PUT', credentials.Owner[0], { mode: 'invalid' })).status, 400);
   assert.equal((await call('/api/preferences', 'PUT', credentials.Owner[0], { theme: 'invalid' })).status, 400);
+  for (const headers of credentials.Owner) {
+    for (const playlistTitle of [undefined, '', '   ', 'x'.repeat(201)]) {
+      assert.equal((await call('/api/library/playlists', 'POST', headers, { playlistTitle })).status, 400);
+    }
+    const created = await call('/api/library/playlists', 'POST', headers, { playlistTitle: '  Empty playlist  ' });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.job.playlistTitle, 'Empty playlist');
+    assert.deepEqual(created.body.job.files, []);
+    const library = (await call('/api/library', 'GET', headers)).body;
+    assert.ok(library.entries.some((entry) => entry.id === created.body.job.id));
+    assert.equal((await call(`/api/jobs/${created.body.job.id}`, 'DELETE', headers)).status, 204);
+  }
   const initialLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
   assert.equal(initialLibrary.jobs.length, 3);
   assert.equal(initialLibrary.entries.some((entry) => entry.id === 'unowned'), false);

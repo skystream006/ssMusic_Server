@@ -8,7 +8,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, transcribeJobFile } from './jobManager.js';
+import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, importJobFiles, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
@@ -305,6 +305,15 @@ app.get('/api/library/playlists/:id/download', async (req, res) => {
     if (res.destroyed || res.headersSent) return;
     res.removeHeader('Content-Disposition');
     res.status(error.statusCode || 500).type('json').json({ error: error.statusCode ? error.message : 'Unable to download playlist.' });
+  }
+});
+
+app.post('/api/library/playlists', async (req, res) => {
+  try {
+    const job = await importJobFiles({ files: [], playlistTitle: req.body?.playlistTitle, source: 'manual' }, req.user);
+    return res.status(201).json({ job: visibleJob(job, req.user) });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 

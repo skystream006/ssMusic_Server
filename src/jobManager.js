@@ -681,7 +681,8 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
   if (!user?.id) throw Object.assign(new Error('Authentication required'), { statusCode: 401 });
   const linkedPlaylist = source === 'itunes' && !playlistId && !individual
     && Number.isSafeInteger(playlistSongCount) && playlistSongCount > 0;
-  if (!Array.isArray(files) || (!files.length && !linkedPlaylist) || files.some((file) => !isPlayableFile(file.name) || !file.path)) {
+  const emptyPlaylist = source === 'manual' && !playlistId && !individual;
+  if (!Array.isArray(files) || (!files.length && !linkedPlaylist && !emptyPlaylist) || files.some((file) => !isPlayableFile(file.name) || !file.path)) {
     throw Object.assign(new Error('Select supported audio or movie files'), { statusCode: 400 });
   }
   const job = playlistId ? (await getJob(playlistId)) : newJob(`import:${source}`, { id: user.id, name: user.name }, false, downloadType);

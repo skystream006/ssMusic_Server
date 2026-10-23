@@ -1031,6 +1031,28 @@ function makeTranscriptionAudio() {
   return audio;
 }
 
+test('manual playlists persist without a URL or files and validate their names', async () => {
+  const owner = { id: 'manual-playlist-owner', name: 'Playlist owner', role: 'user', status: 'approved',
+    userHandle: 'manual-playlist-owner', credentials: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await writeUser(openDatabase(), owner);
+  const manager = await import(`../src/jobManager.js?manual-playlist=${Date.now()}`);
+  const job = await manager.importJobFiles({ files: [], playlistTitle: '  My playlist  ', source: 'manual' }, owner);
+  assert.equal(job.playlistTitle, 'My playlist');
+  assert.equal(job.source, 'manual');
+  assert.equal(job.isPlaylist, true);
+  assert.equal(job.status, 'completed');
+  assert.equal(job.playlistSongCount, 0);
+  assert.deepEqual(job.files, []);
+  assert.equal((await manager.getJob(job.id)).playlistTitle, 'My playlist');
+  const { getLibrary } = await import('../src/libraryStore.js');
+  assert.ok((await getLibrary(owner.id, await manager.getJobs())).entries.some((entry) => entry.id === job.id));
+  for (const playlistTitle of [undefined, '', '   ', 'x'.repeat(201), 'Invalid\nname']) {
+    await assert.rejects(manager.importJobFiles({ files: [], playlistTitle, source: 'manual' }, owner), { statusCode: 400 });
+  }
+  await assert.rejects(manager.importJobFiles({ files: [], playlistTitle: 'Empty upload' }, owner), { statusCode: 400 });
+  await assert.rejects(manager.importJobFiles({ files: [], playlistTitle: 'Empty single', source: 'manual', individual: true }, owner), { statusCode: 400 });
+});
+
 test('metadata search indexes existing embedded tags once and includes new imports', async () => {
   const outputDir = path.join(fixtureDirectory, 'embedded-search');
   await fs.mkdir(outputDir);

@@ -26,6 +26,7 @@ let replaceSongFile;
 let formatLyricsForCopy;
 let LyricsEditor;
 let ExportLibraryDialog;
+let AddPlaylistDialog;
 let EditPlaylistDialog;
 let FolderDialog;
 let reorderPlaylistTracks;
@@ -51,13 +52,23 @@ before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, PlaybackProvider, readPlaybackSession, writePlaybackSession, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
-  ({ ExportLibraryDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
+  ({ ExportLibraryDialog, AddPlaylistDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
   ({ UsernameForm, LibraryAccessList, SharedRegistrationFields, SettingsTabs, LinkedUsers, OrganizedSharedUsers, OrganizerControl } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('new playlists accept a name without requiring a YouTube URL', () => {
+  const html = renderToStaticMarkup(createElement(AddPlaylistDialog, {}));
+  assert.match(html, /Playlist name/);
+  assert.match(html, /<input[^>]*required=""[^>]*maxLength="200"/);
+  assert.match(html, /YouTube Music URL \(optional\)/);
+  const urlInput = html.match(/<input[^>]*type="url"[^>]*>/)?.[0];
+  assert.ok(urlInput);
+  assert.doesNotMatch(urlInput, /required/);
+});
 
 test('optimistic song reorders preserve page numbering and other playlists without mutating tracks', () => {
   const files = ['First', 'Second', 'Third'].map((name, index) => Object.freeze({
