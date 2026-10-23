@@ -27,6 +27,7 @@ let formatLyricsForCopy;
 let LyricsEditor;
 let ExportLibraryDialog;
 let AddPlaylistDialog;
+let LibraryDestinationDialog;
 let EditPlaylistDialog;
 let FolderDialog;
 let reorderPlaylistTracks;
@@ -52,13 +53,21 @@ before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, PlaybackProvider, readPlaybackSession, writePlaybackSession, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
-  ({ ExportLibraryDialog, AddPlaylistDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
+  ({ ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
   ({ UsernameForm, LibraryAccessList, SharedRegistrationFields, SettingsTabs, LinkedUsers, OrganizedSharedUsers, OrganizerControl } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('Add/Move Song offers a checked move checkbox without changing bulk destination dialogs', () => {
+  const props = { title: 'Add/Move Song', label: 'Add/Move Song', summary: 'Song.mp3', destinations: [{ id: 'mix', title: 'Mix' }] };
+  const html = renderToStaticMarkup(createElement(LibraryDestinationDialog, { ...props, allowMove: true }));
+  assert.match(html, />Add\/Move Song<\/h2>/);
+  assert.match(html, /<input type="checkbox" checked=""\/>Move Song/);
+  assert.doesNotMatch(renderToStaticMarkup(createElement(LibraryDestinationDialog, props)), /type="checkbox"/);
+});
 
 test('new playlists accept a name without requiring a YouTube URL', () => {
   const html = renderToStaticMarkup(createElement(AddPlaylistDialog, {}));

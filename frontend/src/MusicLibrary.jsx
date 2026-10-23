@@ -267,11 +267,12 @@ export function AddPlaylistDialog({ user, request, confirm, onAdded, onClose }) 
   </dialog>;
 }
 
-function LibraryDestinationDialog({ title, summary, label, destinations, folder = false, onSave, onClose }) {
+export function LibraryDestinationDialog({ title, summary, label, destinations, folder = false, allowMove = false, onSave, onClose }) {
   const dialogRef = useRef(null);
   const headingId = useId();
   const destinationId = useId();
   const [destination, setDestination] = useState(folder ? '' : destinations[0]?.id || '');
+  const [move, setMove] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -288,7 +289,7 @@ function LibraryDestinationDialog({ title, summary, label, destinations, folder 
       event.preventDefault();
       if (busy || (!folder && !destination)) return;
       setBusy(true);
-      const result = await onSave(destination || null);
+      const result = await onSave(destination || null, move);
       if (result === true) onClose(); else setError(result || 'Unable to save selection.');
       setBusy(false);
     }}>
@@ -299,6 +300,7 @@ function LibraryDestinationDialog({ title, summary, label, destinations, folder 
         {sortSelectOptions(folder ? [{ id: '', title: 'Library' }, ...destinations] : destinations, (destination) => destination.title)
           .map((destination) => <option key={destination.id} value={destination.id}>{destination.title}</option>)}
       </select>
+      {allowMove && <label className="playlist-privacy"><input type="checkbox" checked={move} disabled={busy} onChange={(event) => setMove(event.target.checked)} />Move Song</label>}
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="dialog-actions"><button className="secondary-button" type="button" disabled={busy} onClick={onClose}>Cancel</button>
         <button className="primary-button" type="submit" disabled={busy || (!folder && !destination)}>{busy ? <RefreshCw className="spin" size={17} /> : label.startsWith('Link') ? <Link size={17} /> : <ArrowRightLeft size={17} />}{label}</button></div>
@@ -806,10 +808,11 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     setRefresh((value) => value + 1);
   }
 
-  function moveSong(track, playlistId) {
+  function moveSong(track, playlistId, move = true) {
     if (!playlistId) { setMovingSong(track); return; }
-    return persistLibrary('/api/library/songs/move', 'POST', {
-      version: libraryVersion.current, jobId: track.jobId, name: track.name, sourcePlaylistId: track.playlistId, playlistId
+    return persistLibrary(move ? '/api/library/songs/move' : '/api/library/songs/transfer', 'POST', {
+      version: libraryVersion.current, sourcePlaylistId: track.playlistId, playlistId,
+      ...(move ? { jobId: track.jobId, name: track.name } : { keys: [songKey(track)], action: 'link' })
     });
   }
 
@@ -1087,9 +1090,9 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     {addingPlaylist && <AddPlaylistDialog user={user} request={request} confirm={confirm} onAdded={playlistAdded} onClose={() => setAddingPlaylist(false)} />}
     {importing && <ImportMusic user={user} request={request} initialPlaylistId={selected?.type === 'playlist' ? selectedId : ''} onClose={() => setImporting(false)} onImported={() => setRefresh((value) => value + 1)} />}
     {exportingLibrary && <ExportLibraryDialog request={request} onClose={() => setExportingLibrary(false)} />}
-    {movingSong && <LibraryDestinationDialog title="Move song" summary={movingSong.name} label="Move song" destinations={entries.filter((entry) => entry.type === 'playlist' && entry.id !== movingSong.playlistId).map((entry) => ({
+    {movingSong && <LibraryDestinationDialog title="Add/Move Song" summary={movingSong.name} label="Add/Move Song" allowMove destinations={entries.filter((entry) => entry.type === 'playlist' && entry.id !== movingSong.playlistId).map((entry) => ({
       id: entry.id, title: `${entry.parentId ? `${folderPath(entryMap.get(entry.parentId))} / ` : ''}${entryTitle(entry)}`
-    }))} onSave={(destination) => moveSong(movingSong, destination)} onClose={() => setMovingSong(null)} />}
+    }))} onSave={(destination, move) => moveSong(movingSong, destination, move)} onClose={() => setMovingSong(null)} />}
     {bulkDialog && <LibraryDestinationDialog folder={bulkDialog.type === 'playlists'}
       title={bulkDialog.type === 'playlists' ? 'Move playlists' : bulkDialog.action === 'link' ? 'Link songs' : 'Move songs'}
       summary={`${bulkDialog.ids?.length || bulkDialog.keys?.length} ${bulkDialog.type === 'playlists' ? 'playlists' : 'songs'} selected`}
