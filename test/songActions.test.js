@@ -61,11 +61,11 @@ before(async () => {
 
 after(async () => { await server?.close(); });
 
-test('Add/Move Song offers a checked move checkbox without changing bulk destination dialogs', () => {
+test('Add/Move Song offers an unchecked move checkbox without changing bulk destination dialogs', () => {
   const props = { title: 'Add/Move Song', label: 'Add/Move Song', summary: 'Song.mp3', destinations: [{ id: 'mix', title: 'Mix' }] };
   const html = renderToStaticMarkup(createElement(LibraryDestinationDialog, { ...props, allowMove: true }));
   assert.match(html, />Add\/Move Song<\/h2>/);
-  assert.match(html, /<input type="checkbox" checked=""\/>Move Song/);
+  assert.match(html, /<input type="checkbox"\/>Move Song/);
   assert.doesNotMatch(renderToStaticMarkup(createElement(LibraryDestinationDialog, props)), /type="checkbox"/);
 });
 

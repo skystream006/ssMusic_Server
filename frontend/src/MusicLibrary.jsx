@@ -272,7 +272,7 @@ export function LibraryDestinationDialog({ title, summary, label, destinations, 
   const headingId = useId();
   const destinationId = useId();
   const [destination, setDestination] = useState(folder ? '' : destinations[0]?.id || '');
-  const [move, setMove] = useState(true);
+  const [move, setMove] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
