@@ -1,5 +1,6 @@
 export const themes = [
   { id: 'midnight', name: 'Midnight blue', color: '#5f7ff0' },
+  { id: 'maize-blue', name: 'Maize and blue', color: '#00274c' },
   { id: 'royal-purple', name: 'Royal purple', color: '#7139c6' },
   { id: 'gold', name: 'Gold', color: '#a77a0a' },
   { id: 'green', name: 'Green', color: '#227452' },

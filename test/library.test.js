@@ -26,6 +26,7 @@ beforeEach(async (context) => {
 
 test('each account retains its own color and light or dark mode across database restarts', async () => {
   assert.deepEqual((await getPreferences('alice')), { theme: 'midnight', mode: 'light' });
+  assert.ok(themes.some((theme) => theme.id === 'maize-blue' && theme.name === 'Maize and blue'));
   for (const theme of themes) {
     for (const mode of ['light', 'dark']) {
       assert.deepEqual((await setTheme('alice', theme.id, mode)), { theme: theme.id, mode });

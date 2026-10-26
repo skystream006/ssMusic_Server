@@ -30,6 +30,12 @@
   --green: #65d6ad; --yellow: #e4bd62; --shadow: #02040b; --field: #080e21;
   --danger: #ff9aab; --warning: #f0cc73; --on-accent: #0c1635;
 }
+:root[data-theme="maize-blue"] {
+  --paper: #f2f5f8; --surface: #ffffff; --surface-raised: #e4ebf2;
+  --ink: #00274c; --muted: #52667a; --line: #c9d5e0; --royal: #00274c;
+  --green: #00274c; --yellow: #8a6600; --shadow: #00172d; --field: #f8fafd;
+  --warning: #8a6600; --on-accent: #ffcb05;
+}
 :root[data-theme="royal-purple"] {
   --paper: #f5f3f8; --surface: #ffffff; --surface-raised: #eee9f6;
   --ink: #292131; --muted: #716779; --line: #ddd5e7; --royal: #7139c6;
@@ -75,6 +81,12 @@
   --ink: #eef3ef; --muted: #a3b5aa; --line: #34493d; --royal: #99ceb6;
   --green: #8fcea9; --yellow: #dfbd73; --shadow: #000000; --field: #131c17;
   --danger: #ff9aab; --warning: #e4bd62; --on-accent: #142019;
+}
+:root[data-theme="maize-blue"][data-theme-mode="dark"] {
+  --paper: #001b35; --surface: #00274c; --surface-raised: #123b60;
+  --ink: #f5f8fc; --muted: #b1c4d7; --line: #365876; --royal: #ffcb05;
+  --green: #ffcb05; --yellow: #ffcb05; --shadow: #000f1f; --field: #001f3d;
+  --warning: #ffcb05; --on-accent: #00274c;
 }
 :root[data-theme="royal-purple"][data-theme-mode="dark"] {
   --paper: #15121c; --surface: #201a2b; --surface-raised: #30243f;
@@ -677,7 +689,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 .library-empty a { text-decoration: none; }
 .library-notice { margin-bottom: 14px; justify-content: space-between; overflow-wrap: anywhere; }
 .library-mobile-tabs { display: none; }
-.player-dock { position: fixed; z-index: 40; inset: auto 0 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 1.35fr) minmax(180px, 1fr); gap: 24px; align-items: center; min-height: 104px; padding: 14px max(24px, calc((100vw - 1500px) / 2)); border-top: 1px solid var(--line); background: var(--surface); box-shadow: 0 -6px 28px color-mix(in srgb, var(--shadow) 18%, transparent); }
+.player-dock { position: fixed; z-index: 40; inset: auto 0 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px 24px; align-items: center; min-height: 104px; padding: 12px 24px; border-top: 1px solid var(--line); background: var(--surface); box-shadow: 0 -6px 28px color-mix(in srgb, var(--shadow) 18%, transparent); }
 .player-dock audio { display: none; }
 .movie-player { position: fixed; z-index: 24; right: 16px; bottom: calc(var(--dock-height, 124px) + 12px); width: min(640px, calc(100% - 32px)); max-height: calc(100dvh - var(--dock-height, 124px) - 24px); overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 10px 40px var(--shadow); }
 .movie-player[hidden] { display: none; }
@@ -697,15 +709,19 @@ code { font: 400 11px 'DM Mono', monospace; }
 .dock-track strong, .dock-track small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock-track strong { font-size: 12px; }
 .dock-track small { font-size: 10px; color: var(--muted); margin-top: 6px; }
-.dock-controls { min-width: 0; }
-.dock-transport { display: flex; align-items: center; justify-content: center; gap: 14px; }
-.dock-transport .round-play { width: 36px; height: 36px; }
+.dock-controls { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
+.dock-transport { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.player-dock .music-icon-button { width: 48px; height: 48px; flex: none; }
+.dock-transport .round-play { width: 56px; height: 56px; flex: none; }
+.dock-transport svg, .dock-tools svg { width: 24px; height: 24px; }
+.dock-transport .round-play svg { width: 28px; height: 28px; }
 .dock-timeline { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
 .dock-timeline time { color: var(--muted); width: 32px; flex: none; font: 9px 'DM Mono', monospace; }
 .dock-timeline time:last-child { text-align: right; }
 .dock-timeline input { min-width: 0; width: 100%; }
-.player-dock input { height: 16px; margin: 0; accent-color: var(--royal); cursor: pointer; }
-.dock-tools { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.player-dock input { height: 32px; margin: 0; accent-color: var(--royal); cursor: pointer; }
+.player-dock .volume-slider { height: 48px; }
+.dock-tools { grid-column: 2; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .volume-slider { width: 75px; min-width: 0; }
 .playback-error { position: absolute; bottom: 100%; right: 20px; max-width: min(600px, calc(100% - 40px)); background: var(--surface); border: 1px solid var(--line); overflow-wrap: anywhere; }
 .player-panel { min-width: 0; margin-left: 24px; padding: 20px 0 20px 20px; border-left: 1px solid var(--line); }
@@ -775,7 +791,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 @media (max-width: 1180px) {
   .library-layout, .library-layout:has(.player-panel) { grid-template-columns: min(460px, calc(100% - 360px)) minmax(0, 1fr); }
   .player-panel { position: fixed; z-index: 15; inset: 145px 24px 116px auto; width: 340px; margin: 0; padding: 20px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 10px 40px var(--shadow); overflow-y: auto; }
-  .player-dock { gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(230px, 1.2fr) auto; }
+  .player-dock { column-gap: 16px; }
   .volume-slider { width: 55px; }
 }
 @media (max-width: 820px) {
@@ -788,9 +804,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .song-select { gap: 6px; }
   .song-number { width: 16px; }
   .song-artwork { width: 32px; height: 32px; }
-  .player-dock { grid-template-columns: minmax(0, 1fr) minmax(220px, 1fr); gap: 12px; padding: 12px 16px; }
-  .dock-tools { grid-column: 1; grid-row: 2; justify-content: flex-start; }
-  .dock-controls { grid-column: 2; grid-row: span 2; }
+  .player-dock { gap: 12px; padding: 12px 16px; }
   .dock-artwork { width: 46px; height: 46px; }
   .dock-track { gap: 10px; }
   .player-panel { bottom: 138px; }
@@ -820,14 +834,11 @@ code { font: 400 11px 'DM Mono', monospace; }
   .song-select small { font-size: 9px; }
   .library-song-row { grid-template-columns: 20px minmax(0, 1fr) var(--song-rating-width) 44px; padding-block: 6px; }
   .song-order-actions { grid-column: 4; justify-content: flex-end; }
-  .player-dock { grid-template-columns: minmax(0, 1fr) 182px; gap: 8px 12px; padding: 10px 12px; }
+  .player-dock { gap: 8px 12px; padding: 10px 12px; }
   .dock-track strong { font-size: 10px; }
   .dock-track small { font-size: 9px; }
   .dock-artwork { width: 36px; height: 36px; }
-  .dock-transport { gap: 3px; }
-  .dock-transport .music-icon-button { width: 31px; }
-  .dock-tools { gap: 0; }
-  .dock-tools .music-icon-button { width: 29px; }
+  .dock-tools { gap: 8px; }
   .volume-slider { width: 45px; }
   .dock-timeline { gap: 5px; }
   .dock-timeline time { width: 27px; font-size: 8px; }
@@ -929,7 +940,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   button, a, input, select { touch-action: manipulation; }
   .music-icon-button, .account-menu button, .account-menu > a, .icon-link, .file-row-actions a,
   .lyrics-copy, .lyrics-tabs button, .transport-actions button, .folder-expander { min-width: 44px; min-height: 44px; }
-  .round-play, .library-selection-heading .round-play, .dock-transport .round-play { width: 44px; height: 44px; }
+  .round-play, .library-selection-heading .round-play { width: 44px; height: 44px; }
   .library-entry-select, .all-music, .library-mobile-tabs button { min-height: 48px; }
   .library-entry-drag, .library-entry-edit { width: 44px; height: 44px; }
   .library-entry-select { padding-block: 10px; }
@@ -944,7 +955,6 @@ code { font: 400 11px 'DM Mono', monospace; }
   .song-order-actions .music-icon-button { width: 44px; height: 44px; }
   .player-dock { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
   .player-dock input[type="range"] { height: 44px; touch-action: pan-y; }
-  .dock-transport { gap: 6px; }
   .dock-tools :is(.volume-button, .volume-slider) { display: none; }
   .lyrics-overlay-content .lyric-timeline button { min-height: 48px; }
   .metadata-dialog input, .transcription-dialog :is(select, textarea), .folder-dialog input { font-size: 16px; }
@@ -958,7 +968,6 @@ code { font: 400 11px 'DM Mono', monospace; }
   .dock-tools { grid-column: 2; grid-row: 1; }
   .dock-controls { grid-column: 1 / -1; grid-row: 2; }
   .dock-timeline { margin-top: 0; }
-  .dock-tools .music-icon-button, .dock-transport .music-icon-button { width: 44px; }
 }
 @media (max-width: 980px) {
   .user-usage-row { grid-template-columns: minmax(0, 1fr) 160px; grid-template-areas: "identity role" "usage actions"; }
