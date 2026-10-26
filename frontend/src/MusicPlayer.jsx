@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useId, useMemo, useRef, useState 
 import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Info, Link, ListChecks, ListMusic, Lock, LockOpen, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Repeat1, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
 import { getFilePrivacy, ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
-import { navigationHistory } from './navigation.js';
+import { navigationHistory, replaceURL } from './navigation.js';
 import { findNoVocals, isNoVocals, normalizeSearchText, songKey, songSearchText } from '../../src/library.js';
 import { mediaType } from '../../src/media.js';
 import { buildLyricsUpdate, formatSyltForEdit } from './lyricsEditing.js';
@@ -159,8 +159,11 @@ export function usePlayback() { return useContext(PlaybackContext); }
 export function readPlaybackSession(userId, browser = window) {
   try {
     if (!userId) return null;
-    const saved = JSON.parse(browser.sessionStorage.getItem(`ssMusicPlayback:${userId}`));
-    if (saved?.url !== `${browser.location.pathname}${browser.location.search}`
+    const key = `ssMusicPlayback:${userId}`;
+    const saved = JSON.parse(browser.localStorage?.getItem(key) ?? browser.sessionStorage?.getItem(key) ?? 'null');
+    const url = `${browser.location.pathname}${browser.location.search}`;
+    if (typeof saved?.url !== 'string' || !/^\/(?:\?|$|job\/[^/?]+\/player(?:\?|$))/.test(saved.url)
+      || (saved.url !== url && url !== '/')
       || !Array.isArray(saved.songs) || !saved.songs.length
       || !saved.songs.every((track) => track && typeof track.jobId === 'string' && typeof track.name === 'string' && typeof track.streamUrl === 'string')
       || !saved.songs.some((track) => songKey(track) === saved.selected)) return null;
@@ -172,14 +175,26 @@ export function writePlaybackSession(userId, songs, selected, scope, browser = w
   try {
     if (!userId) return;
     const key = `ssMusicPlayback:${userId}`;
-    if (!songs?.some((track) => songKey(track) === selected)) { browser.sessionStorage.removeItem(key); return; }
-    browser.sessionStorage.setItem(key, JSON.stringify({ songs, selected,
-      scope: typeof scope === 'string' ? scope : null, url: `${browser.location.pathname}${browser.location.search}` }));
+    if (!songs?.some((track) => songKey(track) === selected)) {
+      browser.localStorage.removeItem(key);
+      browser.sessionStorage?.removeItem(key);
+      return;
+    }
+    const url = `${browser.location.pathname}${browser.location.search}`;
+    let previous;
+    try { previous = JSON.parse(browser.localStorage.getItem(key) || 'null'); } catch {}
+    browser.localStorage.setItem(key, JSON.stringify({ songs, selected,
+      scope: typeof scope === 'string' ? scope : null,
+      url: /^\/(?:\?|$|job\/[^/?]+\/player(?:\?|$))/.test(url) ? url : previous?.url || '/' }));
   } catch {}
 }
 
 export function PlaybackProvider({ children, request, userId }) {
-  const [restored] = useState(() => readPlaybackSession(userId));
+  const [restored] = useState(() => {
+    const saved = readPlaybackSession(userId);
+    if (saved && window.location.pathname === '/' && !window.location.search && saved.url !== '/') replaceURL(saved.url);
+    return saved;
+  });
   const [songs, setSongs] = useState(restored?.songs || null);
   const [selected, setSelected] = useState(restored?.selected || null);
   const restoredSelectionRef = useRef(restored);

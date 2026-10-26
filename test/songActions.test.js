@@ -95,9 +95,9 @@ test('optimistic song reorders preserve page numbering and other playlists witho
   assert.equal(reorderPlaylistTracks(original, { ...files[0], target: JSON.stringify(['job', 'First.mp3']), after: true }), original);
 });
 
-test('playback session restores the selected song and playlist queue after refresh, isolated by user and URL', () => {
+test('playback session restores the selected song and playlist queue after returning, isolated by user and explicit URL', () => {
   const values = new Map();
-  const browser = { location: { pathname: '/', search: '?playlist=mix&userId=owner' }, sessionStorage: {
+  const browser = { location: { pathname: '/', search: '?playlist=mix&userId=owner' }, localStorage: {
     getItem: (key) => values.get(key), setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key)
   } };
   const songs = ['First.mp3', 'Second.mp3'].map((name) => ({ jobId: 'job', name, streamUrl: `/stream/${name}` }));
@@ -106,19 +106,31 @@ test('playback session restores the selected song and playlist queue after refre
   writePlaybackSession('user', songs, selected, scope, browser);
   assert.deepEqual(readPlaybackSession('user', browser), { songs, selected, scope, url: '/?playlist=mix&userId=owner' });
   assert.equal(readPlaybackSession('other', browser), null);
-  browser.location.search = '?playlist=another';
+  const returningBrowser = { location: { pathname: '/', search: '' }, localStorage: browser.localStorage };
+  assert.deepEqual(readPlaybackSession('user', returningBrowser), { songs, selected, scope, url: '/?playlist=mix&userId=owner' });
+  browser.location = { pathname: '/settings', search: '' };
+  writePlaybackSession('user', songs, selected, scope, browser);
+  assert.equal(readPlaybackSession('user', returningBrowser).url, '/?playlist=mix&userId=owner');
+  browser.location = { pathname: '/', search: '?playlist=another' };
   assert.equal(readPlaybackSession('user', browser), null);
+  browser.location = { pathname: '/job/job/player', search: '?song=First.mp3&play=1' };
+  assert.equal(readPlaybackSession('user', browser), null);
+  browser.location.pathname = '/';
   browser.location.search = '?playlist=mix&userId=owner';
   writePlaybackSession('user', songs, selected, Symbol('karaoke'), browser);
   assert.equal(readPlaybackSession('user', browser).selected, selected);
   assert.equal(readPlaybackSession('user', browser).scope, null);
   writePlaybackSession('user', songs, null, scope, browser);
   assert.equal(readPlaybackSession('user', browser), null);
-  for (const invalid of ['{', '{}', '{"songs":[null]}']) {
+  for (const invalid of ['{', '{}', '{"songs":[null]}', JSON.stringify({ songs, selected, url: '//other.example/' })]) {
     values.set('ssMusicPlayback:user', invalid);
     assert.equal(readPlaybackSession('user', browser), null);
+    assert.equal(readPlaybackSession('user', returningBrowser), null);
   }
-  Object.defineProperty(browser, 'sessionStorage', { get() { throw new Error('Storage blocked'); } });
+  values.set('ssMusicPlayback:user', '{');
+  writePlaybackSession('user', songs, selected, scope, browser);
+  assert.equal(readPlaybackSession('user', returningBrowser).selected, selected);
+  Object.defineProperty(browser, 'localStorage', { get() { throw new Error('Storage blocked'); } });
   assert.equal(readPlaybackSession('user', browser), null);
   assert.doesNotThrow(() => writePlaybackSession('user', songs, selected, scope, browser));
 });

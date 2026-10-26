@@ -3,6 +3,12 @@
 ssMusic is a personal music and video library with yt-dlp download
 jobs from YouTube and YouTube Music URLs.
 
+The web player remembers each signed-in user's playlist, song queue, and selected
+song in the current browser, including after closing the tab. Returning to the
+default music page restores that playlist and queue position, paused until Play
+is pressed. Explicit playlist and song links take precedence. This does not
+restore elapsed playback time or sync playback state between browsers.
+
 Submitted YouTube links containing a `list` query parameter are normalized to
 `https://music.youtube.com/playlist?list=PLAYLIST_ID` before duplicate detection and
 downloading. Video IDs, tracking parameters, and fragments are discarded for these
