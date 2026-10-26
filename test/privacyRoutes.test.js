@@ -110,6 +110,41 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
   }
   await start();
 
+  await context.test('playlist links list all matching placements and respect library and file privacy', async () => {
+    const query = new URLSearchParams({ jobId: 'playlist', name: 'open.mp3' });
+    const route = `/api/library/playlist-links?${query}`;
+    const original = await call(route);
+    assert.equal(original.status, 200, original.text);
+    assert.deepEqual(original.body.playlists, [{ id: 'playlist', title: 'Owner playlist' }]);
+    const created = await call('/api/library/playlists', headers.Owner, 'POST', { playlistTitle: 'Extra playlist' });
+    assert.equal(created.status, 201, created.text);
+    const extraId = created.body.job.id;
+    const current = (await call('/api/library')).body;
+    const linked = await call('/api/library/songs/transfer', headers.Owner, 'POST', {
+      sourcePlaylistId: 'playlist', keys: [JSON.stringify(['playlist', 'open.mp3'])],
+      playlistId: extraId, action: 'link', version: current.version
+    });
+    assert.equal(linked.status, 200, linked.text);
+    assert.deepEqual((await call(route)).body.playlists.map((playlist) => playlist.id), [extraId, 'playlist']);
+    for (const auth of [headers.Reader, headers.Linked]) {
+      const result = await call(`${route}&userId=${users.Owner.id}`, auth);
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.body.playlists.length, 2);
+    }
+    assert.equal((await call(`${route}&userId=${users.Linked.id}`, headers.Reader)).status, 403);
+    assert.equal((await call('/api/library/playlist-links?jobId=playlist')).status, 400);
+    await call('/api/jobs/playlist/files/open.mp3/privacy', headers.Owner, 'PATCH', { private: true });
+    assert.deepEqual((await call(`${route}&userId=${users.Owner.id}`, headers.Reader)).body.playlists, []);
+    assert.equal((await call(route)).body.playlists.length, 2);
+    await call('/api/jobs/playlist/files/open.mp3/privacy', headers.Owner, 'PATCH', { private: false });
+    const restored = (await call('/api/library')).body;
+    const removed = await call('/api/library/songs/remove', headers.Owner, 'POST', {
+      version: restored.version, jobId: 'playlist', name: 'open.mp3', playlistId: extraId
+    });
+    assert.equal(removed.status, 200, removed.text);
+    assert.equal((await call(`/api/jobs/${extraId}`, headers.Owner, 'DELETE')).status, 204);
+  });
+
   await context.test('keys are header-only, read-only, bounded and independent of user credentials', async () => {
     for (const auth of [{}, headers.Owner, { 'X-API-Key': 'wrong' }, { 'X-PAT': key }]) {
       assert.equal((await call('/api/songs/search', auth)).status, 401);

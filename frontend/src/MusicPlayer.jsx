@@ -606,7 +606,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               <ListSongRating file={track} jobId={track.jobId} request={request} canModify={action.canRate ?? action.canModify}
                 disabled={(action.ratingDisabled ?? action.disabled) || libraryView.saving}
                 onSaved={(result) => libraryView.onMetadataSaved(track, result)} onError={libraryView.onRatingError} />
-              <SongActions name={track.name} className="song-order-actions">
+              <SongActions name={track.name} className="song-order-actions" file={track} request={request}>
                 <KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} showLabel />
                 {action.canChangePrivacy && !libraryView.readOnly && <button className="music-icon-button" type="button"
                   title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}

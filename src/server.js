@@ -29,7 +29,7 @@ import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
 import { adminMediaSharesRouter, createMediaShare, createPlaylistShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
-import { canReadFile, visibleJob } from './privacy.js';
+import { canReadFile, entryVisibilitySql, fileVisibilitySql, visibleJob } from './privacy.js';
 import { attachSearchKey, requireSearchKey, searchSongs } from './songSearch.js';
 import { ensureKaraokePartyUser } from './authStore.js';
 import { getKaraokeJob, submitKaraokeJob } from './karaoke.js';
@@ -358,6 +358,28 @@ app.post('/api/library/songs/reorder', async (req, res) => {
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
+});
+
+app.get('/api/library/playlist-links', async (req, res) => {
+  try {
+    const { jobId, name } = req.query;
+    if (typeof jobId !== 'string' || !jobId || typeof name !== 'string' || !isPlayableFile(name)) {
+      return res.status(400).json({ error: 'Invalid media file' });
+    }
+    const ownerId = await libraryReaderId(req.user, req.query.userId);
+    const playlists = await openDatabase().prepare(`SELECT entry.id,
+      COALESCE(entry.data->>'name', playlist.data->>'playlistTitle', entry.id) AS title
+      FROM library_memberships membership
+      JOIN library_entries entry ON entry.user_id = membership.user_id AND entry.id = membership.playlist_id
+      JOIN songs ON songs.job_id = membership.job_id AND songs.name = membership.name
+      JOIN jobs ON jobs.id = songs.job_id
+      LEFT JOIN jobs playlist ON playlist.id = entry.id
+      WHERE membership.user_id = $1 AND membership.job_id = $2 AND membership.name = $3
+        AND ${entryVisibilitySql('entry', '$4')} AND ${fileVisibilitySql('jobs', 'songs.name', '$4')}
+      ORDER BY lower(COALESCE(entry.data->>'name', playlist.data->>'playlistTitle', entry.id)), entry.id`)
+      .all(ownerId, jobId, name, req.user.id);
+    return res.json({ playlists, ownerId });
+  } catch (error) { return res.status(error.statusCode || 500).json({ error: error.message }); }
 });
 
 app.get('/api/library/tracks', async (req, res) => {

@@ -366,6 +366,13 @@ code { font: 400 11px 'DM Mono', monospace; }
 .file-row-actions button:hover:not(:disabled) { color: white; background: #a83b58; border-color: #b94c68; }
 .file-row-actions button:disabled { opacity: .4; cursor: not-allowed; }
 .file-row-actions button:focus-visible { outline: 2px solid var(--royal); outline-offset: 2px; }
+.playlist-links-dialog { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.playlist-links-list { margin: 16px 0; padding: 0; list-style: none; }
+.playlist-links-list li { border-bottom: 1px solid var(--line); }
+.playlist-links-list a { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 0; color: var(--ink); }
+.playlist-links-list a:hover { color: var(--royal); }
+.playlist-links-list svg { flex: none; }
+.playlist-links-list span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .job-contributors { display: flex; align-items: center; gap: 10px; }
 .job-contributors > span { min-width: 0; flex: 1; }
 .job-contributors button { flex: none; padding: 0; background: transparent; color: var(--ink); cursor: pointer; }

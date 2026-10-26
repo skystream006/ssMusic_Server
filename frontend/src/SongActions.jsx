@@ -1,5 +1,6 @@
 import { Children, cloneElement, useEffect, useId, useRef, useState } from 'react';
-import { Check, CircleAlert, Clock3, Copy, ExternalLink, FileAudio, ImagePlus, Info, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Share2, Star, Trash2, Upload, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Check, CircleAlert, Clock3, Copy, ExternalLink, FileAudio, ImagePlus, Info, ListMusic, Lock, LockOpen, Mic, MoreVertical, Music2, RefreshCw, Save, Share2, Star, Trash2, Upload, X } from 'lucide-react';
 import { transcriptionLanguages } from '../../src/transcriptionLanguages.js';
 import { individualSongsId, individualVideosId } from '../../src/library.js';
 import { mediaType } from '../../src/media.js';
@@ -28,11 +29,17 @@ function TranscriptionLockButton({ locked, disabled, onChange }) {
   </button>;
 }
 
-export function SongActions({ name, className, children }) {
+export function SongActions({ name, className, children, file, jobId, request }) {
   const menuId = useId();
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
   const [open, setOpen] = useState(false);
+  const [showPlaylistLinks, setShowPlaylistLinks] = useState(false);
+  const actions = Children.toArray(children);
+  if (file && mediaType(file.name) && request) actions.push(
+    <button key="playlist-links" className="music-icon-button" type="button" title="Linked Playlists"
+      aria-label={`Linked Playlists ${file.name}`} aria-haspopup="dialog" onClick={() => setShowPlaylistLinks(true)}><ListMusic size={18} /></button>
+  );
 
   useEffect(() => {
     const menu = menuRef.current;
@@ -60,7 +67,7 @@ export function SongActions({ name, className, children }) {
     menu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - height - 8))}px`;
   }
 
-  return <div className={`${className} song-actions`} onKeyDown={(event) => {
+  return <><div className={`${className} song-actions`} onKeyDown={(event) => {
     if (event.key !== 'Escape' || !menuRef.current.matches(':popover-open')) return;
     event.preventDefault();
     menuRef.current.hidePopover();
@@ -78,12 +85,56 @@ export function SongActions({ name, className, children }) {
         menuRef.current.hidePopover();
         triggerRef.current.focus();
       }}>
-      {sortSelectOptions(Children.toArray(children), (child) => child.props['data-action-label'] || child.props.title)
+      {sortSelectOptions(actions, (child) => child.props['data-action-label'] || child.props.title)
         .map((child) => cloneElement(child, {}, <>
         {child.props.children}<span>{child.props['data-action-label'] || child.props.title}</span>
       </>))}
     </div>
-  </div>;
+  </div>
+    {showPlaylistLinks && createPortal(<PlaylistLinksDialog file={file} jobId={jobId || file.jobId} request={request} onClose={() => setShowPlaylistLinks(false)} />, document.body)}
+  </>;
+}
+
+export function PlaylistLinksDialog({ file, jobId, request, onClose }) {
+  const dialogRef = useRef(null);
+  const headingId = useId();
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+
+  useEffect(() => {
+    let current = true;
+    const query = new URLSearchParams({ jobId, name: file.name });
+    if (file.libraryOwnerId) query.set('userId', file.libraryOwnerId);
+    setResult(null);
+    setError('');
+    request(`/api/library/playlist-links?${query}`).then((data) => {
+      if (current) setResult(data);
+    }).catch((requestError) => { if (current) setError(requestError.message); });
+    return () => { current = false; };
+  }, [request, jobId, file.name, file.libraryOwnerId]);
+
+  return <dialog ref={dialogRef} className="confirmation-dialog playlist-links-dialog" aria-labelledby={headingId}
+    onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <h2 id={headingId}>Playlist Links</h2>
+    <p className="metadata-filename">{file.title || file.name}</p>
+    {!result && !error && <p role="status">Loading playlists...</p>}
+    {error && <p className="notice error" role="alert">{error}</p>}
+    {result && (result.playlists.length ? <ul className="playlist-links-list">
+      {sortSelectOptions(result.playlists, (playlist) => playlist.title).map((playlist) => <li key={playlist.id}>
+        <a href={`/?${new URLSearchParams({ playlist: playlist.id, userId: result.ownerId })}`}>
+          <ListMusic size={18} /><span>{playlist.title}</span><ExternalLink size={15} />
+        </a>
+      </li>)}
+    </ul> : <p role="status">No playlist links found.</p>)}
+    <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose}>Close</button></div>
+  </dialog>;
 }
 
 export function canManageJob(user, job) {

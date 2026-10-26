@@ -9,6 +9,7 @@ import { normalizeSearchText } from '../src/library.js';
 
 let server;
 let SongActions;
+let PlaylistLinksDialog;
 let SongRating;
 let ListSongRating;
 let MetadataDialog;
@@ -51,7 +52,7 @@ let OrganizerControl;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, PlaybackProvider, readPlaybackSession, writePlaybackSession, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -60,6 +61,24 @@ before(async () => {
 });
 
 after(async () => { await server?.close(); });
+
+test('Linked Playlists is available for audio and video files and its dialog starts with a loading state', () => {
+  const request = () => assert.fail('Server rendering must not fetch playlist links');
+  for (const name of ['Song.mp3', 'Movie.mp4']) {
+    const html = renderToStaticMarkup(createElement(SongActions, { name, file: { name }, jobId: 'job', request }));
+    assert.match(html, /title="Linked Playlists"/);
+    assert.match(html, /aria-haspopup="dialog"/);
+  }
+  const name = 'notes.txt';
+  assert.doesNotMatch(renderToStaticMarkup(createElement(SongActions, { name, file: { name }, request })), /Linked Playlists/);
+  const html = renderToStaticMarkup(createElement(PlaylistLinksDialog, {
+    file: { name: 'Song.mp3', title: 'Song title' }, jobId: 'job', request
+  }));
+  assert.match(html, />Playlist Links<\/h2>/);
+  assert.match(html, /Song title/);
+  assert.match(html, /role="status">Loading playlists/);
+  assert.match(html, />Close<\/button>/);
+});
 
 test('Add/Move Song offers an unchecked move checkbox without changing bulk destination dialogs', () => {
   const props = { title: 'Add/Move Song', label: 'Add/Move Song', summary: 'Song.mp3', destinations: [{ id: 'mix', title: 'Mix' }] };
