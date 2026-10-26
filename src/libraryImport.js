@@ -236,7 +236,7 @@ async function convertItunesWav(file, { local, report }) {
   }
 }
 
-export async function extractImportMedia(zipPath, directory, { local = false, report = () => {} } = {}) {
+export async function extractImportMedia(zipPath, directory, { local = false, report = () => {}, repairAudioNames = true } = {}) {
   report('extract', 'Opening media ZIP');
   const archive = await new Promise((resolve, reject) => yauzl.open(zipPath,
     { lazyEntries: true, strictFileNames: true, validateEntrySizes: true }, (error, zip) => error ? reject(failure('Invalid media ZIP')) : resolve(zip)));
@@ -273,10 +273,10 @@ export async function extractImportMedia(zipPath, directory, { local = false, re
           const stream = await new Promise((done, failStream) => archive.openReadStream(entry, (error, value) => error ? failStream(error) : done(value)));
           await pipeline(stream, createWriteStream(filePath, { flags: 'wx' }));
           const type = await fileTypeFromFile(filePath).catch(() => null);
-          if (type?.ext === 'wav') {
+          if (repairAudioNames && type?.ext === 'wav') {
             const audio = await validateImportAudio({ name: `${entry.fileName}.wav`, path: filePath }, { local });
             files.push({ ...audio, name: entry.fileName, convertFromWav: true });
-          } else if (path.posix.extname(entry.fileName).toLowerCase() === '.mp3'
+          } else if (repairAudioNames && path.posix.extname(entry.fileName).toLowerCase() === '.mp3'
             && (type?.ext === 'mp2' || (!type && await probeImportAudio({ path: filePath, name: entry.fileName }, '.mp2', true)))) {
             const importName = entry.fileName.replace(/\.mp3$/i, '.mp2');
             const audio = await validateImportAudio({ name: importName, path: filePath }, { local, requireProbe: true });
@@ -389,6 +389,7 @@ export async function importUploadedFiles(files, options, user, actor = user) {
     throw failure('Playlist is not available for import', 403);
   }
   const individualVideo = individual && options.playlistId === individualVideosId;
+  const previousFileCount = createNew || individual ? 0 : jobs.find((job) => job.id === options.playlistId)?.files?.length || 0;
   const job = await importJobFiles({ files: validated, playlistId: createNew || individual ? undefined : options.playlistId,
     playlistTitle: individual ? (individualVideo ? 'Imported videos' : 'Imported songs') : options.playlistTitle,
     individual, downloadType: individualVideo ? 'video' : 'audio' }, user);
@@ -396,7 +397,7 @@ export async function importUploadedFiles(files, options, user, actor = user) {
     try { (await linkLibraryJob(user.id, job, (await libraryJobs(user)))); }
     catch (error) { await deleteJob(job.id, user); throw error; }
   }
-  return { jobs: [job], importedFiles: files.length };
+  return { jobs: [job], importedFiles: job.files.length - previousFileCount };
 }
 
 export async function importItunesLibrary(xml, media, user, { local = false, report = () => {}, complete = async () => {} } = {}) {
@@ -537,11 +538,20 @@ export async function handleLibraryImport(req, res) {
         report('archive', 'Import source files moved to completed storage');
       } });
     } else if (req.body?.mode === 'files' && !req.files?.xml && !req.files?.media) {
-      const files = (req.files?.files || []).map((file) => {
+      const files = [];
+      let expandedBytes = 0;
+      for (const file of req.files?.files || []) {
         const bytes = Buffer.from(file.originalname, 'latin1');
         const name = /^[\x00-\xff]*$/.test(file.originalname) && isUtf8(bytes) ? bytes.toString('utf8') : file.originalname;
-        return { name, path: file.path };
-      });
+        const media = path.extname(name).toLowerCase() === '.zip'
+          ? await extractImportMedia(file.path, req.importDirectory, { report, repairAudioNames: false })
+          : [{ name, path: file.path, size: file.size }];
+        expandedBytes += media.reduce((total, item) => total + item.size, 0);
+        if (files.length + media.length > 2000 || expandedBytes > maxExpandedBytes) {
+          throw failure('The selected files exceed the import limits', 413);
+        }
+        files.push(...media.map((item) => ({ ...item, name: path.posix.basename(item.name) })));
+      }
       result = await importUploadedFiles(files, req.body, importUser, req.user);
     } else throw failure('Choose files, or upload both an iTunes XML and a media ZIP');
   } catch (error) {

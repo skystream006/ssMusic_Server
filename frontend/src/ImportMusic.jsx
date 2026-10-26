@@ -149,7 +149,7 @@ export default function ImportMusic({ user, request, onClose, onImported, initia
         return;
       }
       if (mode === 'files' && (files.length > 1000 || files.some((file) => file.size > 512 * 1024 ** 2))) {
-        setError('Select up to 1,000 audio or movie files, no larger than 512 MB each.');
+        setError('Select up to 1,000 audio, movie, or ZIP files, no larger than 512 MB each.');
         return;
       }
       if (mode === 'itunes' && xml?.size > 20 * 1024 ** 2) {
@@ -226,6 +226,32 @@ export default function ImportMusic({ user, request, onClose, onImported, initia
       <h2 id={headingId}>Import media</h2>
       <button className="music-icon-button" type="button" title="Close import" aria-label="Close import" disabled={submitting} onClick={onClose}><X size={18} /></button>
     </div>
+    <details className="import-limitations">
+      <summary>Import limitations</summary>
+      <div className="import-limitations-content">
+        <table>
+          <thead><tr><th scope="col">Limit</th><th scope="col">Browser upload</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Total upload per import</th><td>2 GB</td></tr>
+            <tr><th scope="row">Each audio, movie, or ZIP file in Files mode</th><td>512 MB</td></tr>
+            <tr><th scope="row">Selected files in Files mode</th><td>1,000</td></tr>
+            <tr><th scope="row">iTunes XML</th><td>20 MB</td></tr>
+            <tr><th scope="row">ZIP entries, including folders</th><td>10,000 per ZIP</td></tr>
+            <tr><th scope="row">Extracted media files / iTunes tracks</th><td>2,000 per import</td></tr>
+            <tr><th scope="row">Each extracted media file</th><td>512 MB</td></tr>
+            <tr><th scope="row">Total expanded media</th><td>4 GB</td></tr>
+            <tr><th scope="row">Playlists created by an iTunes import</th><td>500</td></tr>
+          </tbody>
+        </table>
+        <p><strong>Admin: Import from local</strong> bypasses the upload and processing caps above. Available disk space and memory are the practical limits; file validation and archive security checks still apply.</p>
+        <ul>
+          <li>5,000 library entries, including playlists and folders, also applies to local imports.</li>
+          <li>Two simultaneous imports server-wide, one per initiating account, and one writing to each destination library.</li>
+          <li>No library-wide song-link count limit.</li>
+        </ul>
+        <p>Sizes use binary units: GB means GiB and MB means MiB. Browser and reverse-proxy limits may also apply.</p>
+      </div>
+    </details>
     {result ? <>
       <p className="notice success" role="status"><Check size={18} />Imported {result.importedFiles} {result.importedFiles === 1 ? 'file' : 'files'} into {result.jobs.length} {result.jobs.length === 1 ? 'playlist' : 'playlists'}.</p>
       {isAdmin && <p className="metadata-filename">Library owner: {importOwner?.name || ownerId}</p>}
@@ -266,8 +292,8 @@ export default function ImportMusic({ user, request, onClose, onImported, initia
               {sortSelectOptions(playlists, (playlist) => playlist.playlistTitle).map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.playlistTitle}</option>)}
             </select>
           </label>}
-          <label className="import-field import-upload"><span><FileAudio size={18} />Audio and movie files</span>
-            <input key="files" type="file" accept={mediaAccept} multiple required onChange={(event) => setFiles([...event.target.files])} />
+          <label className="import-field import-upload"><span><FileAudio size={18} />Audio, movie, and ZIP files</span>
+            <input key="files" type="file" accept={`${mediaAccept},.zip,application/zip`} multiple required onChange={(event) => setFiles([...event.target.files])} />
             {files.length > 0 && <small>{files.length} {files.length === 1 ? 'file' : 'files'} / {formatBytes(files.reduce((size, file) => size + file.size, 0))}</small>}
           </label>
         </div> : <div className="import-itunes-options">

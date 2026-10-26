@@ -188,6 +188,17 @@ h1 { margin: 0; max-width: 780px; font: 600 48px/1.05 'Newsreader', serif; overf
 .backup-job-progress progress { display: block; width: 100%; height: 8px; margin-top: 8px; accent-color: var(--royal); }
 .jobs-heading-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 14px; max-width: 100%; }
 .import-dialog { width: min(580px, calc(100% - 32px)); }
+.import-limitations { flex: none; min-width: 0; margin-top: 16px; border-left: 3px solid var(--warning); background: color-mix(in srgb, var(--warning) 12%, var(--surface)); color: var(--ink); font-size: 12px; }
+.import-limitations > summary { padding: 12px; color: var(--warning); font-weight: 700; cursor: pointer; }
+.import-limitations > summary:focus-visible { outline: 2px solid var(--royal); outline-offset: -2px; }
+.import-limitations-content { max-height: 40dvh; overflow-y: auto; padding: 0 12px 12px; overflow-wrap: anywhere; }
+.import-limitations table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; }
+.import-limitations th, .import-limitations td { padding: 8px 6px; border-bottom: 1px solid color-mix(in srgb, var(--warning) 25%, var(--line)); vertical-align: top; }
+.import-dialog .import-limitations th:nth-child(2), .import-dialog .import-limitations td:nth-child(2) { display: table-cell; }
+.import-limitations th:first-child { width: 65%; }
+.import-limitations tbody th { font-weight: 400; }
+.import-limitations p { margin: 12px 0 0; line-height: 1.6; }
+.import-limitations ul { margin: 12px 0 0; padding-left: 18px; line-height: 1.6; }
 .import-fields { min-width: 0; margin: 22px 0; padding: 0; border: 0; }
 .import-owner { margin-bottom: 24px; }
 .import-modes { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 24px; border: 1px solid var(--line); }

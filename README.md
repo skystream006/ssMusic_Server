@@ -434,10 +434,16 @@ On **Jobs**, choose **Import media**, or use the **Import media** upload button
 in your library. From a selected playlist, that playlist is preselected.
 
 - **Files:** select an existing playlist from your personal library, or check
-    **Create New Playlist** and enter its name. Select audio or movie files and choose
+    **Create New Playlist** and enter its name. Select audio, movie, or ZIP files and choose
     **Import**. MP3, MP2, WAV, FLAC, M4A, AAC, OGG, Opus, WMA, MP4, M4V, WebM, MOV
     and OGV are accepted; playback
     depends on your browser's codec support. Existing files are never overwritten.
+    ZIPs can be selected alongside individual files. Supported media from all ZIP
+    folders and subfolders goes into the same selected playlist, without recreating
+    folders. Non-media files and duplicate filenames are skipped, including names
+    already in the selected playlist. Existing files can be replaced separately later.
+    File imports accept up to 2,000 media files and 4 GB of media after extraction;
+    each uploaded file, including a ZIP, is limited to 512 MB.
 - **iTunes library:** choose **Upload files** for an exported iTunes/Music library
     **XML** and a separate **ZIP**, or **Import from local** to select those files
     from the server's storage folder. Both files are required.

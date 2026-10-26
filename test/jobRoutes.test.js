@@ -1366,7 +1366,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     assert.equal((await call('/api/library', 'GET', credentials.Admin[0])).body.entries.some((entry) => entry.id === assignedId), false);
     const append = await upload({ mode: 'files', createNew: 'false', playlistId: assignedId, userId: users.Other.id }, [uploadFile], mobileHeaders.Admin);
     assert.equal(append.status, 201, append.text);
-    assert.deepEqual(append.body.jobs[0].files, ['Uploaded.wav', 'Uploaded (2).wav']);
+    assert.deepEqual(append.body.jobs[0].files, ['Uploaded.wav']);
+    assert.equal(append.body.importedFiles, 0);
     assert.equal((await upload({ mode: 'files', createNew: 'false', playlistId: importedId, userId: users.Other.id }, [uploadFile], credentials.Admin[0])).status, 400);
     assert.equal((await call(`/api/jobs/${assignedId}`, 'DELETE', credentials.Admin[0])).status, 204);
   });
@@ -1374,7 +1375,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await upload(existingOptions, [uploadFile], credentials.Other[0])).status, 400);
   const appended = await upload(existingOptions, [uploadFile], credentials.Owner[1]);
   assert.equal(appended.status, 201, appended.text);
-  assert.deepEqual(appended.body.jobs[0].files, ['Uploaded.wav', 'Uploaded (2).wav']);
+  assert.deepEqual(appended.body.jobs[0].files, ['Uploaded.wav']);
+  assert.equal(appended.body.importedFiles, 0);
   const unicodeName = 'Caf\u00e9 \u97f3\u697d.wav';
   const unicodeImport = await upload(existingOptions, [{ ...uploadFile, name: unicodeName }]);
   assert.equal(unicodeImport.status, 201, unicodeImport.text);
@@ -1402,7 +1404,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
   assert.equal((await call(`/api/jobs/${importedId}/stream/..%2Foutside.mp4`, 'GET', credentials.Owner[0])).status, 400);
   assert.equal((await upload(existingOptions, [{ ...movie, data: audio }])).status, 400);
   const movieLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
-  assert.equal(movieLibrary.playlists.find((playlist) => playlist.id === importedId).songCount, 4);
+  assert.equal(movieLibrary.playlists.find((playlist) => playlist.id === importedId).songCount, 3);
   const movieKey = JSON.stringify([importedId, movie.name]);
   const movieOrder = await call('/api/library', 'PUT', credentials.Owner[0], { ...movieLibrary,
     songOrder: { ...movieLibrary.songOrder, [importedId]: [movie.name] },
