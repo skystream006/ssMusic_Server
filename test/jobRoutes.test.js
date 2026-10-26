@@ -275,6 +275,40 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     } while (['queued', 'running'].includes(response.body.status));
     return response;
   }
+  await context.test('server cooldown status and job rejection match for session, PAT and mobile clients', async () => {
+    assert.deepEqual((await call('/api/jobs/status', 'GET', credentials.Owner[0])).body,
+      { limited: false, reenabledAt: null, message: null });
+    const until = Date.now() + 65 * 60 * 1000;
+    const reenabledAt = new Date(until).toISOString();
+    const message = `Jobs are currently rate limited on this server. Jobs will be re-enabled at ${reenabledAt}`;
+    await openDatabase().prepare("INSERT INTO job_server_state (key, value) VALUES ('jobsDisabledUntil', $1)").run(String(until));
+    await closeDatabases();
+    const stopped = once(server, 'exit');
+    server.kill();
+    await stopped;
+    await startServer();
+    assert.equal((await call('/api/jobs/status')).status, 401);
+    for (const headers of [...credentials.Admin, ...credentials.Owner, ...credentials.Other, mobileHeaders.Owner]) {
+      const status = await call('/api/jobs/status', 'GET', headers);
+      assert.equal(status.status, 200);
+      assert.equal(status.headers['cache-control'], 'no-store');
+      assert.deepEqual(status.body, { limited: true, reenabledAt, message });
+      for (const route of ['/api/jobs', '/api/jobs/owned/rerun']) {
+        const result = await call(route, 'POST', headers, { url: 'https://music.youtube.com/watch?v=blocked' });
+        assert.equal(result.status, 429, result.text);
+        assert.deepEqual(result.body, { error: message, code: 'JOBS_RATE_LIMITED', reenabledAt });
+        assert.ok(Number(result.headers['retry-after']) > 0);
+        assert.ok(Number(result.headers['retry-after']) <= 3900);
+      }
+    }
+    await openDatabase().prepare("DELETE FROM job_server_state WHERE key = 'jobsDisabledUntil'").run();
+    await closeDatabases();
+    const reset = once(server, 'exit');
+    server.kill();
+    await reset;
+    await startServer();
+  });
+
   await context.test('Shared accounts can change themes and granted song ratings but not other library data through every authentication method', async () => {
     const ownerLibrary = await call('/api/library', 'GET', credentials.Owner[0]);
     const ownerPreferences = (await call('/api/preferences', 'GET', credentials.Owner[0])).body;

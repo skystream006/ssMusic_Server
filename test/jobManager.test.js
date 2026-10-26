@@ -163,6 +163,78 @@ for (const { label, url, isPlaylist } of [
   });
 }
 
+for (const phase of ['metadata', 'download']) {
+  test(`YouTube rate limit during ${phase} stops all jobs and persists a 65-minute cooldown`, async (t) => {
+    const children = [];
+    const spawnMock = t.mock.method(childProcess, 'spawn', (command, args) => {
+      if (command === 'taskkill') {
+        const killer = new EventEmitter();
+        const target = children.find((child) => String(child.pid) === args[1]);
+        target.kill();
+        return killer;
+      }
+      const child = new EventEmitter();
+      child.pid = 999000 + children.length;
+      child.metadata = args.includes('--dump-single-json');
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => { child.killed = true; process.nextTick(() => child.emit('close', null)); };
+      children.push(child);
+      if (phase === 'download' && args.includes('--dump-single-json')) process.nextTick(() => {
+        child.stdout.end('{"title":"Test"}');
+        child.emit('close', 0);
+      });
+      return child;
+    });
+    syncBuiltinESMExports();
+    t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
+    const manager = await import(`../src/jobManager.js?cooldown=${encodeURIComponent(fixtureDirectory)}`);
+    const owner = { id: 'owner', role: 'user' };
+    const first = await manager.createJob('https://music.youtube.com/watch?v=first', owner);
+    const second = await manager.createJob('https://music.youtube.com/watch?v=second', { id: 'other', role: 'user' });
+    const count = phase === 'metadata' ? 2 : 4;
+    for (let attempt = 0; children.length < count && attempt < 500; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(children.length, count);
+    const active = phase === 'metadata' ? children : children.filter((child) => !child.metadata);
+    const before = Date.now();
+    const output = phase === 'metadata' ? active[0].stderr : active[0].stdout;
+    output.write('ERROR: The current session has been rate-');
+    assert.equal(manager.getJobRateLimit().limited, false);
+    output.write('limited by YouTube for up to an hour');
+    const state = manager.getJobRateLimit();
+    assert.equal(state.limited, true);
+    assert.ok(Date.parse(state.reenabledAt) >= before + 65 * 60 * 1000);
+    assert.ok(Date.parse(state.reenabledAt) <= Date.now() + 65 * 60 * 1000);
+    assert.equal(state.message, `Jobs are currently rate limited on this server. Jobs will be re-enabled at ${state.reenabledAt}`);
+    await Promise.all([waitForJobToFinish(first), waitForJobToFinish(second)]);
+    for (const child of active) assert.equal(child.killed, true);
+    for (const job of [first, second]) {
+      assert.equal(job.status, 'failed');
+      assert.equal(job.error, state.message);
+    }
+    assert.match(first.output, /rate-limited by YouTube/);
+    await assert.rejects(manager.createJob('https://music.youtube.com/watch?v=third', owner), {
+      statusCode: 429, code: 'JOBS_RATE_LIMITED', message: state.message
+    });
+    await assert.rejects(manager.rerunJob(first.id, owner), { statusCode: 429, message: state.message });
+    const restarted = await import(`../src/jobManager.js?restored-cooldown=${encodeURIComponent(fixtureDirectory)}`);
+    assert.deepEqual(restarted.getJobRateLimit(), state);
+    assert.equal(children.length, count);
+    t.mock.method(Date, 'now', () => Date.parse(state.reenabledAt));
+    assert.deepEqual(manager.getJobRateLimit(), { limited: false, reenabledAt: null, message: null });
+    const resumed = await manager.createJob('https://music.youtube.com/watch?v=resumed', owner, { metadataOnly: true });
+    for (let attempt = 0; children.length === count && attempt < 500; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    children.at(-1).stdout.end('{"title":"Resumed"}');
+    children.at(-1).emit('close', 0);
+    await waitForJobToFinish(resumed);
+    assert.equal(resumed.status, 'completed');
+  });
+}
+
 for (const isPlaylist of [false, true]) {
   for (const { label, output, exitCode } of [
     { label: 'failed lookup', output: '', exitCode: 1 },

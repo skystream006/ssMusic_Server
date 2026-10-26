@@ -173,6 +173,7 @@ function usePolling(loader, interval = POLL_INTERVAL, pollingKey = 'default') {
 }
 
 const loadJobs = () => request('/api/jobs');
+const loadJobRateLimit = () => request('/api/jobs/status');
 const loadBackup = () => request('/api/library/backup');
 const loadHealth = () => request('/api/health');
 
@@ -313,6 +314,7 @@ function JobsPage() {
   const { confirm, dialog } = useConfirmation();
   const [revision, setRevision] = useState(0);
   const { data: jobs, error: loadError } = usePolling(loadJobs, POLL_INTERVAL, revision);
+  const { data: jobRateLimit } = usePolling(loadJobRateLimit, POLL_INTERVAL, revision);
   const [url, setUrl] = useState('');
   const [downloadType, setDownloadType] = useState('audio');
   const [metadataOnly, setMetadataOnly] = useState(false);
@@ -464,6 +466,7 @@ function JobsPage() {
   return (
     <AppShell>
       {dialog}
+      {jobRateLimit?.limited && <div className="notice warning page-notice" role="alert"><CircleAlert size={16} />{jobRateLimit.message}</div>}
       {importing && <ImportMusic user={user} request={request} onClose={() => setImporting(false)} onImported={() => setRevision((current) => current + 1)} />}
       {addingJob && <JobPlaylistDialog job={addingJob} request={request} onClose={() => setAddingJob(null)} onAdded={(count, title) => {
         setAddingJob(null);
@@ -502,7 +505,7 @@ function JobsPage() {
               placeholder={downloadType === 'video' ? 'https://www.youtube.com/watch?v=...' : 'https://music.youtube.com/watch?v=...'}
             />
           </div>
-          <button className="primary-button" disabled={submitting} type="submit">
+          <button className="primary-button" disabled={submitting || jobRateLimit?.limited} type="submit">
             {submitting ? <RefreshCw className="spin" size={18} /> : <Plus size={18} />}
             {submitting ? 'Adding' : 'Add job'}
           </button>
@@ -568,7 +571,7 @@ function JobsPage() {
           </label>
           <button className="music-icon-button" type="button" aria-label="Rerun selected jobs"
             title={selectedJobs.length && !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun')) ? 'All selected jobs must be idle, non-imported jobs you can rerun' : 'Rerun selected jobs'}
-            disabled={Boolean(jobAction) || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun'))}
+            disabled={jobRateLimit?.limited || Boolean(jobAction) || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun'))}
             onClick={() => runSelectedJobAction('rerun')}><RotateCcw size={18} /></button>
           <button className="music-icon-button job-bulk-delete" type="button" aria-label="Delete selected jobs"
             title={selectedJobs.length && !selectedJobs.every((job) => canRunJobAction(user, job, 'delete')) ? 'All selected jobs must be idle jobs you own or administer' : 'Delete selected jobs'}
@@ -614,7 +617,7 @@ function JobsPage() {
                       disabled={Boolean(jobAction) || !(job.files || []).some(isPlayableFile)}
                       onClick={() => { setPlaylistMessage(''); setAddingJob(job); }}><ListPlus size={17} /></button>}
                     {canModifyJob(user, job) && <>
-                    {!job.source && <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || !canRunJobAction(user, job, 'rerun')} onClick={() => runJobAction(job, 'rerun')}>
+                    {!job.source && <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={jobRateLimit?.limited || Boolean(jobAction) || !canRunJobAction(user, job, 'rerun')} onClick={() => runJobAction(job, 'rerun')}>
                       {jobAction?.id === job.id && jobAction.action === 'rerun' ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
                     </button>}
                     {canManageJob(user, job) && <button className="icon-link row-delete" type="button" title="Delete job" aria-label={`Delete job ${job.id}`} disabled={Boolean(jobAction) || !canRunJobAction(user, job, 'delete')} onClick={() => runJobAction(job, 'delete')}>

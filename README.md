@@ -34,6 +34,16 @@ existing job's normal rerun or details action.
 `POST /api/jobs` accepts `downloadType: "audio"` (default) or `"video"`, for example
 `{ "url": "https://www.youtube.com/watch?v=VIDEO_ID", "downloadType": "video" }`.
 
+If yt-dlp reports "The current session has been rate-limited by YouTube for up to
+an hour", the server immediately stops all active download/metadata jobs and
+blocks new jobs and reruns for 65 minutes. The cooldown survives server restarts.
+Interrupted jobs are marked failed and can be rerun manually after the cooldown.
+The Jobs page displays the server-wide notice and UTC re-enable timestamp.
+Authenticated clients can read `{ limited, reenabledAt, message }` from
+`GET /api/jobs/status`. During cooldown, job creation and rerun requests return
+HTTP 429 with `{ error, code: "JOBS_RATE_LIMITED", reenabledAt }` and a
+`Retry-After` header in seconds; `error` contains the same notice as the Jobs page.
+
 Downloads also fetch each video's source cover into a hidden `.thumbnails` folder
 alongside the media. Supported source images (JPEG, PNG, WebP, or AVIF) are converted
 to 192 by 192 AVIF thumbnails and cached when the job finishes. Video thumbnails

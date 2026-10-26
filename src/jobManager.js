@@ -38,6 +38,37 @@ const outputRoot = process.env.YTDLP_OUTPUT_ROOT || path.resolve(process.cwd(), 
 const jobEvents = new EventEmitter();
 jobEvents.setMaxListeners(0);
 let runningJobsCount = 0;
+const activeJobControllers = new Map();
+const youtubeRateLimitMessage = 'The current session has been rate-limited by YouTube for up to an hour';
+let jobsDisabledUntil = Number((await database.prepare("SELECT value FROM job_server_state WHERE key = 'jobsDisabledUntil'").get())?.value) || 0;
+let cooldownPersistence = Promise.resolve();
+
+export function getJobRateLimit() {
+  const limited = Date.now() < jobsDisabledUntil;
+  const reenabledAt = limited ? new Date(jobsDisabledUntil).toISOString() : null;
+  return {
+    limited,
+    reenabledAt,
+    message: limited ? `Jobs are currently rate limited on this server. Jobs will be re-enabled at ${reenabledAt}` : null
+  };
+}
+
+function assertJobsEnabled() {
+  const state = getJobRateLimit();
+  if (state.limited) throw Object.assign(new Error(state.message), {
+    statusCode: 429, code: 'JOBS_RATE_LIMITED', reenabledAt: state.reenabledAt
+  });
+}
+
+function rateLimitJobs() {
+  if (getJobRateLimit().limited) return;
+  jobsDisabledUntil = Date.now() + 65 * 60 * 1000;
+  cooldownPersistence = database.prepare(`INSERT INTO job_server_state (key, value) VALUES ('jobsDisabledUntil', $1)
+    ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(String(jobsDisabledUntil));
+  cooldownPersistence.catch((error) => console.error('Unable to persist job cooldown:', error.message));
+  const reason = Object.assign(new Error(getJobRateLimit().message), { code: 'JOBS_RATE_LIMITED' });
+  for (const controller of activeJobControllers.values()) controller.abort(reason);
+}
 const privateVideoPattern = /\b(?:private video|video is private|video unavailable)\b/i;
 
 // Non-null while a maintenance update (yt-dlp -U / deno upgrade) is running.
@@ -192,30 +223,51 @@ async function ensureOutputRoot() {
   await fs.mkdir(outputRoot, { recursive: true });
 }
 
-function runCommand(command, args) {
+function runCommand(command, args, signal) {
+  signal?.throwIfAborted();
+  if (signal) assertJobsEnabled();
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: Boolean(signal) && process.platform !== 'win32' });
     let stdout = '';
     let stderr = '';
+    const abort = () => {
+      if (process.platform === 'win32') {
+        const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        killer.on('error', () => child.kill('SIGKILL'));
+      } else {
+        try { process.kill(-child.pid, 'SIGKILL'); }
+        catch { child.kill('SIGKILL'); }
+      }
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    const checkOutput = (output) => {
+      if (signal && output.includes(youtubeRateLimitMessage)) rateLimitJobs();
+    };
 
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
+      checkOutput(stdout);
     });
 
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
+      checkOutput(stderr);
     });
 
     child.on('error', (error) => {
+      signal?.removeEventListener('abort', abort);
       error.stdout = stdout;
       error.stderr = stderr;
       reject(error);
     });
     child.on('close', (code) => {
-      if (code === 0) {
+      signal?.removeEventListener('abort', abort);
+      if (code === 0 && !signal?.aborted) {
         resolve({ stdout, stderr });
       } else {
-        const error = new Error(`Command failed with exit code ${code}`);
+        const error = signal?.aborted
+          ? Object.assign(new Error(signal.reason.message), { code: signal.reason.code })
+          : new Error(`Command failed with exit code ${code}`);
         error.exitCode = code;
         error.stdout = stdout;
         error.stderr = stderr;
@@ -295,7 +347,7 @@ export function parsePlaylistMetadata(output) {
   return { playlistTitle, folderName: sanitizeFolderName(playlistTitle || 'playlist'), playlistSongCount };
 }
 
-async function getSourceMetadata(url, denoPath, isPlaylist) {
+async function getSourceMetadata(url, denoPath, isPlaylist, signal) {
   const args = [
     '--flat-playlist',
     '--dump-single-json',
@@ -307,7 +359,7 @@ async function getSourceMetadata(url, denoPath, isPlaylist) {
     url
   ];
 
-  const { stdout } = await runCommand(resolveYtDlpPath(), args);
+  const { stdout } = await runCommand(resolveYtDlpPath(), args, signal);
   return parsePlaylistMetadata(stdout);
 }
 
@@ -416,23 +468,45 @@ async function removeJobOutput(job) {
 }
 
 async function executeJob(job) {
-  // If a maintenance update is running (or about to run), queue behind it.
-  await waitForUpdateGate();
+  const controller = new AbortController();
+  activeJobControllers.set(job.id, controller);
+  let counted = false;
+  try {
+    await waitForUpdateGate();
+    controller.signal.throwIfAborted();
+    assertJobsEnabled();
+    runningJobsCount += 1;
+    counted = true;
+    await executeJobWork(job, controller.signal);
+  } finally {
+    activeJobControllers.delete(job.id);
+    if (counted) runningJobsCount = Math.max(0, runningJobsCount - 1);
+    if (runningJobsCount === 0) jobEvents.emit('idle');
+  }
+}
+
+async function executeJobWork(job, signal) {
+  signal.throwIfAborted();
+  assertJobsEnabled();
 
   const denoPath = resolveDenoPath();
   const ytDlpPath = resolveYtDlpPath();
   const ffmpegLocation = resolveFfmpegLocation();
 
-  runningJobsCount += 1;
   job.status = 'running';
   job.updatedAt = new Date().toISOString();
   await persistJob(job);
 
   let metadataError;
-  const sourceMetadata = await getSourceMetadata(job.url, denoPath, job.isPlaylist).catch((error) => {
+  const sourceMetadata = await getSourceMetadata(job.url, denoPath, job.isPlaylist, signal).catch((error) => {
     metadataError = error;
     return null;
   });
+  if (signal.aborted) {
+    job.output = formatCommandOutput(metadataError || {}) || signal.reason.message;
+    await cooldownPersistence;
+    signal.throwIfAborted();
+  }
   const folderName = job.folderName || (job.isPlaylist && sourceMetadata?.playlistTitle
     ? `${sourceMetadata.folderName}_${job.id}` : randomSongFolderName());
 
@@ -481,10 +555,11 @@ async function executeJob(job) {
 
   let completedStatus;
   try {
+    signal.throwIfAborted();
     if (job.metadataOnly && metadataError) throw metadataError;
     const result = job.metadataOnly
       ? { stdout: 'Metadata retrieved. Media download skipped.', stderr: '' }
-      : await runCommand(ytDlpPath, args);
+      : await runCommand(ytDlpPath, args, signal);
     const classification = classifyCommandOutput(result);
     job.output = formatCommandOutput(result) || 'Command completed without output.';
     job.files = await listDownloadedFiles(job.outputDir);
@@ -499,18 +574,19 @@ async function executeJob(job) {
     job.output = formatCommandOutput(error) || error.message;
     job.files = await listDownloadedFiles(job.outputDir);
   } finally {
-    try {
-      job.playlistTitle ||= inferPlaylistTitle(job);
-      if (!job.metadataOnly) await embedDownloadedArtwork(job);
-      await refreshSongMetadata(job);
-      job.updatedAt = new Date().toISOString();
-      await persistJob({ ...job, status: completedStatus || job.status });
-      await refreshJobThumbnails(job, job.files, { force: !job.metadataOnly });
-      if (completedStatus) job.status = completedStatus;
-    } finally {
-      runningJobsCount = Math.max(0, runningJobsCount - 1);
-      if (runningJobsCount === 0) jobEvents.emit('idle');
+    await cooldownPersistence;
+    job.playlistTitle ||= inferPlaylistTitle(job);
+    if (!job.metadataOnly && !signal.aborted) await embedDownloadedArtwork(job);
+    await refreshSongMetadata(job);
+    if (signal.aborted) {
+      completedStatus = 'failed';
+      job.error = signal.reason.message;
+      job.warning = null;
     }
+    job.updatedAt = new Date().toISOString();
+    await persistJob({ ...job, status: completedStatus || job.status });
+    if (!signal.aborted) await refreshJobThumbnails(job, job.files, { force: !job.metadataOnly });
+    if (completedStatus) job.status = completedStatus;
   }
 }
 
@@ -555,6 +631,7 @@ export function isUpdateInProgress() {
 }
 
 export async function createJob(url, user = null, { metadataOnly = false, downloadType = 'audio' } = {}) {
+  assertJobsEnabled();
   if (metadataOnly !== undefined && typeof metadataOnly !== 'boolean') {
     throw Object.assign(new Error('metadataOnly must be a boolean'), { statusCode: 400 });
   }
@@ -738,6 +815,7 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
 }
 
 export async function rerunJob(id, user = null) {
+  assertJobsEnabled();
   const job = (await getJob(id));
   if (!job) {
     return null;
