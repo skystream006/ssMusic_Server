@@ -49,7 +49,7 @@ export function getJobRateLimit() {
   return {
     limited,
     reenabledAt,
-    message: limited ? `Jobs are currently rate limited on this server. Jobs will be re-enabled at ${reenabledAt}` : null
+    message: limited ? `Jobs are currently rate limited on this server.\nIf you job/s failed recently, please try again later.\nJobs will be re-enabled at ${reenabledAt}` : null
   };
 }
 
@@ -69,7 +69,7 @@ function rateLimitJobs() {
   const reason = Object.assign(new Error(getJobRateLimit().message), { code: 'JOBS_RATE_LIMITED' });
   for (const controller of activeJobControllers.values()) controller.abort(reason);
 }
-const privateVideoPattern = /\b(?:private video|video is private|video unavailable)\b/i;
+const privateVideoPattern = /\b(?:private video|video is private|video unavailable|this video has been removed for violating|YouTube Music is not directly supported\. Redirecting to)\b/i;
 
 // Non-null while a maintenance update (yt-dlp -U / deno upgrade) is running.
 // Jobs about to start wait on this promise so they queue behind the update.

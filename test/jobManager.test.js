@@ -546,6 +546,29 @@ test('unavailable video errors are warnings in either output stream without hidi
   }
 });
 
+test('removed video errors and YouTube Music redirects do not hide unrelated errors', async () => {
+  const { classifyCommandOutput } = await import(`../src/jobManager.js?removed=${Date.now()}`);
+  const redirect = 'WARNING: [youtube:tab] YouTube Music is not directly supported. Redirecting to https://www.youtube.com/playlist?list=PLby3nsn6k9vZtZ67xilzjnsuWIuCuQiqb';
+  const removed = "ERROR: [youtube] ogy9AawxX0c: This video has been removed for violating YouTube's Terms of Service";
+  const redirectOnly = classifyCommandOutput({ stderr: redirect });
+  assert.equal(redirectOnly.hasPrivateVideoWarning, false);
+  assert.equal(redirectOnly.hasNonPrivateError, false);
+  assert.equal(redirectOnly.stderr, redirect);
+
+  for (const stream of ['stdout', 'stderr']) {
+    const output = `${redirect}\n${removed}`;
+    const classification = classifyCommandOutput({ [stream]: output });
+    assert.equal(classification.hasPrivateVideoWarning, true);
+    assert.equal(classification.hasNonPrivateError, false);
+    assert.equal(classification[stream], `${redirect}\n${removed.replace('ERROR:', 'WARNING:')}`);
+
+    const mixed = classifyCommandOutput({ [stream]: `${output}\nERROR: Unable to download webpage` });
+    assert.equal(mixed.hasPrivateVideoWarning, true);
+    assert.equal(mixed.hasNonPrivateError, true);
+    assert.match(mixed[stream], /ERROR: Unable to download webpage/);
+  }
+});
+
 for (const { label, output, exitCode, status } of [
   { label: 'successful exit', output: 'ERROR: [youtube] abc: Video unavailable', exitCode: 0, status: 'partially_completed' },
   { label: 'failed exit', output: 'ERROR: [youtube] abc: Video unavailable', exitCode: 1, status: 'partially_completed' },
@@ -682,6 +705,7 @@ test('persisted unavailable video failures are recovered unless unrelated errors
   const records = [
     { id: 'error', status: 'failed', output: 'ERROR: [youtube] abc: Video unavailable' },
     { id: 'warning', status: 'warning', output: 'WARNING: [youtube] abc: Video unavailable' },
+    { id: 'removed-with-redirect', status: 'failed', output: "WARNING: [youtube:tab] YouTube Music is not directly supported. Redirecting to https://www.youtube.com/playlist?list=PLby3nsn6k9vZtZ67xilzjnsuWIuCuQiqb\nERROR: [youtube] ogy9AawxX0c: This video has been removed for violating YouTube's Terms of Service" },
     { id: 'private-and-unavailable', status: 'failed', output: 'ERROR: [youtube] abc: Video unavailable\nERROR: [youtube] def: Private video' },
     { id: 'mixed', status: 'failed', output: 'WARNING: [youtube] abc: Video unavailable\nERROR: Unable to download webpage' }
   ];
