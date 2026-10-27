@@ -3,11 +3,13 @@
 ssMusic is a personal music and video library with yt-dlp download
 jobs from YouTube and YouTube Music URLs.
 
-The web player remembers each signed-in user's playlist, song queue, and selected
-song in the current browser, including after closing the tab. Returning to the
-default music page restores that playlist and queue position, paused until Play
-is pressed. Explicit playlist and song links take precedence. This does not
-restore elapsed playback time or sync playback state between browsers.
+The web player remembers each signed-in user's full song queue, selected song,
+elapsed playback time, shuffle/repeat settings, and browsed queue page in the
+current browser, including after closing the tab. Returning to the default music
+page restores that playlist and playback position, paused until Play is pressed.
+Explicit playlist and song links take precedence. Playback progress is saved
+every five seconds and when pausing, hiding, or leaving the page. Playback state
+does not sync between browsers and requires available browser storage.
 
 Submitted YouTube links containing a `list` query parameter are normalized to
 `https://music.youtube.com/playlist?list=PLAYLIST_ID` before duplicate detection and
@@ -370,8 +372,15 @@ genre, year, track/disc numbers, and playlist names across the whole library and
 returns to page one when changed. Embedded MP3 tags are indexed during imports
 and downloads. Existing songs receive a one-time, batched metadata index update
 at server startup; searching does not scan audio files.
-**Play page** queues the displayed page; browsing other pages does not replace
-the active queue. Open an individual playlist to reorder its tracks.
+**Play selection** queues the entire matching playlist, folder, or collection in
+the selected sort order, starting at its first song. Choosing an individual song
+queues the same full selection and starts at that song. Queue metadata loads in
+batches of up to 1000 tracks, reusing a complete displayed result or an already
+loaded 1000-track page. The active queue is then reused for playback and shuffle.
+The playback queue has its own page controls; browsing them does not change the
+playing song. When playback crosses a queue-page boundary, the queue displays
+the playing song's page. Queue browsing and advancing tracks require no further
+track-list requests. Open an individual playlist to reorder its tracks.
 
 `GET /api/library/tracks` defaults to page 1 with 50 tracks. It accepts `page`,
 `pageSize` (1-1000), and `search` (up to 200 characters), and returns `files`,
@@ -385,7 +394,8 @@ parameters are supplied.
 
 Use **Shuffle** in the bottom playback bar or job player to toggle random
 selection of the next track in the active queue, without changing playlist order.
-The highlighted button indicates that shuffle is on.
+The highlighted button indicates that shuffle is on. Shuffle selects from the
+entire queued collection, not just the visible library or queue page.
 
 The **Repeat** button cycles through **Off → Repeat queue → Repeat one song → Off**.
 Repeat one shows a **1** on the repeat icon and restarts the current song when it
@@ -393,7 +403,8 @@ ends, even with shuffle enabled. **Next** and **Previous** still navigate normal
 repeat one does not force manual skips back to the same song. Repeat queue wraps
 back to the first track at the end when shuffle is off. With shuffle on, playback
 continues choosing another track while more than one is available.
-These modes are shared between the job player and bottom bar for the current session.
+These modes are shared between the job player and bottom bar and persist with
+the saved queue in the current browser.
 
 ## Metadata-only jobs
 

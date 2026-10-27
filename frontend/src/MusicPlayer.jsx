@@ -101,6 +101,26 @@ export function queueSongNext(songs, selected, track) {
   return queue;
 }
 
+export async function loadPlaybackQueue(request, query, tracks, pagination) {
+  if (!pagination || tracks.length === pagination.total) return tracks;
+  const parameters = new URLSearchParams(query);
+  parameters.set('pageSize', '1000');
+  const queue = [];
+  let page = 1;
+  let total = pagination.total;
+  while (queue.length < total) {
+    parameters.set('page', String(page));
+    const result = pagination.page === page && pagination.pageSize === 1000
+      ? { files: tracks, total: pagination.total, page }
+      : await request(`/api/library/tracks?${parameters}`);
+    if (!result.files.length || result.page !== page) throw new Error('The playlist changed while loading. Please try again.');
+    queue.push(...result.files);
+    total = result.total;
+    page++;
+  }
+  return queue;
+}
+
 export function replaceSongFile(tracks, jobId, name, file) {
   const matches = (track) => track?.jobId === jobId && track.name === name;
   const replace = (track) => ({ ...track, ...file, transcription: undefined });
@@ -137,19 +157,19 @@ export function SongArtwork({ track }) {
   </span>;
 }
 
-function TrackPagination({ pagination, position }) {
+function TrackPagination({ pagination, position, label = 'Track' }) {
   const { page, pageSize, total, totalPages, loading, onChange, onPageSizeChange } = pagination;
-  return <nav className="track-pagination" aria-label={`Track pages ${position}`}>
+  return <nav className="track-pagination" aria-label={`${label} pages ${position}`}>
     <span role="status">{total ? `${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, total)} of ${total}` : '0 tracks'}</span>
     <label>Items per page<select aria-label="Items per page" value={pageSize} disabled={loading} onChange={(event) => onPageSizeChange(Number(event.target.value))}>
       {[50, 100, 200, 500, 1000].map((size) => <option key={size} value={size}>{size}</option>)}
     </select></label>
     <div>
-      <button className="music-icon-button" type="button" title="Previous page" aria-label="Previous track page" disabled={loading || page <= 1} onClick={() => onChange(page - 1)}><ChevronLeft size={18} /></button>
-      <label>Page<select aria-label="Track page" value={page} disabled={loading || totalPages <= 1} onChange={(event) => onChange(Number(event.target.value))}>
+      <button className="music-icon-button" type="button" title="Previous page" aria-label={`Previous ${label.toLowerCase()} page`} disabled={loading || page <= 1} onClick={() => onChange(page - 1)}><ChevronLeft size={18} /></button>
+      <label>Page<select aria-label={`${label} page`} value={page} disabled={loading || totalPages <= 1} onChange={(event) => onChange(Number(event.target.value))}>
         {Array.from({ length: totalPages }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
       </select><span>of {totalPages}</span></label>
-      <button className="music-icon-button" type="button" title="Next page" aria-label="Next track page" disabled={loading || page >= totalPages} onClick={() => onChange(page + 1)}><ChevronRight size={18} /></button>
+      <button className="music-icon-button" type="button" title="Next page" aria-label={`Next ${label.toLowerCase()} page`} disabled={loading || page >= totalPages} onClick={() => onChange(page + 1)}><ChevronRight size={18} /></button>
     </div>
   </nav>;
 }
@@ -167,23 +187,36 @@ export function readPlaybackSession(userId, browser = window) {
       || !Array.isArray(saved.songs) || !saved.songs.length
       || !saved.songs.every((track) => track && typeof track.jobId === 'string' && typeof track.name === 'string' && typeof track.streamUrl === 'string')
       || !saved.songs.some((track) => songKey(track) === saved.selected)) return null;
+    try {
+      const progress = JSON.parse(browser.localStorage?.getItem(`ssMusicPlaybackPosition:${userId}`) || 'null');
+      if (progress?.selected === saved.selected && Number.isFinite(progress.position) && progress.position >= 0) saved.position = progress.position;
+    } catch {}
     return saved;
   } catch { return null; }
 }
 
-export function writePlaybackSession(userId, songs, selected, scope, browser = window) {
+export function writePlaybackPosition(userId, selected, position, browser = window) {
+  try {
+    if (userId && selected && Number.isFinite(position) && position >= 0) {
+      browser.localStorage.setItem(`ssMusicPlaybackPosition:${userId}`, JSON.stringify({ selected, position }));
+    }
+  } catch {}
+}
+
+export function writePlaybackSession(userId, songs, selected, scope, browser = window, settings = {}) {
   try {
     if (!userId) return;
     const key = `ssMusicPlayback:${userId}`;
     if (!songs?.some((track) => songKey(track) === selected)) {
       browser.localStorage.removeItem(key);
+      browser.localStorage.removeItem(`ssMusicPlaybackPosition:${userId}`);
       browser.sessionStorage?.removeItem(key);
       return;
     }
     const url = `${browser.location.pathname}${browser.location.search}`;
     let previous;
     try { previous = JSON.parse(browser.localStorage.getItem(key) || 'null'); } catch {}
-    browser.localStorage.setItem(key, JSON.stringify({ songs, selected,
+    browser.localStorage.setItem(key, JSON.stringify({ ...settings, songs, selected,
       scope: typeof scope === 'string' ? scope : null,
       url: /^\/(?:\?|$|job\/[^/?]+\/player(?:\?|$))/.test(url) ? url : previous?.url || '/' }));
   } catch {}
@@ -213,8 +246,15 @@ export function PlaybackProvider({ children, request, userId }) {
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const [shuffle, setShuffle] = useState(false);
-  const [repeatMode, setRepeatMode] = useState('off');
+  const [shuffle, setShuffle] = useState(restored?.shuffle === true);
+  const [repeatMode, setRepeatMode] = useState(['all', 'one'].includes(restored?.repeatMode) ? restored.repeatMode : 'off');
+  const [queuePage, setQueuePage] = useState(Number.isInteger(restored?.queuePage) && restored.queuePage > 0 ? restored.queuePage : 1);
+  const [queuePageSize, setQueuePageSize] = useState([50, 100, 200, 500, 1000].includes(restored?.queuePageSize) ? restored.queuePageSize : 50);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const queueLoadRef = useRef(0);
+  const queueRequestRef = useRef(null);
+  const resumePositionRef = useRef(restored);
+  const progressSavedAtRef = useRef(0);
   const [videoOpen, setVideoOpen] = useState(true);
   const audioRef = useRef(null);
   const autoPlayRef = useRef(!restored && new URLSearchParams(window.location.search).get('play') === '1');
@@ -226,13 +266,38 @@ export function PlaybackProvider({ children, request, userId }) {
   const isVideo = mediaType(song?.name) === 'video';
   const lyricsText = formatLyricsForCopy(metadata, mode);
   const currentCopy = copyResult?.song === selected && copyResult?.mode === mode ? copyResult : null;
+  const playingPage = Math.max(1, Math.floor(index / queuePageSize) + 1);
+  const playingPageRef = useRef(playingPage);
+  const queueTotalPages = Math.max(1, Math.ceil((songs?.length || 0) / queuePageSize));
+  const queuePagination = {
+    page: Math.min(queuePage, queueTotalPages), pageSize: queuePageSize, total: songs?.length || 0,
+    totalPages: queueTotalPages, onChange: setQueuePage,
+    onPageSizeChange: (size) => { setQueuePageSize(size); setQueuePage(Math.max(1, Math.floor(index / size) + 1)); }
+  };
 
   useEffect(() => {
-    const persist = () => writePlaybackSession(userId, songs, selected, queueScopeRef.current);
+    if (playingPageRef.current !== playingPage) setQueuePage(playingPage);
+    playingPageRef.current = playingPage;
+  }, [playingPage]);
+
+  useEffect(() => {
+    const persist = () => writePlaybackSession(userId, songs, selected, queueScopeRef.current, window,
+      { shuffle, repeatMode, queuePage, queuePageSize });
     persist();
     window.addEventListener('pagehide', persist);
     return () => window.removeEventListener('pagehide', persist);
-  }, [userId, songs, selected]);
+  }, [userId, songs, selected, shuffle, repeatMode, queuePage, queuePageSize]);
+
+  useEffect(() => {
+    const persist = () => writePlaybackPosition(userId, selected, audioRef.current?.currentTime);
+    window.addEventListener('pagehide', persist);
+    const onVisibilityChange = () => { if (document.visibilityState === 'hidden') persist(); };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', persist);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [userId, selected]);
 
   async function copyLyrics() {
     if (copying || !lyricsText.trim()) return;
@@ -274,6 +339,8 @@ export function PlaybackProvider({ children, request, userId }) {
   }, [Boolean(lyricsViewers), song?.jobId, song?.name, song?.streamUrl, song?.lyricsUrl, request]);
 
   function selectSong(track, queue = songs, scope = queueScopeRef.current) {
+    queueLoadRef.current++;
+    setQueueLoading(false);
     autoPlayRef.current = true;
     queueScopeRef.current = scope;
     setSongs(queue);
@@ -282,6 +349,42 @@ export function PlaybackProvider({ children, request, userId }) {
       if (mediaType(track.name) === 'video') setVideoOpen(true);
       audioRef.current?.play().catch(() => setPlayError('Playback could not start. Press play to retry.'));
     } else setSelected(key);
+  }
+
+  async function playLibrary(view, track = null, autoplay = true) {
+    const scope = view.queueScope ?? view.selectedId;
+    const intent = ++queueLoadRef.current;
+    setPlayError('');
+    try {
+      let queue = songs;
+      if (queueScopeRef.current !== scope || !queue?.length) {
+        setQueueLoading(true);
+        const cacheKey = JSON.stringify([scope, view.queueRevision]);
+        if (queueRequestRef.current?.key !== cacheKey) {
+          queueRequestRef.current = { key: cacheKey,
+            promise: loadPlaybackQueue(request, view.queueQuery, view.tracks, view.pagination) };
+        }
+        queue = await queueRequestRef.current.promise;
+      }
+      if (intent !== queueLoadRef.current) return;
+      const target = track ? queue.find((item) => songKey(item) === songKey(track)) : queue[0];
+      if (!target) throw new Error('This song is no longer in the playlist. Please refresh and try again.');
+      const pageSize = view.pagination?.pageSize || queuePageSize;
+      setQueuePageSize(pageSize);
+      setQueuePage(Math.floor(queue.indexOf(target) / pageSize) + 1);
+      if (autoplay) selectSong(target, queue, scope);
+      else {
+        queueScopeRef.current = scope;
+        setSongs(queue);
+        setSelected(songKey(target));
+      }
+      setQueueLoading(false);
+    } catch (error) {
+      if (intent !== queueLoadRef.current) return;
+      queueRequestRef.current = null;
+      setQueueLoading(false);
+      setPlayError(error.message);
+    }
   }
 
   function nextSong(ended = false) {
@@ -319,6 +422,12 @@ export function PlaybackProvider({ children, request, userId }) {
     onLoadedMetadata={(event) => {
       event.currentTarget.volume = volumeRef.current;
       event.currentTarget.muted = mutedRef.current;
+      const resume = resumePositionRef.current;
+      if (resume?.selected === selected && Number.isFinite(resume.position)) {
+        event.currentTarget.currentTime = Math.min(resume.position, Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : resume.position);
+        setPosition(event.currentTarget.currentTime);
+      }
+      resumePositionRef.current = null;
       setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
     }}
     onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
@@ -328,8 +437,17 @@ export function PlaybackProvider({ children, request, userId }) {
       setVolume(event.currentTarget.volume);
       setMuted(event.currentTarget.muted);
     }}
-    onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
-    onPlay={() => { setPlaying(true); setPlayError(''); }} onPause={() => setPlaying(false)}
+    onTimeUpdate={(event) => {
+      setPosition(event.currentTarget.currentTime);
+      if (Date.now() - progressSavedAtRef.current >= 5000) {
+        writePlaybackPosition(userId, selected, event.currentTarget.currentTime);
+        progressSavedAtRef.current = Date.now();
+      }
+    }}
+    onPlay={() => { setPlaying(true); setPlayError(''); }} onPause={(event) => {
+      setPlaying(false);
+      writePlaybackPosition(userId, selected, event.currentTarget.currentTime);
+    }}
     onEnded={() => nextSong(true)} onError={() => setPlayError('This file could not be played. It may be unavailable, or its video/audio codec may be unsupported by this browser.')} />;
 
   function removeSong(jobId, name) {
@@ -360,7 +478,7 @@ export function PlaybackProvider({ children, request, userId }) {
   return <PlaybackContext.Provider value={{ songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
-    isVideo, videoOpen, setVideoOpen, restoredSelectionRef,
+    isVideo, videoOpen, setVideoOpen, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata, replaceFile }}>
     {children}
     <section className="movie-player" aria-label="Movie player" hidden={!isVideo || !videoOpen}>
@@ -377,7 +495,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const { songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
-    isVideo, videoOpen, setVideoOpen, restoredSelectionRef,
+    isVideo, videoOpen, setVideoOpen, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, updateMetadata } = usePlayback();
   const [job, setJob] = useState(null);
   const [loadError, setLoadError] = useState('');
@@ -390,6 +508,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     if (dockOnly) navigationHistory().setLyricsOpen(next === 'lyrics');
   }
   const dockRef = useRef(null);
+  const queueListRef = useRef(null);
   const lyricsOverlayRef = useRef(null);
   const lyricsButtonRef = useRef(null);
   const lines = lyricsLoaded ? metadata?.sylt || [] : [];
@@ -401,6 +520,10 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const shuffleLabel = shuffle ? 'Shuffle on: turn off' : 'Shuffle off: turn on';
   const repeatLabel = repeatMode === 'off' ? 'Repeat off: repeat queue' : repeatMode === 'all' ? 'Repeat queue: repeat one song' : 'Repeat one song: turn off';
   const RepeatIcon = repeatMode === 'one' ? Repeat1 : Repeat;
+
+  useEffect(() => {
+    if (queueListRef.current) queueListRef.current.scrollTop = 0;
+  }, [queuePagination.page]);
 
   useEffect(() => {
     if (panel !== 'lyrics') return;
@@ -444,13 +567,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     const tracks = libraryView?.tracks;
     if (!tracks) return;
     if (queueScopeRef.current === undefined && tracks.length) {
-      queueScopeRef.current = libraryScope;
-      setSongs(tracks);
-      setSelected(songKey(tracks[0]));
-    } else if (queueScopeRef.current === libraryScope && (!libraryView.pagination || tracks.some((track) => songKey(track) === selected))) {
-      setSongs((current) => tracks.map((track) => songKey(track) === selected
-        ? { ...track, streamUrl: current?.find((item) => songKey(item) === selected)?.streamUrl || track.streamUrl } : track));
-      setSelected((current) => tracks.some((track) => songKey(track) === current) ? current : tracks[0] ? songKey(tracks[0]) : null);
+      playLibrary(libraryView, null, false);
     }
   }, [libraryView?.tracks, libraryScope]);
 
@@ -538,8 +655,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             <div><p className="eyebrow">{libraryView.type === 'folder' ? 'Playlist folder' : libraryView.selectedId ? 'Playlist' : 'Your collection'}</p>
               <h2>{libraryView.title}</h2><p>{totalTracks} track{totalTracks === 1 ? '' : 's'}</p>
               {libraryView.playlistPrivate && <p><Lock size={13} /> Private playlist — owner only</p>}</div>
-            <button className="round-play" type="button" aria-label={libraryView.pagination ? 'Play page' : 'Play selection'} title={libraryView.pagination ? 'Play page' : 'Play selection'} disabled={!tracks.length || libraryView.loading}
-              onClick={() => selectSong(tracks[0], tracks, libraryScope)}><Play size={22} fill="currentColor" /></button>
+            <button className="round-play" type="button" aria-label="Play selection" title="Play selection" disabled={!tracks.length || libraryView.loading}
+              onClick={() => playLibrary(libraryView)}><Play size={22} fill="currentColor" /></button>
           </header>
           <div className="songs-toolbar"><h3>Tracks</h3>
             <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search tracks" placeholder="Search tracks" maxLength={libraryView.pagination ? 200 : undefined} value={trackSearch} onChange={(event) => (libraryView.onSearch || setSearch)(event.target.value)} /></label>
@@ -595,7 +712,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                   event.dataTransfer.setDragImage(row, 24, 24);
                 }}><GripVertical size={16} /></button>}
               <div className="song-title-actions"><button className="song-select" type="button" title={track.name} aria-label={`Play ${track.name}`} aria-current={current ? 'true' : undefined}
-                onClick={() => selectSong(track, tracks, libraryScope)}>
+                onClick={() => playLibrary(libraryView, track)}>
                 <span className="song-number">{mediaType(track.name) === 'video' ? <Film size={15} aria-label="Movie" /> : current && playing ? <Music2 size={15} /> : track.orderNumber ?? trackIndex + 1}</span>
                 <SongArtwork track={track} />
                 <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><small>{track.artist || (track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original')}</small>
@@ -635,7 +752,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
       {dockOnly && <>
         {panel === 'queue' && <aside className="player-panel" aria-label="Playback queue">
           <div className="player-panel-heading"><h3>Up next</h3><button className="music-icon-button" type="button" title="Close panel" aria-label="Close player panel" onClick={() => setPanel(null)}><X size={18} /></button></div>
-          <ol className="playback-queue">{songs?.map((track) => <li key={songKey(track)}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>{mediaType(track.name) === 'video' ? <Film size={16} /> : <Music2 size={16} />}<span>{track.name.split('/').at(-1)}<small>{track.playlistTitle}</small></span></button></li>)}</ol>
+          <TrackPagination pagination={queuePagination} position="top" label="Queue" />
+          <ol className="playback-queue" ref={queueListRef} start={(queuePagination.page - 1) * queuePagination.pageSize + 1}>{songs?.slice((queuePagination.page - 1) * queuePagination.pageSize, queuePagination.page * queuePagination.pageSize).map((track) => <li key={songKey(track)}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>{mediaType(track.name) === 'video' ? <Film size={16} /> : <Music2 size={16} />}<span>{track.name.split('/').at(-1)}<small>{track.playlistTitle}</small></span></button></li>)}</ol>
         </aside>}
       {panel === 'lyrics' && <div className="lyrics-overlay" onClick={(event) => { if (event.target === event.currentTarget) setPanel(null); }}>
         <section className="lyrics-overlay-content" role="dialog" aria-label="Lyrics" ref={lyricsOverlayRef}>
@@ -660,6 +778,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <button className="music-icon-button volume-button" type="button" title={muted ? 'Unmute' : 'Mute'} aria-label={muted ? 'Unmute' : 'Mute'} disabled={!song} onClick={() => { audioRef.current.muted = !muted; }}>{muted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}</button>
           <input className="volume-slider" type="range" aria-label="Volume" min="0" max="1" step="0.01" value={muted ? 0 : volume} disabled={!song} onChange={(event) => { audioRef.current.volume = Number(event.target.value); audioRef.current.muted = false; }} />
         </div>
+        {queueLoading && <div className="notice playback-error" role="status"><RefreshCw className="spin" size={16} />Loading queue...</div>}
         {playError && <div className="notice error playback-error" role="alert">{playError}<button className="music-icon-button" type="button" aria-label="Dismiss playback error" title="Dismiss" onClick={() => setPlayError('')}><X size={16} /></button></div>}
       </footer>
       </>}

@@ -41,6 +41,8 @@ let MusicPlayer;
 let PlaybackProvider;
 let readPlaybackSession;
 let writePlaybackSession;
+let writePlaybackPosition;
+let loadPlaybackQueue;
 let SharedLibraryAccess;
 let UsernameForm;
 let LibraryAccessList;
@@ -53,7 +55,7 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, PlaybackProvider, readPlaybackSession, writePlaybackSession, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -152,6 +154,79 @@ test('playback session restores the selected song and playlist queue after retur
   Object.defineProperty(browser, 'localStorage', { get() { throw new Error('Storage blocked'); } });
   assert.equal(readPlaybackSession('user', browser), null);
   assert.doesNotThrow(() => writePlaybackSession('user', songs, selected, scope, browser));
+});
+
+test('playback queue loads all 500 songs from a middle page with one request and shuffles beyond that page', async (context) => {
+  const songs = Array.from({ length: 500 }, (_, index) => ({ jobId: 'job', name: `${index + 1}.mp3`, streamUrl: `/stream/${index + 1}` }));
+  const calls = [];
+  const queue = await loadPlaybackQueue(async (url) => {
+    calls.push(url);
+    const query = new URL(url, 'http://localhost').searchParams;
+    assert.equal(query.get('entryId'), 'mix');
+    assert.equal(query.get('userId'), 'owner');
+    assert.equal(query.get('sort'), 'rating');
+    assert.equal(query.get('search'), 'favorite');
+    assert.equal(query.get('pageSize'), '1000');
+    assert.equal(query.get('page'), '1');
+    return { files: songs, total: songs.length, page: 1 };
+  }, 'entryId=mix&userId=owner&sort=rating&search=favorite', songs.slice(100, 150), { page: 3, pageSize: 50, total: 500 });
+  assert.deepEqual(queue, songs);
+  assert.equal(calls.length, 1);
+  const selected = JSON.stringify(['job', '50.mp3']);
+  assert.equal(nextPlaybackSong(queue, selected, { ended: true }), songs[50]);
+  context.mock.method(Math, 'random', () => 0.99999);
+  assert.equal(nextPlaybackSong(queue, selected, { shuffle: true }), songs[499]);
+  assert.equal(calls.length, 1);
+});
+
+test('playback queue batches larger collections and reuses an already complete page', async () => {
+  const songs = Array.from({ length: 2500 }, (_, index) => ({ jobId: 'job', name: `${index}.mp3` }));
+  const pages = [];
+  const queue = await loadPlaybackQueue(async (url) => {
+    const page = Number(new URL(url, 'http://localhost').searchParams.get('page'));
+    pages.push(page);
+    return { files: songs.slice((page - 1) * 1000, page * 1000), total: songs.length, page };
+  }, '', songs.slice(0, 50), { total: songs.length });
+  assert.deepEqual(queue, songs);
+  assert.deepEqual(pages, [1, 2, 3]);
+  const missingPages = [];
+  assert.deepEqual(await loadPlaybackQueue(async (url) => {
+    const page = Number(new URL(url, 'http://localhost').searchParams.get('page'));
+    missingPages.push(page);
+    return { files: songs.slice((page - 1) * 1000, page * 1000), total: songs.length, page };
+  }, '', songs.slice(1000, 2000), { total: songs.length, page: 2, pageSize: 1000 }), songs);
+  assert.deepEqual(missingPages, [1, 3]);
+  const unexpectedRequest = () => assert.fail('A complete queue needs no requests');
+  assert.equal(await loadPlaybackQueue(unexpectedRequest, '', songs, { total: songs.length }), songs);
+  assert.equal(await loadPlaybackQueue(unexpectedRequest, '', songs, null), songs);
+  assert.deepEqual(await loadPlaybackQueue(unexpectedRequest, '', [], { total: 0 }), []);
+});
+
+test('playback queue rejects failed or changed pagination instead of accepting a truncated queue', async () => {
+  await assert.rejects(loadPlaybackQueue(async () => { throw new Error('Offline'); }, '', [], { total: 500 }), /Offline/);
+  await assert.rejects(loadPlaybackQueue(async () => ({ files: [], total: 500, page: 1 }), '', [], { total: 500 }), /playlist changed/);
+  await assert.rejects(loadPlaybackQueue(async () => ({ files: [{ name: 'song' }], total: 500, page: 2 }), '', [], { total: 500 }), /playlist changed/);
+});
+
+test('playback session persists a full queue, independently browsed page, modes and matching seek position', () => {
+  const values = new Map();
+  const writes = [];
+  const browser = { location: { pathname: '/', search: '' }, localStorage: {
+    getItem: (key) => values.get(key), setItem: (key, value) => { values.set(key, value); writes.push(key); }, removeItem: (key) => values.delete(key)
+  } };
+  const songs = Array.from({ length: 500 }, (_, index) => ({ jobId: 'job', name: `${index}.mp3`, streamUrl: `/stream/${index}` }));
+  const selected = JSON.stringify(['job', '49.mp3']);
+  const settings = { shuffle: true, repeatMode: 'all', queuePage: 7, queuePageSize: 50 };
+  writePlaybackSession('user', songs, selected, 'mix', browser, settings);
+  writePlaybackPosition('user', selected, 123.5, browser);
+  assert.deepEqual(readPlaybackSession('user', browser), { songs, selected, scope: 'mix', url: '/', ...settings, position: 123.5 });
+  assert.deepEqual(writes, ['ssMusicPlayback:user', 'ssMusicPlaybackPosition:user']);
+  writePlaybackPosition('user', JSON.stringify(['job', '50.mp3']), 10, browser);
+  assert.equal(readPlaybackSession('user', browser).position, undefined);
+  values.set('ssMusicPlaybackPosition:user', '{');
+  assert.equal(readPlaybackSession('user', browser).songs.length, 500);
+  writePlaybackSession('user', songs, null, 'mix', browser);
+  assert.equal(values.has('ssMusicPlaybackPosition:user'), false);
 });
 
 test('restored playback does not open or render lyrics before a viewer requests them', () => {

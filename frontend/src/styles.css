@@ -717,8 +717,9 @@ code { font: 400 11px 'DM Mono', monospace; }
 .movie-player header button { flex: none; }
 .movie-player video { display: block; width: 100%; aspect-ratio: 16 / 9; max-height: calc(100dvh - var(--dock-height, 124px) - 78px); object-fit: contain; background: #000; }
 .app-shell main { padding-bottom: calc(var(--dock-height, 124px) + 32px); }
-.global-player .player-panel { position: fixed; z-index: 25; inset: auto 16px calc(var(--dock-height, 124px) + 12px) auto; width: min(360px, calc(100% - 32px)); max-height: calc(100dvh - var(--dock-height, 124px) - 36px); margin: 0; padding: 20px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 10px 40px var(--shadow); overflow-y: auto; }
-.global-player .playback-queue { max-height: none; }
+.global-player .player-panel { position: fixed; z-index: 25; inset: auto 16px calc(var(--dock-height, 124px) + 12px) auto; width: min(360px, calc(100% - 32px)); max-height: calc(100dvh - var(--dock-height, 124px) - 36px); margin: 0; padding: 20px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 10px 40px var(--shadow); display: flex; flex-direction: column; overflow: hidden; }
+.global-player .player-panel-heading, .global-player .track-pagination { flex: none; }
+.global-player .playback-queue { max-height: none; min-height: 0; overflow-y: auto; }
 .dock-track { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .dock-artwork { display: grid; place-items: center; width: 58px; height: 58px; flex: none; overflow: hidden; color: var(--royal); background: color-mix(in srgb, var(--royal) 10%, var(--paper)); border: 1px solid var(--line); }
 .dock-artwork img { width: 100%; height: 100%; object-fit: contain; }
