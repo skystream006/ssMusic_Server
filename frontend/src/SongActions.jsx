@@ -62,8 +62,8 @@ export function SongActions({ name, className, children, file, jobId, request })
     if (event.newState !== 'open') return;
     const rect = triggerRef.current.getBoundingClientRect();
     const menu = menuRef.current;
-    const height = Math.min(320, window.innerHeight - 16);
-    menu.style.left = `${Math.max(8, Math.min(rect.right - 240, window.innerWidth - 248))}px`;
+    const { width, height } = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
     menu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - height - 8))}px`;
   }
 
@@ -77,8 +77,8 @@ export function SongActions({ name, className, children, file, jobId, request })
       title="Song actions" aria-label={`Actions for ${name}`} aria-expanded={open} aria-controls={menuId}
       popoverTarget={menuId}><MoreVertical size={20} /></button>
     <div ref={menuRef} id={menuId} className={`${className} song-actions-popover`} popover="auto"
-      role="group" aria-label={`Actions for ${name}`} onBeforeToggle={positionMenu}
-      onToggle={(event) => setOpen(event.newState === 'open')}
+      role="group" aria-label={`Actions for ${name}`}
+      onToggle={(event) => { positionMenu(event); setOpen(event.newState === 'open'); }}
       onClickCapture={(event) => {
         const action = event.target.closest('button, a');
         if (!action || action.disabled) return;

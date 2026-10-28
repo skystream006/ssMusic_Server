@@ -1083,7 +1083,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 
 .library-song-list, .file-list { container-type: inline-size; --song-rating-width: 120px; }
 .song-actions .song-actions-trigger { display: inline-grid; width: 44px; height: 44px; color: var(--muted); }
-.song-actions-popover { position: fixed; inset: auto; margin: 0; width: 240px; max-width: calc(100vw - 16px); max-height: min(320px, calc(100dvh - 16px)); overflow-y: auto; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); box-shadow: 0 8px 24px var(--shadow); }
+.song-actions-popover { position: fixed; inset: auto; margin: 0; width: 240px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); box-shadow: 0 8px 24px var(--shadow); }
 .song-actions-popover:not(:popover-open) { display: none; }
 .song-actions-popover:popover-open { display: flex; flex-direction: column; flex-wrap: nowrap; align-items: stretch; justify-content: flex-start; gap: 2px; }
 .song-actions-popover.file-row-actions :is(button, a), .song-actions-popover.song-order-actions :is(button, a) { display: flex; align-items: center; justify-content: flex-start; gap: 10px; width: 100%; height: auto; min-height: 44px; padding: 8px 10px; border-radius: 4px; font-size: 12px; text-align: left; text-decoration: none; }
