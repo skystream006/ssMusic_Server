@@ -731,7 +731,7 @@ function JobPage({ id }) {
   const [transcriptionNotice, setTranscriptionNotice] = useState('');
   const [actionError, setActionError] = useState('');
   const job = data?.[0];
-  const files = data?.[1]?.files || [];
+  const files = sortJobs(data?.[1]?.files || [], 'created', 'desc');
   const firstSong = files.find((file) => file.isPlayable);
   const isActive = job?.status === 'queued' || job?.status === 'running';
   const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
