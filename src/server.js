@@ -28,7 +28,7 @@ import { restrictSharedAccess, sharedLibraryUsers, libraryReaderId, canReadShare
 import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
-import { adminMediaSharesRouter, createMediaShare, createPlaylistShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
+import { addMediaShareToLibrary, adminMediaSharesRouter, createMediaShare, createPlaylistShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
 import { canReadFile, entryVisibilitySql, fileVisibilitySql, visibleJob } from './privacy.js';
 import { attachSearchKey, requireSearchKey, searchSongs } from './songSearch.js';
 import { ensureKaraokePartyUser } from './authStore.js';
@@ -171,8 +171,7 @@ app.put('/api/preferences', async (req, res) => {
 });
 
 async function getLibraryJobs(user) {
-  return (await getJobs(user.id)).filter((job) => job.initiatedBy?.id === user.id
-    || job.contributors?.some((contributor) => contributor.id === user.id));
+  return getJobs(user.id);
 }
 
 async function mutateUserLibrary(user, operation) {
@@ -648,7 +647,7 @@ const songMetadataHandler = (includeLyrics) => async (req, res) => {
     return res.json({ ...await readSongMetadata(filePath, { includeLyrics }),
       transcriptionLocked: Boolean(job.songMetadata?.[req.params.name]?.transcriptionLocked),
       canEdit: Boolean(req.user.role !== 'shared' && (req.query.userId === undefined || req.query.userId === req.user.id) && /\.mp3$/i.test(req.params.name)
-        && (req.user.role === 'admin' || req.user.id === job.initiatedBy?.id || job.contributors?.some((user) => user.id === req.user.id))
+        && req.user.id === job.initiatedBy?.id
         && !['queued', 'running'].includes(job.status) && job.transcriptions?.[req.params.name]?.status !== 'sent') });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
@@ -674,6 +673,8 @@ app.post('/api/jobs/:id/files/:name/replace', createReplaceFileHandler((job, ord
 
 app.post('/api/jobs/:id/files/:name/share', createMediaShare);
 app.post('/api/library/playlists/:id/share', createPlaylistShare);
+app.post('/api/library/shares/media/:token', mediaShareHeaders, addMediaShareToLibrary);
+app.post('/api/library/shares/playlists/:token/tracks/:trackId', mediaShareHeaders, addMediaShareToLibrary);
 
 app.post('/api/jobs/:id/files/:name/transcribe', async (req, res) => {
   try {

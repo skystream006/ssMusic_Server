@@ -20,10 +20,15 @@ export async function readPostgresJob(database, id) {
 }
 
 export async function readPostgresJobs(database, userId) {
-  const filter = userId === undefined ? '' : ' WHERE EXISTS (SELECT 1 FROM job_users WHERE job_id = jobs.id AND user_id = $1)';
+  const owned = 'EXISTS (SELECT 1 FROM job_users WHERE job_id = jobs.id AND user_id = $1)';
+  const imported = `EXISTS (SELECT 1 FROM user_preferences,
+    jsonb_array_elements(COALESCE(library->'sharedImports', '[]'::jsonb)) addition
+    WHERE user_id = $1 AND addition->>'jobId' = jobs.id`;
+  const filter = userId === undefined ? '' : ` WHERE (${owned} OR ${imported}))`;
   const parameters = userId === undefined ? [] : [userId];
   const records = await database.prepare(`SELECT id, data FROM jobs${filter} ORDER BY created_at DESC, id`).all(...parameters);
-  const rows = await database.prepare(`SELECT songs.* FROM songs JOIN jobs ON jobs.id = songs.job_id${filter} ORDER BY job_id, file_order`).all(...parameters);
+  const songFilter = userId === undefined ? '' : ` WHERE (${owned} OR ${imported} AND addition->>'name' = songs.name))`;
+  const rows = await database.prepare(`SELECT songs.* FROM songs JOIN jobs ON jobs.id = songs.job_id${songFilter} ORDER BY job_id, file_order`).all(...parameters);
   const grouped = new Map();
   for (const row of rows) {
     if (!grouped.has(row.job_id)) grouped.set(row.job_id, []);

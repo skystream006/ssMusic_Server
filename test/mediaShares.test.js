@@ -184,6 +184,69 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     }
     assert.equal((await call(createPath('absent'), 'POST', credentials.Owner[0])).status, 404);
   });
+  await context.test('signed-in recipients add only the shared song without acquiring mutation permissions', async () => {
+    const route = `/api/library/shares/media/${ownerToken}`;
+    assert.equal((await call(route, 'POST')).status, 401);
+    assert.equal((await call(route, 'POST', credentials.Reader[0])).status, 403);
+    assert.equal((await call(`/api/library/shares/media/${'a'.repeat(43)}`, 'POST', credentials.Other[0])).status, 404);
+    for (const added of [true, false]) {
+      const response = await call(route, 'POST', credentials.Other[0]);
+      assert.equal(response.status, 200, response.text);
+      assert.equal(response.body.added, added);
+    }
+    const tracks = await call('/api/library/tracks', 'GET', credentials.Other[0]);
+    assert.equal(tracks.status, 200, tracks.text);
+    assert.deepEqual(tracks.body.files.map((file) => file.name), [songName]);
+    for (const name of ['Other', 'Contributor', 'Admin', 'Reader']) {
+      const metadataPath = `/api/jobs/${job.id}/files/${encodeURIComponent(songName)}/metadata`;
+      assert.equal((await call(metadataPath, 'PATCH', credentials[name][0], { title: 'Denied' })).status, 403);
+      assert.equal((await call(metadataPath.replace(/metadata$/, 'transcribe'), 'POST', credentials[name][0], {})).status, 403);
+      if (name !== 'Reader') assert.equal((await call(metadataPath, 'GET', credentials[name][0])).body.canEdit, false);
+    }
+    const metadataPath = `/api/jobs/${job.id}/files/${encodeURIComponent(songName)}/metadata`;
+    assert.equal((await call(metadataPath, 'PATCH', credentials.Owner[0], { title: 'Shared song' })).status, 200);
+    const library = (await call('/api/library', 'GET', credentials.Other[0])).body;
+    const changed = await call('/api/library/entries', 'POST', credentials.Other[0], {
+      version: library.version, action: 'create-folder', id: `folder-${crypto.randomUUID()}`, name: 'Saved shares', parentId: null
+    });
+    assert.equal(changed.status, 200, changed.text);
+    const rebuilt = await call('/api/library/tracks', 'GET', credentials.Other[0]);
+    assert.deepEqual(rebuilt.body.files.map((file) => file.name), [songName]);
+    assert.equal((await call(rebuilt.body.files[0].streamUrl, 'GET', credentials.Other[0])).status, 200);
+  });
+  await context.test('shared videos enter Individual Videos without importing neighboring media', async () => {
+    const token = await share(credentials.Owner[0], job.id, videoNames[0]);
+    const response = await call(`/api/library/shares/media/${token}`, 'POST', credentials.Other[0]);
+    assert.equal(response.status, 200, response.text);
+    assert.equal(response.body.added, true);
+    const videos = await call('/api/library/tracks?entryId=individual-videos', 'GET', credentials.Other[0]);
+    assert.equal(videos.status, 200, videos.text);
+    assert.deepEqual(videos.body.files.map((file) => file.name), [videoNames[0]]);
+    const songs = await call('/api/library/tracks?entryId=individual-songs', 'GET', credentials.Other[0]);
+    assert.deepEqual(songs.body.files.map((file) => file.name), [songName]);
+  });
+  await context.test('shared songs can be added to selected owned playlists, including a newly created playlist', async () => {
+    const route = `/api/library/shares/media/${ownerToken}`;
+    const created = await call('/api/library/playlists', 'POST', credentials.Other[0], { playlistTitle: 'Saved favorites' });
+    assert.equal(created.status, 201, created.text);
+    const playlistId = created.body.job.id;
+    for (const added of [true, false]) {
+      const response = await call(route, 'POST', credentials.Other[0], { playlistId });
+      assert.equal(response.status, 200, response.text);
+      assert.equal(response.body.added, added);
+    }
+    const tracks = await call(`/api/library/tracks?entryId=${encodeURIComponent(playlistId)}`, 'GET', credentials.Other[0]);
+    assert.deepEqual(tracks.body.files.map((file) => [file.jobId, file.name]), [[job.id, songName]]);
+    assert.equal((await call(route, 'POST', credentials.Contributor[0], { playlistId: job.id })).status, 403);
+    assert.equal((await call(route, 'POST', credentials.Other[0], { playlistId: job.id })).status, 403);
+    assert.equal((await call(route, 'POST', credentials.Other[0], { playlistId: 'missing' })).status, 403);
+    for (const playlistId of [null, '', [], 42]) {
+      assert.equal((await call(route, 'POST', credentials.Other[0], { playlistId })).status, 400);
+    }
+    const library = (await call('/api/library', 'GET', credentials.Other[0])).body;
+    const folder = library.entries.find((entry) => entry.type === 'folder');
+    assert.equal((await call(route, 'POST', credentials.Other[0], { playlistId: folder.id })).status, 403);
+  });
   await context.test('opaque 32-byte tokens are stored only as hashes and survive a server restart', async () => {
     const rows = await database.prepare('SELECT * FROM media_shares').all();
     assert.equal(new Set(rows.map((row) => row.token_hash)).size, rows.length);
@@ -285,6 +348,11 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     assert.equal((await call(`/api/public/playlists/${tokens[1]}`)).status, 404);
     assert.equal((await call(endpointPublic)).status, 200);
     const track = listing.body.tracks[0];
+    const importPath = track.metadataUrl.replace('/api/public/', '/api/library/shares/');
+    assert.equal((await call(importPath, 'POST')).status, 401);
+    const imported = await call(importPath, 'POST', credentials.Other[0]);
+    assert.equal(imported.status, 200, imported.text);
+    assert.equal(imported.body.added, true);
     assert.match(track.id, /^[a-f0-9]{64}$/);
     assert.equal(Object.hasOwn(track, 'jobId'), false);
     const metadata = await call(track.metadataUrl);
@@ -324,6 +392,10 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     await stopServer();
     await startServer();
     assert.equal((await call(track.streamUrl)).status, 200);
+    const savedTracks = await call('/api/library/tracks', 'GET', credentials.Other[0]);
+    assert.ok(savedTracks.body.files.some((file) => file.jobId === job.id && file.name === songName));
+    assert.ok(savedTracks.body.files.some((file) => file.jobId === playlist.id && file.name === track.name));
+    assert.equal((await call(importPath, 'POST', credentials.Other[0])).body.added, false);
     const privacyPath = `/api/library/playlists/${playlist.id}/privacy`;
     assert.equal((await call(privacyPath, 'PATCH', ownerHeaders, { private: true })).status, 200);
     assert.equal((await call(endpointPublic)).status, 404);

@@ -2,7 +2,7 @@ import { openDatabase, withTransaction } from './database.js';
 import { readPostgresJobs, rebuildPostgresLibrary } from './postgresCatalog.js';
 import path from 'node:path';
 import { getPlaylistTracks, individualPlaylistNames, jobPlaylistId, orderFiles, reconcileLibrary, songKey, themes } from './library.js';
-import { isPlayableFile } from './media.js';
+import { isPlayableFile, mediaType } from './media.js';
 import { canReadAllFiles, canReadFile, canReadJob } from './privacy.js';
 
 const removingSongs = new Set();
@@ -131,7 +131,8 @@ function validateLibrary(value, jobs, current, userId) {
     return { jobId: track.jobId, name: track.name, playlistId: track.playlistId };
   });
   const library = reconcileLibrary({ entries, songOrder, singleJobIds: current.singleJobIds,
-    singleVideoJobIds: current.singleVideoJobIds, songMoves, songAdds, songRemovals: current.songRemovals }, jobs);
+    singleVideoJobIds: current.singleVideoJobIds, songMoves, songAdds, songRemovals: current.songRemovals,
+    sharedImports: current.sharedImports }, jobs);
   const orders = value.playlistSongOrder === undefined ? current.playlistSongOrder : value.playlistSongOrder;
   if (!orders || typeof orders !== 'object' || Array.isArray(orders)) invalid('Invalid playlist song order');
   const playlistTracks = getPlaylistTracks(library, jobs);
@@ -183,6 +184,48 @@ async function writeLibrary(userId, library, version) {
     ON CONFLICT(user_id) DO UPDATE SET library = excluded.library, library_version = excluded.library_version`)
     .run(userId, JSON.stringify(library), version));
   await rebuildPostgresLibrary(openDatabase(), userId);
+}
+
+export async function addSharedLibrarySong(userId, job, name, requestedPlaylistId) {
+  if (!canReadFile(job, name, userId)) invalid('Song not found', 404);
+  if (requestedPlaylistId !== undefined && (typeof requestedPlaylistId !== 'string'
+    || !requestedPlaylistId || requestedPlaylistId.length > 200)) invalid('Invalid destination playlist');
+  return withTransaction(openDatabase(), async () => {
+    const jobs = await readPostgresJobs(openDatabase(), userId);
+    const current = await getLibrary(userId, jobs);
+    const playlistId = requestedPlaylistId ?? (mediaType(name) === 'video' ? 'individual-videos' : 'individual-songs');
+    if (!Object.hasOwn(individualPlaylistNames, playlistId)) {
+      const destination = jobs.find((item) => item.id === playlistId);
+      if (!current.entries.some((entry) => entry.id === playlistId && entry.type === 'playlist')
+        || destination?.initiatedBy?.id !== userId) invalid('Choose one of your own playlists', 403);
+    }
+    if (getPlaylistTracks(current, jobs).get(playlistId)?.some((track) => track.jobId === job.id && track.name === name)) {
+      return { added: false };
+    }
+    if (!current.entries.some((entry) => entry.id === playlistId)) {
+      current.entries.push({ id: playlistId, type: 'playlist', parentId: null,
+        name: individualPlaylistNames[playlistId], protected: true });
+    }
+    const available = jobs.find((item) => item.id === job.id);
+    if (available) {
+      if (!available.files.includes(name)) available.files.push(name);
+    } else {
+      jobs.push({ ...job, files: [name] });
+      current.singleJobIds.push(job.id);
+    }
+    current.songAdds.push({ jobId: job.id, name, playlistId });
+    if (job.initiatedBy?.id !== userId && !job.contributors?.some((contributor) => contributor.id === userId)
+      && !current.songRemovals.some((track) => track.jobId === job.id && track.name === name)) {
+      current.songRemovals.push({ jobId: job.id, name });
+    }
+    if (playlistId === 'individual-videos' && !current.singleVideoJobIds.includes(job.id)) {
+      current.singleVideoJobIds.push(job.id);
+    }
+    current.sharedImports = [...(current.sharedImports || []).filter((track) => track.jobId !== job.id || track.name !== name),
+      { jobId: job.id, name }];
+    await writeLibrary(userId, reconcileLibrary(current, jobs), current.version + 1);
+    return { added: true };
+  });
 }
 
 export async function linkLibraryJob(userId, job, jobs) {

@@ -5,7 +5,7 @@ import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
 import { getPlaylistIds, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
-import { canChangePlaylistPrivacy, canChangePrivacy, canManageJob, canModifyJob, getFilePrivacy, formatBytes, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
+import { canChangePlaylistPrivacy, canChangePrivacy, canEditSong, canManageJob, canModifyJob, getFilePrivacy, formatBytes, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { replaceURL } from './navigation.js';
 import { sortSelectOptions } from './selectOptions.js';
@@ -574,10 +574,10 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     const key = songKey(track);
     const transcription = pendingTranscriptions[key] || track.transcription || job?.transcriptions?.[track.name];
     const canModify = !readOnly && canModifyJob(user, job);
-    const canRate = canModify || user.role === 'shared';
+    const canRate = !readOnly && canEditSong(user, job);
     const busy = ['queued', 'running'].includes(job?.status)
       || songMutations.current.has(key) || transcription?.status === 'sent';
-    return { canModify, canRate, ratingDisabled: !canRate || busy,
+    return { canModify, canRate, canEditMetadata: canRate, metadataDisabled: !canRate || busy, ratingDisabled: !canRate || busy,
       canChangePrivacy: canChangePrivacy(user, job, readOnly), privacy: getFilePrivacy(track, job),
       transcription, deleting: Boolean(deletingFiles[key]),
       disabled: !canModify || busy };
@@ -623,7 +623,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   async function transcribe(track, options) {
     setTranscribingFile(null);
     const locking = typeof options.transcriptionLocked === 'boolean';
-    if (songState(track).disabled || (!locking && (!transcriptionActive || (track.transcriptionLocked && options.NoVocalsOnly !== true)))) {
+    if (songState(track).metadataDisabled || (!locking && (!transcriptionActive || (track.transcriptionLocked && options.NoVocalsOnly !== true)))) {
       setActionError('This song cannot be changed right now. Refresh and try again.'); return;
     }
     const key = songKey(track);
@@ -1072,7 +1072,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       saving: saving || tracksLoading || searchPending, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
     {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
     {sharingFile && <ShareMediaDialog file={{ ...sharingFile, private: songState(sharingFile).privacy.private }} jobId={sharingFile.jobId} request={request} onClose={() => setSharingFile(null)} />}
-    {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} readOnly={readOnly} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
+    {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} readOnly={!songState(editingMetadata).canEditMetadata} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
       metadataSaved(editingMetadata, result);
       setRefresh((value) => value + 1);
     }} />}

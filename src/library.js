@@ -141,7 +141,8 @@ export function reconcileLibrary(library, jobs) {
   const songMoves = (library.songMoves || []).filter((track) => files.get(track.jobId)?.has(track.name) && playlistIds.has(track.playlistId));
   const songAdds = (library.songAdds || []).filter((track) => files.get(track.jobId)?.has(track.name) && playlistIds.has(track.playlistId));
   const songRemovals = (library.songRemovals || []).filter((track) => files.get(track.jobId)?.has(track.name));
-  const result = { entries, songOrder, singleJobIds, singleVideoJobIds, songMoves, songAdds, songRemovals, playlistSongOrder: {} };
+  const result = { entries, songOrder, singleJobIds, singleVideoJobIds, songMoves, songAdds, songRemovals, playlistSongOrder: {},
+    ...(library.sharedImports ? { sharedImports: library.sharedImports } : {}) };
   const playlistTracks = getPlaylistTracks(result, jobs);
   result.playlistSongOrder = Object.fromEntries(Object.entries(library.playlistSongOrder || {}).filter(([id]) => playlistIds.has(id)).map(([id, order]) => {
     const keys = new Set(playlistTracks.get(id).map(songKey));

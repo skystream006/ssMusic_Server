@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, Headphones, ListMusic, Maximize2, Music2, Play, SkipBack, SkipForward, X } from 'lucide-react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Check, ChevronLeft, ChevronRight, Download, Headphones, LibraryBig, ListMusic, Maximize2, Music2, Play, RefreshCw, SkipBack, SkipForward, X } from 'lucide-react';
 import LyricTimeline from './LyricTimeline.jsx';
 import { mediaType } from '../../src/media.js';
+import { individualPlaylistNames } from '../../src/library.js';
+import { sortSelectOptions } from './selectOptions.js';
 import appIcon from './assets/ic_launcher.png';
 import './publicMedia.css';
 
@@ -164,6 +166,7 @@ export function PublicMediaView({
   media, loading = false, error = '', playbackError = '', elapsed = 0, duration = 0,
   audioRef, onProgress, onPlaybackError, onPlaybackReady, onSeek, onRetry,
   embedded = false, autoPlay = false, onEnded, navigation,
+  canAddToLibrary = false, addingToLibrary = false, addedToLibrary = false, libraryError = '', onAddToLibrary,
   lyrics, lyricsExpanded = false, lyricsLoading = false, lyricsError = '', onToggleLyrics, onRetryLyrics
 }) {
   const Container = embedded ? 'section' : 'main';
@@ -209,6 +212,13 @@ export function PublicMediaView({
           {media.downloadUrl && <a className="primary-button public-media-download" href={media.downloadUrl} download={media.name || true}>
             <Download size={17} aria-hidden="true" />Save file
           </a>}
+          {canAddToLibrary && <button className="secondary-button public-media-download" type="button"
+            aria-haspopup="dialog" disabled={addingToLibrary || addedToLibrary} onClick={onAddToLibrary}>
+            {addedToLibrary ? <Check size={17} aria-hidden="true" /> : <LibraryBig size={17} aria-hidden="true" />}
+            {addedToLibrary ? 'Added to library' : addingToLibrary ? 'Adding to library...' : 'Add to my library'}
+          </button>}
+          {addedToLibrary && <p role="status">Added to your library.</p>}
+          {libraryError && <p className="public-media-error" role="alert">{libraryError}</p>}
         </div>
       </section>
 
@@ -247,6 +257,98 @@ export function PublicMediaView({
   </Container>;
 }
 
+export function sharedImportDestinations(library, userId) {
+  const jobs = new Map(library.jobs.map((job) => [job.id, job]));
+  return sortSelectOptions([
+    ...Object.entries(individualPlaylistNames).map(([id, title]) => ({ id, title })),
+    ...library.entries.filter((entry) => entry.type === 'playlist' && !Object.hasOwn(individualPlaylistNames, entry.id)
+      && jobs.get(entry.id)?.initiatedBy?.id === userId)
+      .map((entry) => ({ id: entry.id, title: jobs.get(entry.id).playlistTitle || entry.name || 'Playlist' }))
+  ], (playlist) => playlist.title);
+}
+
+export function PublicLibraryDialog({ media, userId, request, endpoint, onAdded, onClose }) {
+  const dialogRef = useRef(null);
+  const busyRef = useRef(false);
+  const headingId = useId();
+  const destinationId = useId();
+  const nameId = useId();
+  const [destinations, setDestinations] = useState(null);
+  const [destination, setDestination] = useState('');
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    dialog.showModal();
+    return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    setError('');
+    request('/api/library').then((library) => {
+      const options = sharedImportDestinations(library, userId);
+      if (active) setDestinations(options);
+    }).catch((loadError) => { if (active) setError(loadError.message || 'Unable to load playlists.'); });
+    return () => { active = false; };
+  }, [request, userId, attempt]);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (busyRef.current || !destinations || !destination || (destination === 'new' && !name.trim())) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      let playlistId = destination;
+      if (destination === 'new') {
+        const result = await request('/api/library/playlists', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playlistTitle: name.trim() })
+        });
+        playlistId = result.job.id;
+        setDestinations((current) => sortSelectOptions([...current, { id: playlistId, title: result.job.playlistTitle || name.trim() }], (playlist) => playlist.title));
+        setDestination(playlistId);
+        setName('');
+      }
+      await request(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playlistId })
+      });
+      onAdded();
+      onClose();
+    } catch (submitError) { setError(submitError.message || 'Unable to add this song. Please try again.'); }
+    finally { busyRef.current = false; setBusy(false); }
+  }
+
+  return <dialog ref={dialogRef} className="confirmation-dialog folder-dialog" aria-labelledby={headingId}
+    onCancel={(event) => { event.preventDefault(); if (!busyRef.current) onClose(); }}>
+    <form onSubmit={submit}>
+      <div className="folder-dialog-heading"><h2 id={headingId}>Add to my library</h2>
+        <button className="music-icon-button" type="button" title="Close" aria-label="Close add to library" disabled={busy} onClick={onClose}><X size={18} /></button></div>
+      <p>{displayText(media.title, media.name)}</p>
+      {!destinations && !error && <p role="status">Loading playlists...</p>}
+      {destinations && <><label htmlFor={destinationId}>Destination playlist</label>
+        <select id={destinationId} required value={destination} disabled={busy} onChange={(event) => setDestination(event.target.value)}>
+          <option value="" disabled>Choose a playlist</option>
+          {destinations.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.title}</option>)}
+          <option value="new">Create new playlist...</option>
+        </select>
+        {destination === 'new' && <><label htmlFor={nameId}>Playlist name</label>
+          <input id={nameId} required maxLength={200} value={name} disabled={busy} onChange={(event) => setName(event.target.value)} /></>}
+      </>}
+      {error && <p className="notice error" role="alert">{error}</p>}
+      {!destinations && error && <button className="secondary-button" type="button" onClick={() => setAttempt((value) => value + 1)}><RefreshCw size={17} />Retry playlists</button>}
+      <div className="dialog-actions"><button className="secondary-button" type="button" disabled={busy} onClick={onClose}>Cancel</button>
+        <button className="primary-button" type="submit" disabled={busy || !destinations || !destination || (destination === 'new' && !name.trim())}>
+          {busy ? <RefreshCw className="spin" size={17} /> : <LibraryBig size={17} />}{busy ? 'Adding...' : 'Add song'}
+        </button></div>
+    </form>
+  </dialog>;
+}
+
 function PublicMediaPage({ token, request, endpoint, embedded = false, autoPlay = false, onEnded, navigation, playbackRef }) {
   const [state, setState] = useState({ loading: true, media: null, error: '' });
   const [attempt, setAttempt] = useState(0);
@@ -258,6 +360,16 @@ function PublicMediaPage({ token, request, endpoint, embedded = false, autoPlay 
   const lyricsLoaderRef = useRef(null);
   const internalAudioRef = useRef(null);
   const audioRef = playbackRef || internalAudioRef;
+  const [user, setUser] = useState(null);
+  const [addedToLibrary, setAddedToLibrary] = useState(false);
+  const [showLibraryDialog, setShowLibraryDialog] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    request('/api/auth/me').then((result) => { if (active) setUser(result.user); })
+      .catch(() => { if (active) setUser(null); });
+    return () => { active = false; };
+  }, [request]);
 
   useEffect(() => {
     let active = true;
@@ -308,13 +420,19 @@ function PublicMediaPage({ token, request, endpoint, embedded = false, autoPlay 
     }
   }
 
-  return <PublicMediaView {...state} audioRef={audioRef} elapsed={elapsed} duration={duration} playbackError={playbackError}
+  return <><PublicMediaView {...state} audioRef={audioRef} elapsed={elapsed} duration={duration} playbackError={playbackError}
+    canAddToLibrary={Boolean(user?.status === 'approved' && !['shared', 'catalog'].includes(user.role))}
+    addedToLibrary={addedToLibrary} onAddToLibrary={() => setShowLibraryDialog(true)}
     lyrics={lyricsState.lyrics} lyricsExpanded={lyricsExpanded} lyricsLoading={lyricsState.loading}
     lyricsError={lyricsState.error} onToggleLyrics={toggleLyrics} onRetryLyrics={() => lyricsLoaderRef.current?.load()}
     embedded={embedded} autoPlay={autoPlay} onEnded={onEnded} navigation={navigation}
     onProgress={updateProgress} onSeek={seek}
     onPlaybackError={() => setPlaybackError('This media could not be played. The link may no longer be available, or your browser may not support this format. Try saving the file to play it locally.')}
-    onPlaybackReady={() => setPlaybackError('')} onRetry={token || endpoint ? () => setAttempt((value) => value + 1) : undefined} />;
+    onPlaybackReady={() => setPlaybackError('')} onRetry={token || endpoint ? () => setAttempt((value) => value + 1) : undefined} />
+    {showLibraryDialog && state.media && user && <PublicLibraryDialog media={state.media} userId={user.id} request={request}
+      endpoint={(endpoint || `/api/public/media/${encodeURIComponent(token)}`).replace('/api/public/', '/api/library/shares/')}
+      onAdded={() => setAddedToLibrary(true)} onClose={() => setShowLibraryDialog(false)} />}
+  </>;
 }
 
 export function PublicPlaylistView({ playlist, loading, error, selectedId, onSelect, onPage, onRetry, children }) {

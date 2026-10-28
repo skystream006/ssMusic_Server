@@ -35,6 +35,7 @@ let reorderPlaylistTracks;
 let ImportMusic;
 let canRunJobAction;
 let canChangePrivacy;
+let canEditSong;
 let canChangePlaylistPrivacy;
 let getFilePrivacy;
 let MusicPlayer;
@@ -54,7 +55,7 @@ let OrganizerControl;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -573,6 +574,16 @@ test('playlist bulk deletion is available only for an eligible selection while n
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
+  }
+});
+
+test('metadata and transcription eligibility belongs only to the owning user', () => {
+  const job = { initiatedBy: { id: 'owner' }, contributors: [{ id: 'contributor' }] };
+  assert.equal(canEditSong({ id: 'owner', role: 'user' }, job), true);
+  assert.equal(canEditSong({ id: 'owner', role: 'admin' }, job), true);
+  for (const user of [null, { id: 'admin', role: 'admin' }, { id: 'contributor', role: 'user' },
+    { id: 'recipient', role: 'user' }, { id: 'owner', role: 'shared' }]) {
+    assert.equal(canEditSong(user, job), false);
   }
 });
 

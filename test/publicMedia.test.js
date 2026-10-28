@@ -12,6 +12,8 @@ let PublicPlaylist;
 let PublicPlaylistView;
 let seekPublicAudio;
 let createPublicLyricsLoader;
+let PublicLibraryDialog;
+let sharedImportDestinations;
 let AdminMediaSharesView;
 let AdminArtworkThumbnails;
 let AdminArtworkThumbnailsView;
@@ -22,7 +24,7 @@ let appIcon;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
-  ({ default: PublicMedia, PublicMediaView, PublicPlaylist, PublicPlaylistView, seekPublicAudio, createPublicLyricsLoader } = await server.ssrLoadModule('/src/PublicMedia.jsx'));
+  ({ default: PublicMedia, PublicMediaView, PublicPlaylist, PublicPlaylistView, seekPublicAudio, createPublicLyricsLoader, PublicLibraryDialog, sharedImportDestinations } = await server.ssrLoadModule('/src/PublicMedia.jsx'));
   ({ AdminMediaSharesView, AdminArtworkThumbnails, AdminArtworkThumbnailsView, watchArtworkThumbnails } = await server.ssrLoadModule('/src/AdminMediaShares.jsx'));
   ({ default: LyricTimeline, scrollToActiveLyric } = await server.ssrLoadModule('/src/LyricTimeline.jsx'));
   ({ default: appIcon } = await server.ssrLoadModule('/src/assets/ic_launcher.png'));
@@ -192,6 +194,38 @@ test('public media renders a complete, read-only track without an authenticated 
   assert.match(html, /Plain text lyrics/);
   assert.match(html, /First line\nSecond line\n\nLast verse/);
   assert.match(html, /No account needed/);
+});
+
+test('share library action is opt-in for authenticated writable accounts with pending, success and error states', () => {
+  assert.doesNotMatch(render(), /Add to my library|Added to library/);
+  const signedIn = render({ canAddToLibrary: true });
+  assert.match(signedIn, />Add to my library<\/button>/);
+  assert.match(signedIn, /Read only/);
+  assert.doesNotMatch(signedIn, /Edit metadata|Transcribe song/);
+  assert.match(render({ canAddToLibrary: true, addingToLibrary: true }), /disabled="">.*?Adding to library\.\.\.<\/button>/s);
+  assert.match(render({ canAddToLibrary: true, addedToLibrary: true }), /role="status">Added to your library/);
+  assert.match(render({ canAddToLibrary: true, libraryError: 'Link revoked' }), /role="alert">Link revoked/);
+});
+
+test('share import destinations include personal and owned playlists but exclude folders and contributed playlists', () => {
+  const destinations = sharedImportDestinations({
+    entries: [{ id: 'folder', type: 'folder' }, { id: 'owned', type: 'playlist' }, { id: 'contributed', type: 'playlist' },
+      { id: 'individual-songs', type: 'playlist' }],
+    jobs: [{ id: 'owned', playlistTitle: 'Favorites', initiatedBy: { id: 'recipient' } },
+      { id: 'contributed', playlistTitle: 'Other library', initiatedBy: { id: 'owner' }, contributors: [{ id: 'recipient' }] }]
+  }, 'recipient');
+  assert.deepEqual(destinations, [{ id: 'owned', title: 'Favorites' }, { id: 'individual-songs', title: 'Individual Songs' },
+    { id: 'individual-videos', title: 'Individual Videos' }]);
+});
+
+test('share library dialog loads playlists before allowing a destination and preserves accessible controls', () => {
+  const html = renderToStaticMarkup(createElement(PublicLibraryDialog, { media, userId: 'recipient', request() { assert.fail('SSR must not fetch'); } }));
+  assert.match(html, /<dialog[^>]*aria-labelledby=/);
+  assert.match(html, /Add to my library/);
+  assert.match(html, /Evening song/);
+  assert.match(html, /role="status">Loading playlists/);
+  assert.match(html, />Cancel<\/button>/);
+  assert.match(html, /type="submit" disabled=""/);
 });
 
 test('playback and saving use only the public URLs, without autoplay', () => {

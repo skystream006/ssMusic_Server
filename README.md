@@ -301,6 +301,23 @@ without interrupting playback, switch between SYLT and plain-text USLT, and
 return using the close button or Escape. A full-page overlay is available when
 the browser does not support native fullscreen.
 
+Signed-in, approved accounts with a writable library also see **Add to my library**.
+The button opens a dialog to choose an owned playlist, **Individual Songs**, or
+**Individual Videos**, or create a new playlist. Choose **Create new playlist...**,
+enter a name, and choose **Add song** to create the playlist and add the shared track.
+Contributed and linked playlists are not offered as destinations. Adding does not
+copy the file or transfer ownership. Shared playlists offer the same action
+for the selected track. Adding again to the same playlist is idempotent. Imports remain after a restart
+or link revocation, but source privacy and deletion still apply. Anonymous playback
+does not require authentication. Shared read-only accounts cannot import tracks.
+Authenticated imports use `POST /api/library/shares/media/:token` or
+`POST /api/library/shares/playlists/:token/tracks/:trackId` with `{ "playlistId": "DESTINATION_ID" }`
+and return `{ "added": true }` (or `false` when already present in that playlist).
+Omitting `playlistId` retains the default Individual Songs or Individual Videos destination.
+New playlists use the existing `POST /api/library/playlists` endpoint with
+`{ "playlistTitle": "NAME" }`. If adding fails after creation, the dialog keeps
+the new playlist selected so retrying does not create another playlist.
+
 Approved media owners, contributors, and administrators can create a public link
 with `POST /api/jobs/:id/files/:name/share` (URL-encode the complete filename).
 It returns `{ "url": "/share/<token>" }`. Anyone with this link can play and
@@ -942,9 +959,9 @@ reassignment clears existing library grants. **Administrator managed** retains t
 admin-only grant workflow, allowing any approved User or Admin library.
 
 Shared users can switch between their granted
-libraries, browse playlists, play media, read lyrics, view song metadata, update or clear
-MP3 ratings, and download individual songs. Rating changes are saved to the song and
-visible to everyone with access, not stored as personal ratings.
+libraries, browse playlists, play media, read lyrics, view song metadata and MP3
+ratings, and download individual songs. Only the owning user can change metadata,
+including ratings, lyrics, artwork, and transcription locks, or request transcription.
 Shared users can see their granted library owners under **User settings > Library access**.
 They cannot access health metrics or run health polling. They can change their own
 username, color theme, and light/dark appearance. They cannot change
@@ -1550,8 +1567,9 @@ on entry rather than polling.
 Edits update the source MP3, including for personally moved songs, and therefore
 are visible to everyone using that source. Filenames, audio data, embedded lyrics,
 and download archives are preserved. The playing dock's text and artwork update
-without restarting the audio. Owners, contributors, and administrators can edit
-idle jobs; active downloads and conflicting file mutations return `409`.
+without restarting the audio. Only the owning user can edit metadata or request
+transcription, even when a contributor, recipient, or administrator can access the
+song. Active downloads and conflicting file mutations return `409`.
 Transcribing a song blocks editing that song, not other songs in the same job.
 The lock icon in the editor toggles transcription locking when changes are saved.
 

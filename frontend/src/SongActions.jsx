@@ -163,6 +163,10 @@ export function canModifyJob(user, job) {
   return user?.role !== 'shared' && (canManageJob(user, job) || isContributor(user, job));
 }
 
+export function canEditSong(user, job) {
+  return Boolean(user?.id && user.role !== 'shared' && user.id === job?.initiatedBy?.id);
+}
+
 export function canRunJobAction(user, job, action) {
   if (!job || job.status === 'queued' || job.status === 'running') return false;
   if (action === 'delete') return canManageJob(user, job);

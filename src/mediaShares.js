@@ -7,6 +7,7 @@ import { getFilePath, isFileInsideJobFolder, isValidJobFileName } from './jobMan
 import { isPlayableFile } from './media.js';
 import { readSongMetadata } from './music.js';
 import { individualPlaylistNames } from './library.js';
+import { addSharedLibrarySong } from './libraryStore.js';
 import { entryVisibilitySql, fileVisibilitySql, jobVisibilitySql } from './privacy.js';
 
 const metadataFields = ['title', 'artist', 'album', 'performerInfo', 'genre', 'year',
@@ -41,7 +42,7 @@ async function resolveSong(job, name) {
     || !isFileInsideJobFolder({ outputDir }, realPath)) throw unavailable();
   const stat = await fs.stat(realPath);
   if (!stat.isFile()) throw unavailable();
-  return { filePath: realPath, name: path.basename(name), sizeBytes: stat.size };
+  return { filePath: realPath, name: path.basename(name), sizeBytes: stat.size, job, sourceName: name };
 }
 
 export function mediaShareHeaders(_req, res, next) {
@@ -146,6 +147,18 @@ async function resolveShare(token) {
   const job = JSON.parse(record.data);
   if (!canShare(job, record)) throw unavailable();
   return resolveSong(job, record.name);
+}
+
+export async function addMediaShareToLibrary(req, res) {
+  if (req.user.role === 'shared' || req.user.role === 'catalog') {
+    return res.status(403).json({ error: 'This account has no writable library' });
+  }
+  try {
+    const song = req.params.trackId ? await resolvePlaylistSong(req) : await resolveShare(req.params.token);
+    return res.json(await addSharedLibrarySong(req.user.id, song.job, song.sourceName, req.body?.playlistId));
+  } catch (error) {
+    return res.status(error.statusCode || 404).json({ error: error.statusCode ? error.message : 'Shared song not found' });
+  }
 }
 
 function notFound(_req, res) {

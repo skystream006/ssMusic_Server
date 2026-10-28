@@ -13,7 +13,6 @@ import { encodeThumbnail, readDownloadedArtwork, refreshSongThumbnail, removeSon
 import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
 import { attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
-import { canReadSharedSong } from './sharedAccess.js';
 
 const jobs = new Map();
 const jobMutations = new Set();
@@ -873,7 +872,8 @@ export function isValidJobFileName(fileName) {
 export async function transcribeJobFile(id, fileName, options, user = null) {
   const storedJob = await getJob(id);
   if (!storedJob) return null;
-  await assertCanModifyJob(storedJob, user, true, fileName);
+  assertSongOwner(storedJob, user);
+  await assertCanModifyJob(storedJob, user, false, fileName);
   const existingQueue = transcriptionQueues.get(id);
   const job = existingQueue?.job || storedJob;
   assertJobIsIdle(job, 'transcribe', true);
@@ -943,7 +943,8 @@ async function executeTranscription(job, fileName, options, transcription, user)
       throw Object.assign(new Error('Transcription service did not return a no-vocals MP3'), { statusCode: 502 });
     }
     for (const result of replacements) {
-      await assertCanModifyJob(job, user, true, result.original ? fileName : `[NoVocals]/${result.name}`);
+      assertSongOwner(job, user);
+      await assertCanModifyJob(job, user, false, result.original ? fileName : `[NoVocals]/${result.name}`);
     }
     await mutateJobFiles(job.id, () => replaceTranscribedFiles(job, fileName, replacements, async (updatedJob) => {
       const noVocals = results.find((result) => !result.original);
@@ -972,17 +973,17 @@ async function executeTranscription(job, fileName, options, transcription, user)
   }
 }
 
+function assertSongOwner(job, user) {
+  if (user && (user.role === 'shared' || user.id !== job.initiatedBy?.id)) {
+    throw Object.assign(new Error('Only the owning user can update metadata or transcribe this song'), { statusCode: 403 });
+  }
+}
+
 export async function setSongMetadata(id, fileName, value, user = null) {
   const storedJob = await getJob(id);
   if (!storedJob) return null;
-  if (user?.role === 'shared') {
-    if (!value || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'rating')
-      || !await canReadSharedSong(user.id, id, fileName)) {
-      throw Object.assign(new Error('Shared accounts can only update ratings for granted songs'), { statusCode: 403 });
-    }
-  } else {
-    await assertCanModifyJob(storedJob, user, true, fileName);
-  }
+  assertSongOwner(storedJob, user);
+  await assertCanModifyJob(storedJob, user, false, fileName);
   const job = transcriptionQueues.get(id)?.job || storedJob;
   assertJobIsIdle(job, 'edit metadata for', true);
   if (transcriptionQueues.get(id)?.files.has(fileName) || deletingFiles.has(id)) {
@@ -1226,7 +1227,10 @@ export async function setJobContributors(id, userIds, user = null) {
 }
 
 export async function getJobs(userId) {
-  return attachPrivacyAliases(database, (await readPostgresJobs(database, userId)).map((job) => jobs.get(job.id) || job));
+  return attachPrivacyAliases(database, (await readPostgresJobs(database, userId)).map((job) => {
+    const cached = jobs.get(job.id);
+    return cached ? { ...cached, ...(userId === undefined ? {} : { files: job.files }) } : job;
+  }));
 }
 
 export async function getJob(id) {
