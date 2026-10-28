@@ -280,7 +280,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       { limited: false, reenabledAt: null, message: null });
     const until = Date.now() + 65 * 60 * 1000;
     const reenabledAt = new Date(until).toISOString();
-    const message = `Jobs are currently rate limited on this server. Jobs will be re-enabled at ${reenabledAt}`;
+    const message = `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will be re-enabled at ${reenabledAt}. Manual imports and other library functions remain available.`;
     await openDatabase().prepare("INSERT INTO job_server_state (key, value) VALUES ('jobsDisabledUntil', $1)").run(String(until));
     await closeDatabases();
     const stopped = once(server, 'exit');
@@ -300,6 +300,29 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
         assert.ok(Number(result.headers['retry-after']) > 0);
         assert.ok(Number(result.headers['retry-after']) <= 3900);
       }
+      const playlists = await call('/api/jobs/import/playlists', 'GET', headers);
+      assert.equal(playlists.status, 200, playlists.text);
+      const audio = Buffer.from('524946462800000057415645666d74201000000001000100401f0000803e000002001000646174610400000000000000', 'hex');
+      const form = new FormData();
+      form.set('mode', 'files');
+      form.set('createNew', 'true');
+      form.set('playlistTitle', 'Cooldown import');
+      form.append('files', new Blob([audio]), 'Manual.wav');
+      const multipart = new Request('http://localhost/api/jobs/import', { method: 'POST', body: form });
+      const imported = await call('/api/jobs/import', 'POST', {
+        ...headers, 'Content-Type': multipart.headers.get('content-type')
+      }, Buffer.from(await multipart.arrayBuffer()));
+      assert.equal(imported.status, 201, imported.text);
+      assert.equal(imported.body.importedFiles, 1);
+      const importedId = imported.body.jobs[0].id;
+      const playback = await call(`/api/jobs/${importedId}/stream/Manual.wav`, 'GET', headers);
+      assert.equal(playback.status, 200, playback.text);
+      assert.deepEqual(playback.buffer, audio);
+      const renamed = await call(`/api/jobs/${importedId}/title`, 'PATCH', headers, { playlistTitle: 'Renamed during cooldown' });
+      assert.equal(renamed.status, 200, renamed.text);
+      assert.equal(renamed.body.playlistTitle, 'Renamed during cooldown');
+      assert.equal((await call(`/api/jobs/${importedId}`, 'DELETE', headers)).status, 204);
+      assert.deepEqual((await call('/api/jobs/status', 'GET', headers)).body, { limited: true, reenabledAt, message });
     }
     await openDatabase().prepare("DELETE FROM job_server_state WHERE key = 'jobsDisabledUntil'").run();
     await closeDatabases();

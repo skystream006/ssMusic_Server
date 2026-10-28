@@ -48,7 +48,7 @@ export function getJobRateLimit() {
   return {
     limited,
     reenabledAt,
-    message: limited ? `Jobs are currently rate limited on this server.\nIf you job/s failed recently, please try again later.\nJobs will be re-enabled at ${reenabledAt}` : null
+    message: limited ? `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will be re-enabled at ${reenabledAt}. Manual imports and other library functions remain available.` : null
   };
 }
 

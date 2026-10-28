@@ -164,7 +164,7 @@ for (const { label, url, isPlaylist } of [
 }
 
 for (const phase of ['metadata', 'download']) {
-  test(`YouTube rate limit during ${phase} stops all jobs and persists a 65-minute cooldown`, async (t) => {
+  test(`YouTube rate limit during ${phase} stops yt-dlp jobs but allows manual imports during the 65-minute cooldown`, async (t) => {
     const children = [];
     const spawnMock = t.mock.method(childProcess, 'spawn', (command, args) => {
       if (command === 'taskkill') {
@@ -207,7 +207,7 @@ for (const phase of ['metadata', 'download']) {
     assert.equal(state.limited, true);
     assert.ok(Date.parse(state.reenabledAt) >= before + 65 * 60 * 1000);
     assert.ok(Date.parse(state.reenabledAt) <= Date.now() + 65 * 60 * 1000);
-    assert.equal(state.message, `Jobs are currently rate limited on this server. Jobs will be re-enabled at ${state.reenabledAt}`);
+    assert.equal(state.message, `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will be re-enabled at ${state.reenabledAt}. Manual imports and other library functions remain available.`);
     await Promise.all([waitForJobToFinish(first), waitForJobToFinish(second)]);
     for (const child of active) assert.equal(child.killed, true);
     for (const job of [first, second]) {
@@ -219,6 +219,19 @@ for (const phase of ['metadata', 'download']) {
       statusCode: 429, code: 'JOBS_RATE_LIMITED', message: state.message
     });
     await assert.rejects(manager.rerunJob(first.id, owner), { statusCode: 429, message: state.message });
+    const songPath = path.join(fixtureDirectory, 'manual.mp3');
+    await fs.writeFile(songPath, NodeID3.create({ title: 'Manual song' }));
+    const imported = await manager.importJobFiles({
+      files: [{ name: 'manual.mp3', path: songPath }], playlistTitle: 'Manual import'
+    }, owner);
+    assert.equal(imported.status, 'completed');
+    assert.deepEqual(imported.files, ['manual.mp3']);
+    assert.deepEqual(await fs.readFile(manager.getFilePath(imported, 'manual.mp3')), await fs.readFile(songPath));
+    await manager.setJobTitle(imported.id, 'Renamed during cooldown', owner);
+    assert.equal((await manager.getJob(imported.id)).playlistTitle, 'Renamed during cooldown');
+    await manager.deleteJob(imported.id, owner);
+    assert.equal(await manager.getJob(imported.id), undefined);
+    assert.deepEqual(manager.getJobRateLimit(), state);
     const restarted = await import(`../src/jobManager.js?restored-cooldown=${encodeURIComponent(fixtureDirectory)}`);
     assert.deepEqual(restarted.getJobRateLimit(), state);
     assert.equal(children.length, count);
