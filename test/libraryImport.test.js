@@ -159,7 +159,7 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   assert.equal(job.source, 'files');
   assert.equal((await getLibrary(owner.id, (await manager.getJobs()))).entries[0].id, job.id);
   assert.deepEqual(await fs.readFile(path.join(job.outputDir, job.files[0])), audio);
-  await context.test('file imports combine ZIP folders and loose songs into one playlist', async (zipContext) => {
+  await context.test('file imports rename duplicate ZIP and loose songs without overwriting existing files', async (zipContext) => {
     zipContext.mock.method(console, 'info', () => {});
     zipContext.mock.method(console, 'error', () => {});
     let temporaryDirectory;
@@ -194,23 +194,31 @@ test('music imports validate media, preserve playlists and enforce ownership', a
     ]);
     assert.equal(combined.statusCode, 201, combined.body.error);
     assert.equal(combined.body.jobs.length, 1);
-    assert.equal(combined.body.importedFiles, 3);
+    assert.equal(combined.body.importedFiles, 5);
     const playlist = await manager.getJob(combined.body.jobs[0].id);
     assert.equal(playlist.playlistTitle, 'ZIP playlist');
-    assert.deepEqual(playlist.files.toSorted(), ['Deep.wav', 'Root.wav', 'Uploaded.wav']);
-    for (const name of playlist.files) assert.deepEqual(await fs.readFile(path.join(playlist.outputDir, name)), audio);
+    assert.deepEqual(playlist.files.map((name) => name.toLowerCase()).toSorted(),
+      ['deep.wav', 'root.wav', 'uploaded (2).wav', 'uploaded (3).wav', 'uploaded.wav']);
+    for (const name of playlist.files) {
+      assert.deepEqual(await fs.readFile(path.join(playlist.outputDir, name)), name.startsWith('UPLOADED') ? differentAudio : audio);
+    }
     const destination = { mode: 'files', createNew: 'false', playlistId: playlist.id };
     const appendedZip = await upload(destination, [zipFile]);
     assert.equal(appendedZip.statusCode, 201, appendedZip.body.error);
     assert.equal(appendedZip.body.jobs.length, 1);
     assert.equal(appendedZip.body.jobs[0].id, playlist.id);
-    assert.equal(appendedZip.body.importedFiles, 0);
-    assert.equal((await manager.getJob(playlist.id)).files.length, 3);
+    assert.equal(appendedZip.body.importedFiles, 3);
+    const renamedFiles = (await manager.getJob(playlist.id)).files;
+    assert.equal(renamedFiles.length, 8);
+    for (const name of ['Root (2).wav', 'Uploaded (4).wav', 'Deep (2).wav']) {
+      assert.ok(renamedFiles.includes(name));
+      assert.deepEqual(await fs.readFile(path.join(playlist.outputDir, name)), audio);
+    }
     const mixedUpload = await upload(destination, [zipFile, { name: 'New.wav', data: audio }]);
     assert.equal(mixedUpload.statusCode, 201, mixedUpload.body.error);
-    assert.equal(mixedUpload.body.importedFiles, 1);
+    assert.equal(mixedUpload.body.importedFiles, 4);
     const appendedFiles = (await manager.getJob(playlist.id)).files;
-    assert.equal(appendedFiles.length, 4);
+    assert.equal(appendedFiles.length, 12);
     assert.deepEqual(await fs.readFile(path.join(playlist.outputDir, 'Uploaded.wav')), audio);
 
     const empty = new AdmZip();
@@ -230,14 +238,16 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   await assert.rejects(imports.importUploadedFiles([file], { createNew: 'false', playlistId: job.id }, { id: 'other' }), /existing playlists/);
   await assert.rejects(manager.importJobFiles({ files: [file], playlistId: job.id }, { id: 'other' }), { statusCode: 403 });
   const appended = await imports.importUploadedFiles([file], { createNew: 'false', playlistId: job.id }, owner);
-  assert.deepEqual(appended.jobs[0].files, ['Song.wav']);
-  assert.equal(appended.importedFiles, 0);
+  assert.deepEqual(appended.jobs[0].files, ['Song.wav', 'Song (2).wav']);
+  assert.equal(appended.importedFiles, 1);
+  for (const name of appended.jobs[0].files) assert.deepEqual(await fs.readFile(path.join(job.outputDir, name)), audio);
   await assert.rejects(manager.rerunJob(job.id, owner), /cannot be rerun/);
   await assert.rejects(imports.importUploadedFiles([file], { createNew: 'true', playlistTitle: ' ' }, owner), /Playlist name/);
   await assert.rejects(imports.importUploadedFiles([{ ...file, name: 'wrong.mp3' }], { createNew: 'true', playlistTitle: 'Invalid' }, owner), /mismatched audio/);
   await assert.rejects(imports.importUploadedFiles([], { createNew: 'true', playlistTitle: 'Empty' }, owner), /Select audio/);
   await assert.rejects(manager.importJobFiles({ files: [file, { name: 'Missing.wav', path: path.join(directory, 'missing') }], playlistId: job.id }, owner));
-  assert.deepEqual((await fs.readdir(job.outputDir)).sort(), ['Song.wav']);
+  assert.deepEqual((await fs.readdir(job.outputDir)).sort(), ['Song (2).wav', 'Song.wav']);
+  assert.deepEqual((await manager.getJob(job.id)).files, ['Song.wav', 'Song (2).wav']);
   const single = await manager.importJobFiles({ files: [file], playlistTitle: 'Single', individual: true }, owner);
   (await linkLibraryJob(owner.id, single, (await manager.getJobs())));
   const singles = await imports.importUploadedFiles([file], { createNew: 'false', playlistId: 'individual-songs' }, owner);
@@ -402,8 +412,8 @@ test('music imports validate media, preserve playlists and enforce ownership', a
   assert.equal(videoTracks.get('individual-videos').some((track) => track.jobId === importedVideo.jobs[0].id), true);
   assert.equal(videoTracks.get('individual-songs').some((track) => track.jobId === importedVideo.jobs[0].id), false);
   const mixed = await imports.importUploadedFiles([movie], { createNew: 'false', playlistId: job.id }, owner);
-  assert.deepEqual(mixed.jobs[0].files, ['Song.wav', 'Movie.mp4']);
-  assert.equal(mixed.jobs[0].playlistSongCount, 2);
+  assert.deepEqual(mixed.jobs[0].files, ['Song.wav', 'Song (2).wav', 'Movie.mp4']);
+  assert.equal(mixed.jobs[0].playlistSongCount, 3);
   assert.equal(mixed.importedFiles, 1);
   assert.deepEqual(await fs.readFile(path.join(job.outputDir, 'Movie.mp4')), video);
   await assert.rejects(imports.validateImportMedia({ ...file, name: 'fake.mp4' }), /mismatched video/);

@@ -790,7 +790,6 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
       const base = path.basename(file.name.replaceAll('\\', '/'), path.extname(file.name));
       const stem = base.replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, '_').replace(/[. ]+$/g, '').slice(0, 160) || 'Track';
       let name = `${stem}${extension}`;
-      if (source === 'files' && names.has(name.toLowerCase())) continue;
       let suffix = 2;
       while (names.has(name.toLowerCase())) name = `${stem} (${suffix++})${extension}`;
       await fs.copyFile(file.path, path.join(job.outputDir, name), fs.constants.COPYFILE_EXCL);

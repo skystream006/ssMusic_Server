@@ -451,8 +451,9 @@ in your library. From a selected playlist, that playlist is preselected.
     depends on your browser's codec support. Existing files are never overwritten.
     ZIPs can be selected alongside individual files. Supported media from all ZIP
     folders and subfolders goes into the same selected playlist, without recreating
-    folders. Non-media files and duplicate filenames are skipped, including names
-    already in the selected playlist. Existing files can be replaced separately later.
+    folders. Non-media files are skipped. Duplicate filenames are renamed with numbered
+    suffixes such as `Song (2).mp3`, including names already in the selected playlist.
+    Existing files can be replaced separately later.
     File imports accept up to 2,000 media files and 4 GB of media after extraction;
     each uploaded file, including a ZIP, is limited to 512 MB.
 - **iTunes library:** choose **Upload files** for an exported iTunes/Music library
