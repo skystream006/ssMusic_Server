@@ -15,6 +15,8 @@ import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from '.
 import { attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
 
 const jobs = new Map();
+const liveJobOutputs = new Map();
+const maxLiveOutputLength = 256 * 1024;
 const queuedJobs = [];
 let jobExecutionTail = Promise.resolve();
 const jobMutations = new Set();
@@ -224,7 +226,29 @@ async function ensureOutputRoot() {
   await fs.mkdir(outputRoot, { recursive: true });
 }
 
-function runCommand(command, args, signal) {
+function appendLiveJobOutput(id, stream, chunk) {
+  const current = liveJobOutputs.get(id);
+  if (!current) return;
+  const label = current.stream === stream ? '' : `${current.output && !current.output.endsWith('\n') ? '\n' : ''}[${stream}]\n`;
+  const output = current.output + label + chunk;
+  liveJobOutputs.set(id, {
+    output: output.slice(-maxLiveOutputLength),
+    stream,
+    truncated: current.truncated || output.length > maxLiveOutputLength
+  });
+}
+
+export function getLiveJobOutput(job) {
+  const live = job.status === 'queued' || job.status === 'running' ? liveJobOutputs.get(job.id) : null;
+  const output = live ? live.output : job.output || '';
+  return {
+    status: job.status,
+    output: output.slice(-maxLiveOutputLength),
+    truncated: Boolean(live?.truncated || output.length > maxLiveOutputLength)
+  };
+}
+
+function runCommand(command, args, signal, onOutput) {
   signal?.throwIfAborted();
   if (signal) assertJobsEnabled();
   return new Promise((resolve, reject) => {
@@ -245,13 +269,15 @@ function runCommand(command, args, signal) {
       if (signal && output.includes(youtubeRateLimitMessage)) rateLimitJobs();
     };
 
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
+    child.stdout.setEncoding('utf8').on('data', (chunk) => {
+      stdout += chunk;
+      onOutput?.('stdout', chunk);
       checkOutput(stdout);
     });
 
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+    child.stderr.setEncoding('utf8').on('data', (chunk) => {
+      stderr += chunk;
+      onOutput?.('stderr', chunk);
       checkOutput(stderr);
     });
 
@@ -348,7 +374,7 @@ export function parsePlaylistMetadata(output) {
   return { playlistTitle, folderName: sanitizeFolderName(playlistTitle || 'playlist'), playlistSongCount };
 }
 
-async function getSourceMetadata(url, denoPath, isPlaylist, signal) {
+async function getSourceMetadata(url, denoPath, isPlaylist, signal, onOutput) {
   const args = [
     '--flat-playlist',
     '--dump-single-json',
@@ -360,7 +386,7 @@ async function getSourceMetadata(url, denoPath, isPlaylist, signal) {
     url
   ];
 
-  const { stdout } = await runCommand(resolveYtDlpPath(), args, signal);
+  const { stdout } = await runCommand(resolveYtDlpPath(), args, signal, onOutput);
   return parsePlaylistMetadata(stdout);
 }
 
@@ -493,8 +519,10 @@ async function executeJob(job) {
     removeQueuedJob(job);
     runningJobsCount += 1;
     counted = true;
+    liveJobOutputs.set(job.id, { output: '', stream: null, truncated: false });
     await executeJobWork(job, controller.signal);
   } finally {
+    liveJobOutputs.delete(job.id);
     activeJobControllers.delete(job.id);
     if (counted) runningJobsCount = Math.max(0, runningJobsCount - 1);
     if (runningJobsCount === 0) jobEvents.emit('idle');
@@ -514,7 +542,8 @@ async function executeJobWork(job, signal) {
   await persistJob(job);
 
   let metadataError;
-  const sourceMetadata = await getSourceMetadata(job.url, denoPath, job.isPlaylist, signal).catch((error) => {
+  const sourceMetadata = await getSourceMetadata(job.url, denoPath, job.isPlaylist, signal,
+    (stream, chunk) => appendLiveJobOutput(job.id, `metadata ${stream}`, chunk)).catch((error) => {
     metadataError = error;
     return null;
   });
@@ -535,6 +564,8 @@ async function executeJobWork(job, signal) {
 
   const args = [
     '--ignore-errors',
+    '--newline',
+    '--progress',
     '--no-overwrites',
     '--download-archive',
     path.join(job.outputDir, downloadArchiveName),
@@ -578,7 +609,8 @@ async function executeJobWork(job, signal) {
     if (job.metadataOnly && metadataError) throw metadataError;
     const result = job.metadataOnly
       ? { stdout: 'Metadata retrieved. Media download skipped.', stderr: '' }
-      : await runCommand(ytDlpPath, args, signal);
+      : await runCommand(ytDlpPath, args, signal,
+        (stream, chunk) => appendLiveJobOutput(job.id, stream, chunk));
     const classification = classifyCommandOutput(result);
     job.output = formatCommandOutput(result) || 'Command completed without output.';
     job.files = await listDownloadedFiles(job.outputDir);

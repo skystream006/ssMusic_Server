@@ -57,6 +57,7 @@ import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
 import { LibraryAccessList, LinkedUsers, OrganizedSharedUsers, OrganizerControl, SettingsTabs, SharedRegistrationFields, UsernameForm } from './AccountSettings.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import JobPlaylistDialog from './JobPlaylistDialog.jsx';
+import LiveJobOutput from './LiveJobOutput.jsx';
 import { submitJobUrl } from './jobSubmission.js';
 import { jobSortColumns, sortJobs } from './jobSorting.js';
 import { sortSelectOptions } from './selectOptions.js';
@@ -938,7 +939,7 @@ function JobPage({ id }) {
             {job.error && <div className="notice error"><CircleAlert size={16} />{job.error}</div>}
           </section>
           <section className="output-panel">
-            <div className="section-title"><div><span>02</span><h2>Process output</h2></div></div>
+            <div className="section-title"><div><span>02</span><h2>Process output</h2></div><LiveJobOutput job={job} user={user} request={request} /></div>
             <pre>{job.output || (isActive ? 'Waiting for process output...' : 'No process output was captured.')}</pre>
           </section>
           <section className="files-panel">

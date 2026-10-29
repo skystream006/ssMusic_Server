@@ -215,7 +215,7 @@ async function makeQueueFixture(t) {
     child.stderr = new PassThrough();
     active += 1;
     maxActive = Math.max(maxActive, active);
-    calls.push({ command, args, finish(output = '{"title":"Collection","playlist_count":101}', code = 0) {
+    calls.push({ command, args, stdout: child.stdout, stderr: child.stderr, finish(output = '{"title":"Collection","playlist_count":101}', code = 0) {
       active -= 1;
       child.stdout.end(output);
       child.emit('close', code);
@@ -236,6 +236,72 @@ async function makeQueueFixture(t) {
     }
   };
 }
+
+for (const exitCode of [0, 1]) {
+  test(`live job output exposes both streams before exit code ${exitCode}`, async (t) => {
+    const { manager, nextCommand } = await makeQueueFixture(t);
+    const job = await manager.createJob('https://music.youtube.com/watch?v=live-output');
+    const metadata = await nextCommand(0);
+    metadata.stderr.write('Resolving source\n');
+    metadata.stdout.write('{"title":"Streaming"');
+    assert.equal(manager.getLiveJobOutput(job).status, 'running');
+    assert.match(manager.getLiveJobOutput(job).output, /\[metadata stderr\]\nResolving source/);
+    assert.match(manager.getLiveJobOutput(job).output, /\[metadata stdout\]\n\{"title":"Streaming"/);
+    assert.equal((await manager.getJob(job.id)).output, null);
+    metadata.finish('}');
+
+    const download = await nextCommand(1);
+    assert.ok(download.args.includes('--newline'));
+    assert.ok(download.args.includes('--progress'));
+    download.stdout.write('Downloading 10%\n');
+    download.stderr.write('WARNING: Retrying\n');
+    const progress = manager.getLiveJobOutput(job);
+    assert.equal(progress.status, 'running');
+    assert.equal(progress.truncated, false);
+    assert.match(progress.output, /\[stdout\]\nDownloading 10%\n\[stderr\]\nWARNING: Retrying/);
+    assert.equal((await manager.getJob(job.id)).output, null);
+    assert.deepEqual(manager.getLiveJobOutput({ ...job, status: 'failed', output: 'Final failure details' }), {
+      status: 'failed', output: 'Final failure details', truncated: false
+    });
+    download.finish('Download finished\n', exitCode);
+    await waitForJobToFinish(job);
+    assert.equal(job.status, exitCode === 0 ? 'completed' : 'failed');
+    assert.deepEqual(manager.getLiveJobOutput(job), { status: job.status, output: job.output, truncated: false });
+    assert.match(job.output, /Downloading 10%/);
+    assert.match(job.output, /WARNING: Retrying/);
+  });
+}
+
+test('live job output keeps a bounded tail and resets for reruns', async (t) => {
+  const { manager, nextCommand } = await makeQueueFixture(t);
+  const admin = { id: 'live-admin', role: 'admin' };
+  const job = await manager.createJob('https://music.youtube.com/watch?v=live-tail', admin);
+  (await nextCommand(0)).finish();
+  const download = await nextCommand(1);
+  const unicode = Buffer.from('Caf\u00e9');
+  download.stdout.write(unicode.subarray(0, unicode.length - 1));
+  download.stdout.write(unicode.subarray(unicode.length - 1));
+  assert.match(manager.getLiveJobOutput(job).output, /Caf\u00e9/);
+  download.stdout.write('x'.repeat(300 * 1024));
+  download.stderr.write('Latest progress\n');
+  const progress = manager.getLiveJobOutput(job);
+  assert.equal(progress.truncated, true);
+  assert.equal(progress.output.length, 256 * 1024);
+  assert.ok(progress.output.endsWith('[stderr]\nLatest progress\n'));
+  download.finish('');
+  await waitForJobToFinish(job);
+  assert.equal(manager.getLiveJobOutput(job).truncated, true);
+
+  const rerun = await manager.rerunJob(job.id, admin);
+  assert.equal(manager.getLiveJobOutput(rerun).output, '');
+  assert.equal(manager.getLiveJobOutput(rerun).truncated, false);
+  (await nextCommand(2)).finish();
+  (await nextCommand(3)).finish('Rerun output\n');
+  await waitForJobToFinish(rerun);
+  assert.deepEqual(manager.getLiveJobOutput(rerun), {
+    status: 'completed', output: '[stdout]\nRerun output', truncated: false
+  });
+});
 
 test('job queue runs metadata and downloads one at a time, updates positions, and includes reruns after failures', async (t) => {
   const { manager, calls, nextCommand, maxActive } = await makeQueueFixture(t);

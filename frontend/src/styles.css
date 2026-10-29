@@ -326,6 +326,22 @@ code { font: 400 11px 'DM Mono', monospace; }
 .info-panel .notice { margin-top: 18px; }
 .output-panel { min-width: 0; }
 .output-panel pre { max-height: 440px; margin: 0; padding: 18px; overflow: auto; color: var(--ink); background: var(--field); border: 1px solid var(--line); font: 400 11px/1.65 'DM Mono', monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.output-panel .section-title { flex-wrap: wrap; gap: 12px; }
+.live-output-dialog { position: fixed; inset: 0; width: 100%; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 16px; border: 0; border-radius: 0; overflow: hidden; }
+.live-output-dialog[open] { display: flex; flex-direction: column; gap: 14px; }
+.live-output-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex: none; }
+.live-output-heading > div { min-width: 0; }
+.live-output-heading h2 { font-size: 24px; }
+.live-output-heading p { margin: 5px 0 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.live-output-heading .music-icon-button { width: 44px; height: 44px; flex: none; }
+.live-output-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; flex: none; min-height: 32px; }
+.live-output-connecting, .live-output-follow { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; }
+.live-output-follow { min-height: 32px; margin-left: auto; cursor: pointer; }
+.live-output-follow input { width: 18px; height: 18px; margin: 0; accent-color: var(--royal); }
+.live-output-truncated { color: var(--muted); font-size: 12px; }
+.live-output-dialog .notice { flex: none; margin: 0; overflow-wrap: anywhere; }
+.live-output-log { flex: 1; min-height: 0; min-width: 0; margin: 0; padding: 14px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--line); color: var(--ink); background: var(--field); font: 400 12px/1.65 'DM Mono', monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.live-output-log:focus-visible { outline: 2px solid var(--royal); outline-offset: -2px; }
 .files-panel .section-title > strong { font: 500 12px 'DM Mono', monospace; }
 .files-actions { display: flex; align-items: center; gap: 12px; }
 .files-play { margin: 0; align-self: center; flex: none; color: var(--green); }

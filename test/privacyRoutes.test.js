@@ -110,6 +110,37 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
   }
   await start();
 
+  await context.test('admin live output is uncached and protects private job and file logs', async (subcontext) => {
+    const route = '/api/jobs/playlist/live-output';
+    assert.equal((await call(route, {})).status, 401);
+    for (const auth of [headers.Owner, headers.Contributor, headers.Linked, headers.Reader, keyHeaders]) {
+      assert.equal((await call(route, auth)).status, 403);
+    }
+    const result = await call(route, headers.Admin);
+    assert.equal(result.status, 200, result.text);
+    assert.equal(result.headers['cache-control'], 'no-store');
+    assert.deepEqual(result.body, { status: 'completed', output: 'Downloaded secret-file.mp3', truncated: false });
+    assert.equal((await call('/api/jobs/missing/live-output', headers.Admin)).status, 404);
+
+    subcontext.after(async () => {
+      await call('/api/jobs/playlist/privacy', headers.Owner, 'PATCH', { private: false });
+      await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: false });
+      await call('/api/jobs/admin-live-output', headers.Admin, 'DELETE');
+    });
+    assert.equal((await call('/api/jobs/playlist/privacy', headers.Owner, 'PATCH', { private: true })).status, 200);
+    assert.equal((await call(route, headers.Admin)).status, 404);
+    await call('/api/jobs/playlist/privacy', headers.Owner, 'PATCH', { private: false });
+    assert.equal((await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: true })).status, 200);
+    assert.equal((await call(route, headers.Admin)).status, 404);
+
+    const now = new Date().toISOString();
+    await writeJob(database, { id: 'admin-live-output', url: 'import:live-output', status: 'completed', createdAt: now, updatedAt: now,
+      initiatedBy: { id: users.Admin.id }, private: true, files: [], output: 'Owned private output' });
+    const owned = await call('/api/jobs/admin-live-output/live-output', headers.Admin);
+    assert.equal(owned.status, 200, owned.text);
+    assert.equal(owned.body.output, 'Owned private output');
+  });
+
   await context.test('playlist links list all matching placements and respect library and file privacy', async () => {
     const query = new URLSearchParams({ jobId: 'playlist', name: 'open.mp3' });
     const route = `/api/library/playlist-links?${query}`;

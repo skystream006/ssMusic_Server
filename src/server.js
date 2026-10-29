@@ -8,7 +8,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, transcribeJobFile } from './jobManager.js';
+import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, getLiveJobOutput, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
@@ -29,7 +29,7 @@ import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
 import { addMediaShareToLibrary, adminMediaSharesRouter, createMediaShare, createPlaylistShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
-import { canReadFile, entryVisibilitySql, fileVisibilitySql, visibleJob } from './privacy.js';
+import { canReadAllFiles, canReadFile, entryVisibilitySql, fileVisibilitySql, visibleJob } from './privacy.js';
 import { attachSearchKey, requireSearchKey, searchSongs } from './songSearch.js';
 import { ensureKaraokePartyUser } from './authStore.js';
 import { getKaraokeJob, submitKaraokeJob } from './karaoke.js';
@@ -491,6 +491,14 @@ app.get('/api/jobs/:id', async (req, res) => {
   }
   const library = (await getLibrary(req.user.id, [job]));
   return res.json({ ...job, files: orderFiles(job.files || [], library.songOrder[job.id]) });
+});
+
+app.get('/api/jobs/:id/live-output', requireAdmin, async (req, res) => {
+  const job = await getJob(req.params.id);
+  if (!job || !canReadAllFiles(job, req.user)) {
+    return res.status(404).json({ error: 'Job output not found' });
+  }
+  return res.json(getLiveJobOutput(job));
 });
 
 app.patch('/api/jobs/:id/title', async (req, res) => {

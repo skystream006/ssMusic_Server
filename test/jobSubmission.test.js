@@ -23,6 +23,31 @@ test('job submission sends the chosen format and metadata-only flag, defaulting 
   }
 });
 
+test('admin live output is admin-only and its full-screen dialog has accessible controls', async (context) => {
+  const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
+  context.after(() => server.close());
+  const { default: LiveJobOutput, LiveOutputDialog } = await server.ssrLoadModule('/src/LiveJobOutput.jsx');
+  const job = { id: 'live', status: 'running', playlistTitle: '<Streaming collection>' };
+  const request = async () => { throw new Error('Rendering must not fetch output'); };
+  for (const role of ['user', 'shared', undefined]) {
+    assert.equal(renderToStaticMarkup(createElement(LiveJobOutput, { job, user: { role }, request })), '');
+  }
+  const button = renderToStaticMarkup(createElement(LiveJobOutput, { job, user: { role: 'admin' }, request }));
+  assert.match(button, /Live output/);
+  assert.match(button, /aria-haspopup="dialog"/);
+  assert.match(button, /aria-expanded="false"/);
+  assert.ok(!button.includes('<dialog'));
+  const dialog = renderToStaticMarkup(createElement(LiveOutputDialog, { job, request, onClose() {} }));
+  assert.match(dialog, /<dialog[^>]*class="confirmation-dialog live-output-dialog"[^>]*aria-labelledby=/);
+  assert.match(dialog, /aria-modal="true"/);
+  assert.match(dialog, /&lt;Streaming collection&gt;/);
+  assert.match(dialog, /aria-label="Close live output"/);
+  assert.match(dialog, /type="checkbox" checked=""/);
+  assert.match(dialog, /Follow output/);
+  assert.match(dialog, /aria-label="Process output"/);
+  assert.match(dialog, /Connecting to job output/);
+});
+
 test('queued job badges and the admin queue view show positions, ordering and operational states', async (context) => {
   const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   context.after(() => server.close());

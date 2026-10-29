@@ -67,6 +67,15 @@ Jobs** (`/admin/queue-jobs`), refreshed every two seconds. The admin-only
 rateLimit }`. Private jobs owned by someone else expose only an occupied slot
 and queue position, without identifying details.
 
+On a job's details page, administrators can select **Live output** beside
+**Process output** to open a full-screen dialog. It refreshes once per second
+with stdout and stderr from metadata lookup and downloading. **Follow output**
+keeps the latest lines visible; scrolling up pauses following. Closing the dialog
+or finishing the job stops polling. The admin-only, uncached
+`GET /api/jobs/:id/live-output` endpoint returns `{ status, output, truncated }`.
+The live view retains the latest 262,144 characters; completed jobs keep their
+normal saved output. Private job and file restrictions also apply to live logs.
+
 If yt-dlp reports "The current session has been rate-limited by YouTube for up to
 an hour", the server immediately stops all active download/metadata jobs and
 blocks new yt-dlp jobs and reruns for 65 minutes. The cooldown survives server restarts.
