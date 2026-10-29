@@ -541,14 +541,25 @@ leaving only the playback controls. Collapsing restores the full bar without
 interrupting playback. The bar and expanded sections animate in both directions;
 rapid toggles reverse the transition, and reduced-motion preferences disable it.
 
-- **Player** shows album artwork, track details, and MP3 ratings that can be
-    updated when the current user has permission to edit the song.
+- **Player** shows videos inline, or album artwork for audio, alongside track
+    details. MP3 ratings can be updated when the current user has permission to
+    edit the song.
 - **Lyrics** provides synchronized SYLT and plain-text USLT, with seeking,
     copying, and editing under the existing song permissions. Lyrics load only
     when the Lyrics view is opened.
 - **Queue** shows the current playback queue, including its page controls and
     direct song selection, plus editable MP3 ratings under the same song permissions.
     Ratings stay synchronized with Player without changing the playing song.
+
+Videos keep their position and play/pause state when moving between Player and
+the floating video view. Switching to Queue does not interrupt playback or show
+a floating video over the queue.
+
+Swipe left for Next or right for Previous on the artwork, video picture, or
+compact track area using touch or a pen. Swipes use the existing transport
+behavior: Previous restarts the current track after three seconds, otherwise it
+selects the preceding track. Vertical scrolling, buttons, sliders, and the bottom
+native video controls are not media swipe targets.
 
 At widths of 1024 pixels or more, the queue stays visible on the right at 30%
 of the available width. The left side offers the Player and Lyrics tabs.

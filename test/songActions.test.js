@@ -42,6 +42,7 @@ let MusicPlayer;
 let NowPlayingPanel;
 let PlaybackQueueRow;
 let mergePlaybackMetadata;
+let movePlaybackMedia;
 let PlaybackProvider;
 let readPlaybackSession;
 let writePlaybackSession;
@@ -59,7 +60,7 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -231,6 +232,41 @@ test('playback session persists a full queue, independently browsed page, modes 
   assert.equal(readPlaybackSession('user', browser).songs.length, 500);
   writePlaybackSession('user', songs, null, 'mix', browser);
   assert.equal(values.has('ssMusicPlaybackPosition:user'), false);
+});
+
+test('moving playback media retains its node and playback position with atomic and fallback moves', async () => {
+  let resumes = 0;
+  const media = { paused: false, ended: false, currentTime: 42,
+    async play() { resumes++; this.paused = false; } };
+  const floating = { isConnected: true, appendChild(container) {
+    container.parentNode = this;
+    media.currentTime = 0;
+    media.paused = true;
+  } };
+  let moves = 0;
+  const expanded = { isConnected: true, moveBefore(container, sibling) {
+    assert.equal(sibling, null);
+    container.parentNode = this;
+    moves++;
+  } };
+  const container = { isConnected: true, parentNode: floating };
+  await movePlaybackMedia(container, expanded, media);
+  assert.equal(container.parentNode, expanded);
+  assert.equal(media.currentTime, 42);
+  assert.equal(media.paused, false);
+  assert.equal(resumes, 0);
+  await movePlaybackMedia(container, expanded, media);
+  assert.equal(moves, 1);
+  await movePlaybackMedia(container, floating, media);
+  assert.equal(container.parentNode, floating);
+  assert.equal(media.currentTime, 42);
+  assert.equal(media.paused, false);
+  assert.equal(resumes, 1);
+  media.paused = true;
+  await movePlaybackMedia(container, expanded, media);
+  await movePlaybackMedia(container, floating, media);
+  assert.equal(media.paused, true);
+  assert.equal(resumes, 1);
 });
 
 test('queue rating saves survive metadata responses arriving before or after the write', () => {

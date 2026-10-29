@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Disc3, Folder, GripVertical, Info, Link, ListChecks, ListMusic, Lock, LockOpen, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Repeat1, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
 import { canEditSong, getFilePrivacy, ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
-import { allowDrop, leaveDrop } from './touchControls.js';
+import { allowDrop, createMediaSwipeHandlers, leaveDrop } from './touchControls.js';
 import { navigationHistory, replaceURL } from './navigation.js';
 import { findNoVocals, isNoVocals, normalizeSearchText, songKey, songSearchText } from '../../src/library.js';
 import { mediaType } from '../../src/media.js';
@@ -241,7 +242,20 @@ export function mergePlaybackMetadata(current, updates, readSnapshot = null) {
     ...(readSnapshot && current && current.rating !== readSnapshot.rating ? { rating: current.rating } : {}) };
 }
 
-function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata }) {
+export function movePlaybackMedia(container, target, media, onError = () => {}) {
+  if (!container || !target || container.parentNode === target) return;
+  const resume = Boolean(media && !media.paused && !media.ended);
+  const position = media?.currentTime;
+  if (typeof target.moveBefore === 'function' && target.isConnected && container.isConnected) {
+    target.moveBefore(container, null);
+  } else {
+    target.appendChild(container);
+    if (media && Number.isFinite(position) && media.currentTime !== position) media.currentTime = position;
+    if (resume) return media.play().catch(onError);
+  }
+}
+
+function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mountVideo, mediaSwipeHandlers }) {
   const [details, setDetails] = useState(null);
   const [metadataError, setMetadataError] = useState('');
   const [ratingError, setRatingError] = useState('');
@@ -268,11 +282,11 @@ function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata }) {
   if (!song) return <div className="expanded-player"><Disc3 size={64} /><h2>Nothing playing</h2></div>;
   const current = details || metadata || song;
   const cover = details?.artwork === undefined ? artwork : details.artwork;
-  return <div className="expanded-player">
-    <div className="expanded-artwork">
-      {cover && cover !== failedArtwork ? <img src={cover} alt={`${current.album || current.title || song.name} cover`}
-        onError={() => setFailedArtwork(cover)} /> : mediaType(song.name) === 'video' ? <Film size={80} /> : <Disc3 size={96} strokeWidth={1} />}
-    </div>
+  return <div className="expanded-player" {...mediaSwipeHandlers}>
+    {mediaType(song.name) === 'video' ? <div className="expanded-video" ref={mountVideo} /> : <div className="expanded-artwork">
+      {cover && cover !== failedArtwork ? <img src={cover} alt={`${current.album || current.title || song.name} cover`} draggable={false}
+        onError={() => setFailedArtwork(cover)} /> : <Disc3 size={96} strokeWidth={1} />}
+    </div>}
     <div className="expanded-track-heading"><h2>{current.title || song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</h2>
       {(current.artist || song.artist) && <p>{current.artist || song.artist}</p>}
       {(current.album || song.album) && <p className="expanded-album">{current.album || song.album}</p>}
@@ -352,6 +366,9 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
   const restoredSelectionRef = useRef(restored);
   const selectedRef = useRef(null);
   selectedRef.current = selected;
+  const swipeActionsRef = useRef(null);
+  const [mediaSwipeHandlers] = useState(() => createMediaSwipeHandlers(
+    (direction) => swipeActionsRef.current?.[direction](), () => selectedRef.current));
   const [metadata, setMetadata] = useState(null);
   const [lyricsViewers, setLyricsViewers] = useState(0);
   const [lyricsLoaded, setLyricsLoaded] = useState(false);
@@ -376,6 +393,15 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
   const progressSavedAtRef = useRef(0);
   const [videoOpen, setVideoOpen] = useState(true);
   const audioRef = useRef(null);
+  const floatingMediaRef = useRef(null);
+  const [mediaContainer] = useState(() => typeof document === 'undefined' ? null
+    : Object.assign(document.createElement('div'), { className: 'playback-media' }));
+  const mountVideo = useCallback((target) => {
+    if (!target || !mediaContainer) return;
+    const onError = () => setPlayError('Playback could not resume. Press play to retry.');
+    movePlaybackMedia(mediaContainer, target, audioRef.current, onError);
+    return () => { movePlaybackMedia(mediaContainer, floatingMediaRef.current, audioRef.current, onError); };
+  }, [mediaContainer]);
   const autoPlayRef = useRef(!restored && new URLSearchParams(window.location.search).get('play') === '1');
   const volumeRef = useRef(1);
   const mutedRef = useRef(false);
@@ -393,6 +419,13 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
     totalPages: queueTotalPages, onChange: setQueuePage,
     onPageSizeChange: (size) => { setQueuePageSize(size); setQueuePage(Math.max(1, Math.floor(index / size) + 1)); }
   };
+
+  useLayoutEffect(() => {
+    if (mediaContainer && !mediaContainer.parentNode) {
+      movePlaybackMedia(mediaContainer, floatingMediaRef.current, audioRef.current,
+        () => setPlayError('Playback could not resume. Press play to retry.'));
+    }
+  }, [mediaContainer]);
 
   useEffect(() => {
     if (playingPageRef.current !== playingPage) setQueuePage(playingPage);
@@ -535,9 +568,12 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
     } else audioRef.current.pause();
   }
 
+  swipeActionsRef.current = song ? { next: () => nextSong(), previous: previousSong } : null;
+
   const MediaElement = isVideo ? 'video' : 'audio';
   const media = song && <MediaElement hidden={!isVideo} controls={isVideo} playsInline={isVideo} key={song.streamUrl} ref={audioRef} src={song.streamUrl} autoPlay={autoPlayRef.current} preload="metadata"
-    aria-label={`Play ${song.name}`}
+    {...(isVideo ? mediaSwipeHandlers : {})}
+    aria-label={`Play ${song.name}`} tabIndex={isVideo ? 0 : -1}
     onLoadedMetadata={(event) => {
       event.currentTarget.volume = volumeRef.current;
       event.currentTarget.muted = mutedRef.current;
@@ -597,15 +633,16 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
   return <PlaybackContext.Provider value={{ user, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
-    isVideo, videoOpen, setVideoOpen, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
+    isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata, replaceFile }}>
     {children}
     <section className="movie-player" aria-label="Movie player" hidden={!isVideo || !videoOpen}>
       <header><Film size={18} /><strong>{metadata?.title || song?.name}</strong>
         <button className="music-icon-button" type="button" title="Minimize movie" aria-label="Minimize movie" onClick={() => setVideoOpen(false)}><Minimize2 size={18} /></button>
       </header>
-      {media}
+      <div ref={floatingMediaRef}>{mediaContainer ? null : media}</div>
     </section>
+    {mediaContainer && createPortal(media, mediaContainer)}
     <MusicPlayer request={request} dockOnly />
   </PlaybackContext.Provider>;
 }
@@ -614,7 +651,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const { user, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
-    isVideo, videoOpen, setVideoOpen, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
+    isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, updateMetadata } = usePlayback();
   const [job, setJob] = useState(null);
   const [loadError, setLoadError] = useState('');
@@ -920,7 +957,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
       </div>}
       {dockOnly && <>
         {renderedPanel && <NowPlayingPanel panel={renderedPanel} expanded={Boolean(panel)} onChange={setPanel} wide={widePlayer} isVideo={isVideo}
-          player={<NowPlayingTrack key={selected} song={song} metadata={metadata} artwork={artwork} request={request} updateMetadata={updateMetadata} />}
+          player={<NowPlayingTrack key={selected} song={song} metadata={metadata} artwork={artwork} request={request} updateMetadata={updateMetadata} mountVideo={mountVideo} mediaSwipeHandlers={mediaSwipeHandlers} />}
           lyrics={lyricsPanel} queue={<>
             <TrackPagination pagination={queuePagination} position="top" label="Queue" />
             <ol className="playback-queue" ref={queueListRef} start={(queuePagination.page - 1) * queuePagination.pageSize + 1}>
@@ -935,7 +972,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
       <footer className={`player-dock${panel ? ' is-expanded' : ''}`} aria-label="Music playback" ref={dockRef} onClick={(event) => {
         if (!event.target.closest('button, input, select, a, label')) setPanel(panel ? null : 'player');
       }}>
-        <div className="dock-track" inert={Boolean(panel)} aria-hidden={Boolean(panel)}><button className="dock-expand" type="button" ref={expandButtonRef}
+        <div className="dock-track" {...mediaSwipeHandlers} inert={Boolean(panel)} aria-hidden={Boolean(panel)}><button className="dock-expand" type="button" ref={expandButtonRef}
           title={panel ? 'Collapse now playing' : 'Expand now playing'} aria-label={panel ? 'Collapse now playing' : 'Expand now playing'}
           aria-expanded={Boolean(panel)} aria-controls={panel ? 'now-playing-expanded' : undefined} onClick={() => setPanel(panel ? null : 'player')}>
           <span className={`dock-artwork ${playing && !isVideo ? 'is-playing' : ''}`}>{isVideo ? <Film size={30} /> : artwork ? <img src={artwork} alt="Album cover" /> : <Disc3 size={30} />}</span>
