@@ -566,6 +566,26 @@ of the available width. The left side offers the Player and Lyrics tabs.
 Use the collapse button, Escape, or browser Back to close the expanded view.
 Switching tabs does not add extra browser history entries.
 
+## Browser and Android media controls
+
+After playback starts, supported browsers register the player through the Media
+Session API. Track title, artist, album, artwork, playback state, and seek position
+are available to browser media controls and Android lock-screen/media notifications.
+Headset and Bluetooth media buttons use the same playback actions.
+
+Supported actions are Play, Pause, Stop (pause and reset to the beginning),
+Previous, Next, seek backward/forward, and seeking to a position. Track navigation
+uses the current queue, shuffle, and repeat settings. The browser chooses which
+controls to display; shuffle and repeat remain available in the website itself.
+Session information is cleared when the queue has no selected track or the user
+logs out. Lyrics do not need to be opened or downloaded for media controls.
+
+On Android, use the HTTPS site in a browser with Media Session support, such as
+Chrome, and start playback with a tap. Notification visibility, background playback,
+and available buttons depend on the browser, Android notification settings, and
+battery/background restrictions. Closing or suspending the browser can still stop
+playback; the website cannot override those device policies.
+
 ## Shuffle and repeat
 
 Use **Shuffle** in the bottom playback bar or job player to toggle random

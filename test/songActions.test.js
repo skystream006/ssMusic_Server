@@ -43,6 +43,7 @@ let NowPlayingPanel;
 let PlaybackQueueRow;
 let mergePlaybackMetadata;
 let movePlaybackMedia;
+let createPlaybackMediaSession;
 let PlaybackProvider;
 let readPlaybackSession;
 let writePlaybackSession;
@@ -60,7 +61,7 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -232,6 +233,92 @@ test('playback session persists a full queue, independently browsed page, modes 
   assert.equal(readPlaybackSession('user', browser).songs.length, 500);
   writePlaybackSession('user', songs, null, 'mix', browser);
   assert.equal(values.has('ssMusicPlaybackPosition:user'), false);
+});
+
+test('browser Media Session publishes track metadata and dispatches native transport and seek controls', async () => {
+  const handlers = new Map();
+  const session = { setActionHandler(name, handler) { handlers.set(name, handler); }, setPositionState(value) { this.position = value; } };
+  let metadataWrites = 0;
+  const browser = { navigator: { mediaSession: session }, location: { href: 'https://music.example/' },
+    MediaMetadata: class { constructor(value) { metadataWrites++; Object.assign(this, value); } } };
+  const events = [];
+  const media = { duration: 120, currentTime: 20, playbackRate: 1, paused: true, ended: false,
+    async play() { this.paused = false; }, pause() { this.paused = true; }, fastSeek(time) { this.currentTime = time; events.push('fastSeek'); } };
+  let playback = { song: { name: 'Song.mp3', title: 'Title', artist: 'Artist', album: 'Album', artworkUrl: '/cover.avif' }, media,
+    canNext: true, canPrevious: true, next() { events.push('next'); }, previous() { events.push('previous'); },
+    onSeek(time) { events.push(time); }, onPlayIntent() { events.push('play'); } };
+  const controller = createPlaybackMediaSession(browser, () => playback);
+  controller.update();
+  assert.equal(session.metadata.title, 'Title');
+  assert.equal(session.metadata.artist, 'Artist');
+  assert.equal(session.metadata.album, 'Album');
+  assert.deepEqual(session.metadata.artwork, [{ src: 'https://music.example/cover.avif' }]);
+  assert.deepEqual(session.position, { duration: 120, position: 20, playbackRate: 1 });
+  assert.equal(session.playbackState, 'paused');
+  await handlers.get('play')();
+  assert.equal(session.playbackState, 'playing');
+  await handlers.get('pause')();
+  assert.equal(session.playbackState, 'paused');
+  await handlers.get('seekbackward')();
+  assert.equal(media.currentTime, 10);
+  await handlers.get('seekforward')({ seekOffset: 15 });
+  assert.equal(media.currentTime, 25);
+  await handlers.get('seekto')({ seekTime: 999, fastSeek: true });
+  assert.equal(media.currentTime, 120);
+  await handlers.get('seekto')({ seekTime: -5 });
+  assert.equal(media.currentTime, 0);
+  await handlers.get('nexttrack')();
+  await handlers.get('previoustrack')();
+  assert.ok(events.includes('next') && events.includes('previous') && events.includes('fastSeek'));
+  media.currentTime = 50;
+  await handlers.get('stop')();
+  assert.equal(media.currentTime, 0);
+  assert.equal(media.paused, true);
+  assert.equal(metadataWrites, 1);
+  playback = { ...playback, song: { name: 'Next.mp3' }, canNext: false, next() { assert.fail('No next track'); } };
+  controller.update();
+  assert.equal(session.metadata.title, 'Next');
+  assert.deepEqual(session.metadata.artwork, []);
+  assert.equal(handlers.get('nexttrack'), null);
+  media.duration = Infinity;
+  controller.update();
+  assert.equal(session.position, undefined);
+  assert.equal(handlers.get('seekto'), null);
+  playback = null;
+  controller.update();
+  assert.equal(session.metadata, null);
+  assert.equal(session.playbackState, 'none');
+  assert.ok([...handlers.values()].every((handler) => handler === null));
+  controller.dispose();
+});
+
+test('browser Media Session tolerates partial support and clears pending playback on disposal', async () => {
+  const unsupported = createPlaybackMediaSession({}, () => { throw new Error('Unsupported browsers must not access playback'); });
+  unsupported.update();
+  unsupported.dispose();
+  const handlers = new Map();
+  const session = { setActionHandler(name, handler) { if (name === 'stop') throw new Error('Unsupported action'); handlers.set(name, handler); },
+    setPositionState() { throw new Error('Unsupported position'); } };
+  let finishPlay;
+  const errors = [];
+  const media = { paused: true, duration: NaN, currentTime: 0, play() { return new Promise((resolve) => { finishPlay = resolve; }); } };
+  const playback = { song: { name: 'Track.mp3' }, media, onError(error) { errors.push(error.message); } };
+  const controller = createPlaybackMediaSession({ navigator: { mediaSession: session } }, () => playback);
+  controller.update();
+  const pending = handlers.get('play')();
+  controller.dispose();
+  media.paused = false;
+  finishPlay();
+  await pending;
+  assert.equal(session.playbackState, 'none');
+  assert.equal(session.metadata, null);
+  assert.ok([...handlers.values()].every((handler) => handler === null));
+  const retry = createPlaybackMediaSession({ navigator: { mediaSession: session } }, () => playback);
+  media.play = async () => { throw new Error('Playback blocked'); };
+  retry.update();
+  await handlers.get('play')();
+  assert.deepEqual(errors, ['Playback blocked']);
+  retry.dispose();
 });
 
 test('moving playback media retains its node and playback position with atomic and fallback moves', async () => {

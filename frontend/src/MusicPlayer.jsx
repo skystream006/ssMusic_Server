@@ -309,6 +309,92 @@ function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mou
 
 export function usePlayback() { return useContext(PlaybackContext); }
 
+export function createPlaybackMediaSession(browser, getPlayback) {
+  const session = browser?.navigator?.mediaSession;
+  if (!session) return { update() {}, dispose() {} };
+  let disposed = false;
+  let metadataKey = null;
+  const registered = new Map();
+
+  function setAction(name, handler) {
+    if (registered.has(name) && registered.get(name) === handler) return;
+    registered.set(name, handler);
+    try { session.setActionHandler?.(name, handler); } catch {}
+  }
+
+  function seek(playback, time, fast = false) {
+    const media = playback.media;
+    if (!Number.isFinite(time) || !Number.isFinite(media.duration) || media.duration <= 0) return;
+    const position = Math.max(0, Math.min(time, media.duration));
+    if (fast && typeof media.fastSeek === 'function') media.fastSeek(position);
+    else media.currentTime = position;
+    playback.onSeek?.(position);
+  }
+
+  function run(action) {
+    if (disposed) return;
+    const playback = getPlayback();
+    if (!playback?.song || !playback.media) return;
+    try {
+      return Promise.resolve(action(playback)).then(update, (error) => { playback.onError?.(error); update(); });
+    } catch (error) { playback.onError?.(error); update(); }
+  }
+
+  const offset = (details) => Number.isFinite(details?.seekOffset) && details.seekOffset > 0 ? details.seekOffset : 10;
+  const actions = {
+    play: () => run((playback) => { playback.onPlayIntent?.(); return playback.media.play(); }),
+    pause: () => run((playback) => playback.media.pause()),
+    stop: () => run((playback) => { playback.media.pause(); seek(playback, 0); }),
+    previoustrack: () => run((playback) => { if (playback.canPrevious) playback.previous(); }),
+    nexttrack: () => run((playback) => { if (playback.canNext) playback.next(); }),
+    seekbackward: (details) => run((playback) => seek(playback, playback.media.currentTime - offset(details))),
+    seekforward: (details) => run((playback) => seek(playback, playback.media.currentTime + offset(details))),
+    seekto: (details) => run((playback) => seek(playback, details?.seekTime, details?.fastSeek))
+  };
+
+  function clear() {
+    metadataKey = null;
+    for (const name of Object.keys(actions)) setAction(name, null);
+    try { session.metadata = null; } catch {}
+    try { session.playbackState = 'none'; } catch {}
+    try { session.setPositionState?.(); } catch {}
+  }
+
+  function update() {
+    if (disposed) return;
+    const playback = getPlayback();
+    const { song, media } = playback || {};
+    if (!song || !media) { clear(); return; }
+    const artwork = [];
+    if (song.artworkUrl) {
+      try {
+        const source = new URL(song.artworkUrl, browser.location?.href);
+        if (['http:', 'https:', 'data:', 'blob:'].includes(source.protocol)) artwork.push({ src: source.href });
+      } catch {}
+    }
+    const details = { title: song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, ''),
+      artist: song.artist || '', album: song.album || '', artwork };
+    const key = JSON.stringify(details);
+    if (key !== metadataKey && typeof browser.MediaMetadata === 'function') {
+      try { session.metadata = new browser.MediaMetadata(details); metadataKey = key; } catch {}
+    }
+    try { session.playbackState = media.paused || media.ended || media.error ? 'paused' : 'playing'; } catch {}
+    const seekable = Number.isFinite(media.duration) && media.duration > 0;
+    try {
+      session.setPositionState?.(seekable ? { duration: media.duration,
+        playbackRate: Number.isFinite(media.playbackRate) && media.playbackRate > 0 ? media.playbackRate : 1,
+        position: Math.max(0, Math.min(Number.isFinite(media.currentTime) ? media.currentTime : 0, media.duration)) } : undefined);
+    } catch {}
+    for (const [name, handler] of Object.entries(actions)) {
+      const enabled = name === 'nexttrack' ? playback.canNext : name === 'previoustrack' ? playback.canPrevious
+        : name.startsWith('seek') ? seekable : true;
+      setAction(name, enabled ? handler : null);
+    }
+  }
+
+  return { update, dispose() { if (!disposed) { clear(); disposed = true; } } };
+}
+
 export function readPlaybackSession(userId, browser = window) {
   try {
     if (!userId) return null;
@@ -393,6 +479,8 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
   const progressSavedAtRef = useRef(0);
   const [videoOpen, setVideoOpen] = useState(true);
   const audioRef = useRef(null);
+  const mediaSessionRef = useRef(null);
+  const mediaSessionPlaybackRef = useRef(null);
   const floatingMediaRef = useRef(null);
   const [mediaContainer] = useState(() => typeof document === 'undefined' ? null
     : Object.assign(document.createElement('div'), { className: 'playback-media' }));
@@ -568,6 +656,24 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
     } else audioRef.current.pause();
   }
 
+  mediaSessionPlaybackRef.current = {
+    song, canPrevious: Boolean(song),
+    canNext: Boolean(song && (index < songs.length - 1 || repeatMode === 'all' || (shuffle && songs.length > 1))),
+    next: () => nextSong(), previous: previousSong,
+    onPlayIntent() { autoPlayRef.current = true; },
+    onSeek(time) { setPosition(time); writePlaybackPosition(userId, selected, time); },
+    onError() { setPlayError('Playback could not start. Press play to retry.'); }
+  };
+
+  useEffect(() => {
+    const controller = createPlaybackMediaSession(window, () => ({ ...mediaSessionPlaybackRef.current, media: audioRef.current }));
+    mediaSessionRef.current = controller;
+    controller.update();
+    return () => { controller.dispose(); mediaSessionRef.current = null; };
+  }, []);
+
+  useEffect(() => { mediaSessionRef.current?.update(); });
+
   swipeActionsRef.current = song ? { next: () => nextSong(), previous: previousSong } : null;
 
   const MediaElement = isVideo ? 'video' : 'audio';
@@ -586,6 +692,8 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
       setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
     }}
     onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+    onRateChange={() => mediaSessionRef.current?.update()}
+    onSeeked={() => mediaSessionRef.current?.update()}
     onVolumeChange={(event) => {
       volumeRef.current = event.currentTarget.volume;
       mutedRef.current = event.currentTarget.muted;
