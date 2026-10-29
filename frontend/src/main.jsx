@@ -176,7 +176,7 @@ function usePolling(loader, interval = POLL_INTERVAL, pollingKey = 'default') {
 }
 
 const loadJobs = () => request('/api/jobs');
-const loadJobQueue = () => request('/api/admin/queue-jobs');
+const loadJobQueue = () => request('/api/admin/jobs-queue');
 const loadJobRateLimit = () => request('/api/jobs/status');
 const loadBackup = () => request('/api/library/backup');
 const loadHealth = () => request('/api/health');
@@ -250,7 +250,7 @@ function AppShell({ children, section = 'jobs' }) {
         {section === 'admin' && <nav className="admin-tabs" aria-label="Administration">
           <a href="/admin" aria-current={window.location.pathname === '/admin' ? 'page' : undefined}><Users size={17} />Users</a>
           <a href="/admin/shared-links" aria-current={window.location.pathname === '/admin/shared-links' ? 'page' : undefined}><Share2 size={17} />Shared links</a>
-          <a href="/admin/queue-jobs" aria-current={window.location.pathname === '/admin/queue-jobs' ? 'page' : undefined}><Clock3 size={17} />Queue Jobs</a>
+          <a href="/admin/jobs-queue" aria-current={window.location.pathname === '/admin/jobs-queue' ? 'page' : undefined}><Clock3 size={17} />Jobs Queue</a>
         </nav>}
         {children}
       </main>
@@ -501,7 +501,7 @@ function JobsPage() {
               placeholder={downloadType === 'video' ? 'https://www.youtube.com/watch?v=...' : 'https://music.youtube.com/watch?v=...'}
             />
           </div>
-          <button className="primary-button" disabled={submitting || jobRateLimit?.limited} type="submit">
+          <button className="primary-button" disabled={submitting} type="submit">
             {submitting ? <RefreshCw className="spin" size={18} /> : <Plus size={18} />}
             {submitting ? 'Adding' : 'Add job'}
           </button>
@@ -567,7 +567,7 @@ function JobsPage() {
           </label>
           <button className="music-icon-button" type="button" aria-label="Rerun selected jobs"
             title={selectedJobs.length && !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun')) ? 'All selected jobs must be idle, non-imported jobs you can rerun' : 'Rerun selected jobs'}
-            disabled={jobRateLimit?.limited || Boolean(jobAction) || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun'))}
+            disabled={Boolean(jobAction) || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun'))}
             onClick={() => runSelectedJobAction('rerun')}><RotateCcw size={18} /></button>
           <button className="music-icon-button job-bulk-delete" type="button" aria-label="Delete selected jobs"
             title={selectedJobs.length && !selectedJobs.every((job) => canRunJobAction(user, job, 'delete')) ? 'All selected jobs must be idle jobs you own or administer' : 'Delete selected jobs'}
@@ -613,7 +613,7 @@ function JobsPage() {
                       disabled={Boolean(jobAction) || !(job.files || []).some(isPlayableFile)}
                       onClick={() => { setPlaylistMessage(''); setAddingJob(job); }}><ListPlus size={17} /></button>}
                     {canModifyJob(user, job) && <>
-                    {!job.source && <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={jobRateLimit?.limited || Boolean(jobAction) || !canRunJobAction(user, job, 'rerun')} onClick={() => runJobAction(job, 'rerun')}>
+                    {!job.source && <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || !canRunJobAction(user, job, 'rerun')} onClick={() => runJobAction(job, 'rerun')}>
                       {jobAction?.id === job.id && jobAction.action === 'rerun' ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
                     </button>}
                     {canManageJob(user, job) && <button className="icon-link row-delete" type="button" title="Delete job" aria-label={`Delete job ${job.id}`} disabled={Boolean(jobAction) || !canRunJobAction(user, job, 'delete')} onClick={() => runJobAction(job, 'delete')}>
@@ -1421,7 +1421,7 @@ function AdminSharedLinksPage() {
   return <AppShell section="admin"><AdminMediaShares request={request} confirm={confirm} />{dialog}</AppShell>;
 }
 
-function AdminQueueJobsPage() {
+function AdminJobsQueuePage() {
   const [revision, setRevision] = useState(0);
   const { data, error } = usePolling(loadJobQueue, 2000, revision);
   return <AppShell section="admin"><AdminJobQueue data={data} error={error} onRefresh={() => setRevision((value) => value + 1)} /></AppShell>;
@@ -1560,7 +1560,7 @@ function SharedSettingsPage() {
 function PageRoutes({ user }) {
   if (user.role === 'shared') return window.location.pathname === '/settings' ? <SharedSettingsPage /> : <MusicHomePage />;
   if (window.location.pathname === '/admin/shared-links' && user.role === 'admin') return <AdminSharedLinksPage />;
-  if (window.location.pathname === '/admin/queue-jobs' && user.role === 'admin') return <AdminQueueJobsPage />;
+  if (window.location.pathname === '/admin/jobs-queue' && user.role === 'admin') return <AdminJobsQueuePage />;
   const userMatch = window.location.pathname.match(/^\/admin\/users\/([^/]+)\/?$/);
   if (userMatch && user.role === 'admin') return <UserSettingsPage userId={decodeURIComponent(userMatch[1])} />;
   if (window.location.pathname === '/settings') return <UserSettingsPage />;

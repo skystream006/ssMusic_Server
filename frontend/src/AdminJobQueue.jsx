@@ -29,7 +29,7 @@ export default function AdminJobQueue({ data, error = '', onRefresh }) {
   const loading = !data && !error;
   return <>
     <section className="page-heading admin-heading queue-heading">
-      <div><p className="eyebrow">Administration</p><h1>Queue Jobs</h1></div>
+      <div><p className="eyebrow">Administration</p><h1>Jobs Queue</h1></div>
       <button className="music-icon-button" type="button" title="Refresh job queue" aria-label="Refresh job queue" disabled={loading} onClick={onRefresh}>
         <RefreshCw size={20} className={loading ? 'spin' : undefined} />
       </button>

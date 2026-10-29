@@ -529,7 +529,7 @@ for (const phase of ['metadata', 'download']) {
     assert.equal(state.limited, true);
     assert.ok(Date.parse(state.reenabledAt) >= before + 65 * 60 * 1000);
     assert.ok(Date.parse(state.reenabledAt) <= Date.now() + 65 * 60 * 1000);
-    assert.equal(state.message, `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will be re-enabled at ${state.reenabledAt}. Manual imports and other library functions remain available.`);
+    assert.equal(state.message, `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will resume at ${state.reenabledAt}. New jobs and reruns can still be queued. Manual imports and other library functions remain available.`);
     await waitForJobToFinish(first);
     for (let attempt = 0; !resumeQueue && attempt < 500; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -549,10 +549,19 @@ for (const phase of ['metadata', 'download']) {
     assert.deepEqual(manager.getJobQueue().queued.map((job) => [job.id, job.queuePosition]), [[second.id, 1], [third.id, 2]]);
     assert.equal(children.length, count);
     assert.match(first.output, /rate-limited by YouTube/);
-    await assert.rejects(manager.createJob('https://music.youtube.com/watch?v=fourth', owner), {
-      statusCode: 429, code: 'JOBS_RATE_LIMITED', message: state.message
-    });
-    await assert.rejects(manager.rerunJob(first.id, owner), { statusCode: 429, message: state.message });
+    const fourth = await manager.createJob('https://music.youtube.com/watch?v=fourth', owner, { metadataOnly: true });
+    const rerun = await manager.rerunJob(first.id, owner);
+    for (const job of [fourth, rerun]) {
+      assert.equal(job.status, 'queued');
+      assert.equal(job.error, null);
+      assert.equal(job.command, null);
+      assert.equal(job.output, null);
+    }
+    assert.deepEqual(manager.getJobQueue().queued.map((job) => [job.id, job.queuePosition]),
+      [[second.id, 1], [third.id, 2], [fourth.id, 3], [rerun.id, 4]]);
+    assert.equal(children.length, count);
+    await assert.rejects(manager.createJob(fourth.url, owner), { statusCode: 409, code: 'JOB_ALREADY_EXISTS' });
+    await assert.rejects(manager.rerunJob(rerun.id, owner), { statusCode: 409 });
     const songPath = path.join(fixtureDirectory, 'manual.mp3');
     await fs.writeFile(songPath, NodeID3.create({ title: 'Manual song' }));
     const imported = await manager.importJobFiles({
@@ -620,12 +629,31 @@ for (const phase of ['metadata', 'download']) {
     await waitForJobToFinish(third);
     assert.equal(second.status, 'completed');
     assert.equal(third.status, 'completed');
+    let commandIndex = count + 2;
+    for (const job of [fourth, rerun]) {
+      for (const metadata of job.metadataOnly ? [true] : [true, false]) {
+        for (let attempt = 0; children.length <= commandIndex && attempt < 500; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.equal(children.length, commandIndex + 1);
+        assert.equal(job.status, 'running');
+        assert.equal(job.queuePosition, undefined);
+        const child = children[commandIndex++];
+        assert.equal(child.metadata, metadata);
+        assert.equal(child.args.at(-1), job.url);
+        child.stdout.end(metadata ? '{"title":"Queued during cooldown"}' : '');
+        child.emit('close', 0);
+      }
+      await waitForJobToFinish(job);
+      assert.equal(job.status, 'completed');
+    }
     assert.deepEqual(manager.getJobQueue(), { running: null, queued: [] });
     assert.deepEqual(manager.getJobRateLimit(), { limited: false, reenabledAt: null, message: null });
     const resumed = await manager.createJob('https://music.youtube.com/watch?v=resumed', owner, { metadataOnly: true });
-    for (let attempt = 0; children.length < count + 3 && attempt < 500; attempt += 1) {
+    for (let attempt = 0; children.length <= commandIndex && attempt < 500; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    assert.equal(children.length, commandIndex + 1);
     children.at(-1).stdout.end('{"title":"Resumed"}');
     children.at(-1).emit('close', 0);
     await waitForJobToFinish(resumed);

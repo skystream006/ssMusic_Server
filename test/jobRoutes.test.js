@@ -276,12 +276,12 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     return response;
   }
   await context.test('admin job queue endpoint is uncached and restricted for session, PAT and mobile clients', async () => {
-    assert.equal((await call('/api/admin/queue-jobs')).status, 401);
+    assert.equal((await call('/api/admin/jobs-queue')).status, 401);
     for (const headers of [...credentials.Owner, ...credentials.Other, ...credentials.Reader, mobileHeaders.Owner, mobileHeaders.Reader]) {
-      assert.equal((await call('/api/admin/queue-jobs', 'GET', headers)).status, 403);
+      assert.equal((await call('/api/admin/jobs-queue', 'GET', headers)).status, 403);
     }
     for (const headers of [...credentials.Admin, mobileHeaders.Admin]) {
-      const result = await call('/api/admin/queue-jobs', 'GET', headers);
+      const result = await call('/api/admin/jobs-queue', 'GET', headers);
       assert.equal(result.status, 200, result.text);
       assert.equal(result.headers['cache-control'], 'no-store');
       assert.deepEqual(result.body, {
@@ -291,12 +291,12 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     }
   });
 
-  await context.test('server cooldown status and job rejection match for session, PAT and mobile clients', async () => {
+  await context.test('server cooldown accepts queued jobs and reruns for session, PAT and mobile clients', async () => {
     assert.deepEqual((await call('/api/jobs/status', 'GET', credentials.Owner[0])).body,
       { limited: false, reenabledAt: null, message: null });
     const until = Date.now() + 65 * 60 * 1000;
     const reenabledAt = new Date(until).toISOString();
-    const message = `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will be re-enabled at ${reenabledAt}. Manual imports and other library functions remain available.`;
+    const message = `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will resume at ${reenabledAt}. New jobs and reruns can still be queued. Manual imports and other library functions remain available.`;
     await openDatabase().prepare("INSERT INTO job_server_state (key, value) VALUES ('jobsDisabledUntil', $1)").run(String(until));
     await closeDatabases();
     const stopped = once(server, 'exit');
@@ -304,17 +304,31 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     await stopped;
     await startServer();
     assert.equal((await call('/api/jobs/status')).status, 401);
-    for (const headers of [...credentials.Admin, ...credentials.Owner, ...credentials.Other, mobileHeaders.Owner]) {
+    const queuedIds = [];
+    const clients = ['Admin', 'Owner', 'Other'].flatMap((name) => credentials[name].map((headers) => ({ headers, user: users[name] })));
+    clients.push({ headers: mobileHeaders.Owner, user: users.Owner });
+    for (const [index, { headers, user }] of clients.entries()) {
       const status = await call('/api/jobs/status', 'GET', headers);
       assert.equal(status.status, 200);
       assert.equal(status.headers['cache-control'], 'no-store');
       assert.deepEqual(status.body, { limited: true, reenabledAt, message });
-      for (const route of ['/api/jobs', '/api/jobs/owned/rerun']) {
-        const result = await call(route, 'POST', headers, { url: 'https://music.youtube.com/watch?v=blocked' });
-        assert.equal(result.status, 429, result.text);
-        assert.deepEqual(result.body, { error: message, code: 'JOBS_RATE_LIMITED', reenabledAt });
-        assert.ok(Number(result.headers['retry-after']) > 0);
-        assert.ok(Number(result.headers['retry-after']) <= 3900);
+      const rerunId = `cooldown-rerun-${index}`;
+      await writeJob(openDatabase(), {
+        id: rerunId, url: `https://music.youtube.com/playlist?list=${rerunId}`, status: 'completed', isPlaylist: true,
+        initiatedBy: { id: user.id, name: user.name }, playlistTitle: 'Cooldown rerun', files: [],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+      });
+      for (const route of ['/api/jobs', `/api/jobs/${rerunId}/rerun`]) {
+        const result = await call(route, 'POST', headers, { url: `https://music.youtube.com/playlist?list=cooldown-new-${index}` });
+        assert.equal(result.status, 202, result.text);
+        queuedIds.push(result.body.id);
+        assert.equal(result.body.status, 'queued');
+        assert.equal(result.body.queuePosition, queuedIds.length);
+        assert.equal(result.body.command, null);
+        assert.equal(result.headers['retry-after'], undefined);
+        const detail = await call(`/api/jobs/${result.body.id}`, 'GET', headers);
+        assert.equal(detail.body.status, 'queued');
+        assert.equal(detail.body.queuePosition, queuedIds.length);
       }
       const playlists = await call('/api/jobs/import/playlists', 'GET', headers);
       assert.equal(playlists.status, 200, playlists.text);
@@ -340,6 +354,10 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
       assert.equal((await call(`/api/jobs/${importedId}`, 'DELETE', headers)).status, 204);
       assert.deepEqual((await call('/api/jobs/status', 'GET', headers)).body, { limited: true, reenabledAt, message });
     }
+    const queue = (await call('/api/admin/jobs-queue', 'GET', credentials.Admin[0])).body;
+    assert.equal(queue.running, null);
+    assert.deepEqual(queue.queued.map((job) => job.id), queuedIds);
+    for (const id of queuedIds) await openDatabase().prepare('DELETE FROM jobs WHERE id = $1').run(id);
     await openDatabase().prepare("DELETE FROM job_server_state WHERE key = 'jobsDisabledUntil'").run();
     await closeDatabases();
     const reset = once(server, 'exit');

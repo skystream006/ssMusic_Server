@@ -71,6 +71,7 @@ test('queued job badges and the admin queue view show positions, ordering and op
   assert.match(unavailable, /Queue status unavailable: Offline/);
   assert.ok(!unavailable.includes('Loading job queue'));
   const empty = render({ data: { running: null, queued: [] } });
+  assert.match(empty, /<h1>Jobs Queue<\/h1>/);
   assert.match(empty, /No jobs running/);
   assert.match(empty, /No jobs queued/);
 

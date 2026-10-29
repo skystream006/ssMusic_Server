@@ -61,9 +61,9 @@ count. Playlists with more than 100 items add
 both audio and video. Playlists with 100 or fewer items and single-video jobs do
 not receive these flags.
 
-Administrators can track the running job and waiting jobs under **Admin > Queue
-Jobs** (`/admin/queue-jobs`), refreshed every two seconds. The admin-only
-`GET /api/admin/queue-jobs` endpoint returns `{ running, queued, maintenance,
+Administrators can track the running job and waiting jobs under **Admin > Jobs
+Queue** (`/admin/jobs-queue`), refreshed every two seconds. The admin-only
+`GET /api/admin/jobs-queue` endpoint returns `{ running, queued, maintenance,
 rateLimit }`. Private jobs owned by someone else expose only an occupied slot
 and queue position, without identifying details.
 
@@ -78,15 +78,16 @@ normal saved output. Private job and file restrictions also apply to live logs.
 
 If yt-dlp reports "The current session has been rate-limited by YouTube for up to
 an hour", the server immediately stops all active download/metadata jobs and
-blocks new yt-dlp jobs and reruns for 65 minutes. The cooldown survives server restarts.
-The active job is marked failed and can be rerun manually after the cooldown.
+pauses yt-dlp execution for 65 minutes. The cooldown survives server restarts.
+The active job is marked failed and can be queued for a manual rerun immediately.
 Waiting jobs stay queued with their positions intact and resume automatically,
 one at a time, when the cooldown expires and runtime maintenance has finished.
-The Jobs page displays the server-wide notice and UTC re-enable timestamp.
+New jobs and reruns remain available during cooldown and join the same queue.
+The Jobs page keeps its controls enabled and displays the notice and UTC resume timestamp.
 Authenticated clients can read `{ limited, reenabledAt, message }` from
 `GET /api/jobs/status`. During cooldown, job creation and rerun requests return
-HTTP 429 with `{ error, code: "JOBS_RATE_LIMITED", reenabledAt }` and a
-`Retry-After` header in seconds; `error` contains the same notice as the Jobs page.
+HTTP 202 with the job's `status: "queued"` and live `queuePosition`, subject to
+normal validation, access checks, and duplicate-job protections.
 
 Downloads also fetch each video's source cover into a hidden `.thumbnails` folder
 alongside the media. Supported source images (JPEG, PNG, WebP, or AVIF) are converted

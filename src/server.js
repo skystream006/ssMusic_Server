@@ -125,7 +125,7 @@ app.use(restrictSharedAccess);
 const mediaCount = createMediaCountMonitor(async () => scanMediaFiles((await getJobs())));
 registerAuthRoutes(app, authLimiters, () => mediaCount.getStatus());
 app.use('/api/admin/media-shares', requireAdmin, mediaShareHeaders, adminMediaSharesRouter());
-app.get('/api/admin/queue-jobs', requireAdmin, (req, res) => {
+app.get('/api/admin/jobs-queue', requireAdmin, (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ ...getJobQueue(req.user), maintenance: isUpdateInProgress(), rateLimit: getJobRateLimit() });
 });
@@ -473,17 +473,6 @@ app.get('/api/jobs/status', (_req, res) => {
   res.set('Cache-Control', 'no-store').json(getJobRateLimit());
 });
 
-function sendJobRateLimit(res) {
-  const state = getJobRateLimit();
-  return res.set('Retry-After', String(Math.max(1, Math.ceil((Date.parse(state.reenabledAt) - Date.now()) / 1000))))
-    .status(429).json({ error: state.message, code: 'JOBS_RATE_LIMITED', reenabledAt: state.reenabledAt });
-}
-
-app.post(['/api/jobs', '/api/jobs/:id/rerun'], (_req, res, next) => {
-  if (getJobRateLimit().limited) return sendJobRateLimit(res);
-  return next();
-});
-
 app.get('/api/jobs/:id', async (req, res) => {
   const job = visibleJob(await getJob(req.params.id), req.user);
   if (!job) {
@@ -753,7 +742,6 @@ app.post('/api/jobs', async (req, res) => {
     (await linkLibraryJob(req.user.id, job, (await getLibraryJobs(req.user))));
     return res.status(202).json(job);
   } catch (error) {
-    if (error.code === 'JOBS_RATE_LIMITED') return sendJobRateLimit(res);
     return res.status(error.statusCode || 500).json({
       error: error.message,
       code: error.code,
@@ -790,7 +778,6 @@ app.post('/api/jobs/:id/rerun', async (req, res) => {
     }
     return res.status(202).json(visibleJob(job, req.user));
   } catch (error) {
-    if (error.code === 'JOBS_RATE_LIMITED') return sendJobRateLimit(res);
     return res.status(error.statusCode || 500).json({ error: error.message });
   }
 });

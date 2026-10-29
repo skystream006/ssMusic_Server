@@ -52,7 +52,7 @@ export function getJobRateLimit() {
   return {
     limited,
     reenabledAt,
-    message: limited ? `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will be re-enabled at ${reenabledAt}. Manual imports and other library functions remain available.` : null
+    message: limited ? `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will resume at ${reenabledAt}. New jobs and reruns can still be queued. Manual imports and other library functions remain available.` : null
   };
 }
 
@@ -682,7 +682,6 @@ export function isUpdateInProgress() {
 }
 
 export async function createJob(url, user = null, { metadataOnly = false, downloadType = 'audio' } = {}) {
-  assertJobsEnabled();
   if (metadataOnly !== undefined && typeof metadataOnly !== 'boolean') {
     throw Object.assign(new Error('metadataOnly must be a boolean'), { statusCode: 400 });
   }
@@ -866,7 +865,6 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
 }
 
 export async function rerunJob(id, user = null) {
-  assertJobsEnabled();
   const job = (await getJob(id));
   if (!job) {
     return null;
