@@ -269,19 +269,23 @@ th { padding: 11px 16px; color: var(--muted); font: 500 10px 'DM Mono', monospac
 td { padding: 15px 16px; font-size: 12px; border-bottom: 1px solid var(--line); }
 tbody tr { transition: background .15s; }
 tbody tr:hover { background: var(--surface); }
-.job-name { display: flex; align-items: center; gap: 12px; min-width: 230px; text-decoration: none; }
+.jobs-table th:last-child, .jobs-table td:last-child { position: sticky; right: 0; z-index: 1; width: 1%; background: var(--surface); box-shadow: -1px 0 0 var(--line); }
+.job-name { display: flex; align-items: center; gap: 12px; min-width: 230px; max-width: 320px; text-decoration: none; }
 .job-name > span { width: 36px; height: 36px; display: grid; place-items: center; flex: none; border: 1px solid var(--line); background: var(--surface-raised); }
-.job-name strong, .job-name small { display: block; }
-.job-name strong { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.job-name > div { min-width: 0; }
+.job-name strong, .job-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-name strong { font-size: 12px; }
 .job-name small { margin-top: 4px; color: var(--muted); font: 400 9px 'DM Mono', monospace; }
 .job-initiator { display: block; min-width: 80px; max-width: 160px; overflow-wrap: anywhere; }
 .status { width: fit-content; display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; font-size: 10px; font-weight: 700; text-transform: uppercase; border: 1px solid currentColor; }
 .status svg { flex-shrink: 0; }
+.job-command-progress { display: block; font-weight: 500; font-variant-numeric: tabular-nums; text-transform: none; }
 .status-completed { color: var(--green); background: rgba(48, 128, 105, .2); }
 .status-running, .status-paused { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .status-paused { text-transform: none; white-space: normal; }
 .status-partially_completed { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .status-queued { color: var(--muted); background: var(--surface-raised); text-transform: none; white-space: normal; }
+.status-stopped { color: var(--muted); background: var(--surface-raised); }
 .status-failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, transparent); }
 .status-running svg, .spin { animation: spin 1.4s linear infinite; }
 .icon-link { display: grid; place-items: center; width: 34px; height: 34px; margin-left: auto; border: 1px solid var(--line); text-decoration: none; }
@@ -302,6 +306,7 @@ tbody tr:hover { background: var(--surface); }
 .job-select-row { display: grid; place-items: center; width: 44px; min-height: 44px; cursor: pointer; }
 .job-selection-cell input { display: block; margin: auto; outline-offset: 3px; }
 .jobs-table .job-selected { background: color-mix(in srgb, var(--royal) 9%, var(--surface)); }
+.jobs-table .job-selected td:last-child { background: color-mix(in srgb, var(--royal) 9%, var(--surface)); }
 .job-bulk-progress { display: flex; align-items: center; gap: 8px; flex-basis: 100%; font-size: 12px; color: var(--muted); }
 .job-bulk-result { display: block; overflow-wrap: anywhere; }
 .job-bulk-result ul { max-height: 220px; overflow-y: auto; margin: 8px 0 0; padding-left: 20px; }
@@ -1050,7 +1055,8 @@ code { font: 400 11px 'DM Mono', monospace; }
   table:not(.jobs-table) th:nth-child(2), table:not(.jobs-table) td:nth-child(2), table:not(.jobs-table) th:nth-child(4), table:not(.jobs-table) td:nth-child(4),
   .jobs-table .job-column-format, .jobs-table .job-column-created { display: none; }
   td, th { padding-left: 8px; padding-right: 8px; }
-  .job-name { min-width: 170px; }
+  .job-name { min-width: 170px; max-width: 240px; }
+  .job-row-actions { display: grid; grid-template-columns: repeat(3, 44px); min-width: 144px; }
   .detail-heading { align-items: flex-start; }
   .detail-actions { align-items: flex-end; }
   .record-art { display: none; }
@@ -1093,6 +1099,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 .queue-job-source, .queue-job-type, .queue-job-owner > span, .queue-job-owner time { color: var(--muted); font-size: 12px; }
 .queue-job-type { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .queue-job-owner > strong { font-size: 13px; }
+.queue-job-state { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .queue-job-state .status { max-width: 100%; line-height: 1.5; }
 @media (max-width: 820px) {
   .queue-job-row { grid-template-columns: minmax(0, 1fr) minmax(140px, .5fr); gap: 12px; }

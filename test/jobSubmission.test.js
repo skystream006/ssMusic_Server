@@ -58,18 +58,30 @@ test('queued job badges and the admin queue view show positions, ordering and op
     assert.match(badge, new RegExp(`Queued - Current Position #${queuePosition}`));
     assert.match(badge, /status-queued/);
   }
-  for (const status of ['running', 'completed', 'failed', 'partially_completed']) {
+  for (const status of ['running', 'completed', 'failed', 'partially_completed', 'stopped']) {
     const badge = renderToStaticMarkup(createElement(StatusBadge, { status, queuePosition: 2 }));
     assert.ok(!badge.includes('Current Position'));
     assert.ok(badge.includes(status.replaceAll('_', ' ')));
   }
   assert.ok(!renderToStaticMarkup(createElement(StatusBadge, { status: 'queued' })).includes('#undefined'));
+  for (const [status, completed] of [['running', 0], ['running', 12], ['completed', 101], ['failed', 12]]) {
+    const badge = renderToStaticMarkup(createElement(StatusBadge, { status, commandProgress: { completed, total: 101 } }));
+    assert.ok(badge.includes(`Commands: ${completed} / 101`));
+  }
+  for (const commandProgress of [undefined, {}, { completed: -1, total: 101 }, { completed: 102, total: 101 }, { completed: 0, total: 0 }]) {
+    assert.ok(!renderToStaticMarkup(createElement(StatusBadge, { status: 'running', commandProgress })).includes('Commands:'));
+  }
+  assert.ok(!renderToStaticMarkup(createElement(StatusBadge, { status: 'queued', commandProgress: { completed: 12, total: 101 } })).includes('Commands:'));
   const pausedUntil = '2026-10-28T13:05:00Z';
   const pausedBadge = renderToStaticMarkup(createElement(StatusBadge, { status: 'running', pausedUntil }));
   assert.match(pausedBadge, /status-paused/);
   assert.match(pausedBadge, /Paused - Rate limit/);
   assert.ok(!pausedBadge.includes('status-running'));
   assert.ok(!renderToStaticMarkup(createElement(StatusBadge, { status: 'failed', pausedUntil })).includes('status-paused'));
+  const stopped = renderToStaticMarkup(createElement(StatusBadge, { status: 'stopped', pausedUntil, commandProgress: { completed: 12, total: 101 } }));
+  assert.match(stopped, /status-stopped/);
+  assert.match(stopped, /Commands: 12 \/ 101/);
+  assert.ok(!stopped.includes('status-paused'));
   const render = (props) => renderToStaticMarkup(createElement(AdminJobQueue, props));
   assert.match(render({ data: null }), /Loading job queue/);
   const unavailable = render({ data: null, error: 'Offline' });
@@ -83,6 +95,7 @@ test('queued job badges and the admin queue view show positions, ordering and op
 
   const job = { id: 'first', url: 'https://music.youtube.com/playlist?list=first', playlistTitle: 'Running collection',
     status: 'running', isPlaylist: true, playlistSongCount: 101, downloadType: 'audio',
+    commandProgress: { completed: 12, total: 101 },
     initiatedBy: { name: 'Owner' }, updatedAt: '2026-10-28T12:00:00Z' };
   const data = { running: job, queued: [
     { ...job, id: 'second', playlistTitle: 'Second collection', status: 'queued', queuePosition: 1 },
@@ -99,16 +112,24 @@ test('queued job badges and the admin queue view show positions, ordering and op
   assert.match(populated, /Unknown/);
   assert.match(populated, /Metadata only/);
   assert.match(populated, /aria-label="Refresh job queue"/);
+  assert.match(populated, /Commands: 12 \/ 101/);
+  assert.equal((populated.match(/job-command-progress/g) || []).length, 1);
+  const stoppable = render({ data, onStop() {}, stoppingId: 'first' });
+  for (const id of ['first', 'second', 'third']) assert.match(stoppable, new RegExp(`aria-label="Stop job ${id}" disabled=""`));
   const paused = render({ data: { ...data, running: { ...job, pausedUntil } } });
   assert.match(paused, /Paused job/);
   assert.match(paused, /Paused - Rate limit/);
   assert.match(paused, /Resumes <time/);
   assert.match(paused, /Queued - Current Position #1/);
+  assert.match(paused, /Commands: 12 \/ 101/);
   const hiddenPaused = render({ data: { running: { hidden: true, status: 'running', pausedUntil }, queued: [] } });
   assert.match(hiddenPaused, /Private job/);
   assert.match(hiddenPaused, /Paused - Rate limit/);
   assert.ok(!hiddenPaused.includes('href="/job/'));
   assert.ok(!hiddenPaused.includes('Submitted by'));
+  assert.ok(!hiddenPaused.includes('Commands:'));
+  const hiddenStop = render({ data: { running: { hidden: true, status: 'running' }, queued: [] }, onStop() {} });
+  assert.ok(!hiddenStop.includes('Stop job'));
   const hidden = render({ data: { running: null, queued: [{ hidden: true, status: 'queued', queuePosition: 1 }] } });
   assert.match(hidden, /Private job/);
   assert.match(hidden, /Queued - Current Position #1/);

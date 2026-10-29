@@ -37,6 +37,7 @@ import {
   Settings,
   Share2,
   ShieldCheck,
+  Square,
   Sun,
   Trash2,
   Mic,
@@ -74,8 +75,8 @@ function ConfirmationDialog({ title, message, action, label, onAnswer }) {
   const dialogRef = useRef(null);
   const titleId = useId();
   const messageId = useId();
-  const ActionIcon = action === 'delete' ? Trash2 : action === 'rerun' ? RotateCcw : ExternalLink;
-  const actionLabel = label || (action === 'delete' ? 'Delete job' : action === 'rerun' ? 'Rerun job' : 'Open details');
+  const ActionIcon = action === 'delete' ? Trash2 : action === 'stop' ? Square : action === 'rerun' ? RotateCcw : ExternalLink;
+  const actionLabel = label || (action === 'delete' ? 'Delete job' : action === 'stop' ? 'Stop job' : action === 'rerun' ? 'Rerun job' : 'Open details');
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -362,8 +363,9 @@ function JobsPage({ tab = 'tasks' }) {
     if (jobAction || !canRunJobAction(user, job, action)) return;
     const message = action === 'rerun'
       ? `Rerun ${job.playlistTitle || job.id}? Keep existing songs and download missing ones?`
+      : action === 'stop' ? `Stop ${job.playlistTitle || job.id}? Downloaded files and process output will be kept.`
       : `Delete ${job.playlistTitle || job.id} and all of its downloaded files?`;
-    if (!await confirm({ title: action === 'rerun' ? 'Rerun job?' : 'Delete job?', message, action })) return;
+    if (!await confirm({ title: action === 'rerun' ? 'Rerun job?' : action === 'stop' ? 'Stop job?' : 'Delete job?', message, action })) return;
 
     setJobAction({ id: job.id, action });
     setActionError('');
@@ -374,8 +376,8 @@ function JobsPage({ tab = 'tasks' }) {
         await request(`${jobUrl}/rerun`, { method: 'POST' });
         navigate(`/job/${encodeURIComponent(job.id)}`);
       } else {
-        await request(jobUrl, { method: 'DELETE' });
-        playback.removeJob(job.id);
+        await request(action === 'stop' ? `${jobUrl}/stop` : jobUrl, { method: action === 'stop' ? 'POST' : 'DELETE' });
+        if (action === 'delete') playback.removeJob(job.id);
         selectJobs([job.id], false);
         setRevision((current) => current + 1);
         setJobAction(null);
@@ -389,9 +391,10 @@ function JobsPage({ tab = 'tasks' }) {
   async function runSelectedJobAction(action) {
     if (jobAction || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, action))) return;
     const targets = [...selectedJobs];
-    const label = `${action === 'delete' ? 'Delete' : 'Rerun'} ${targets.length} selected ${targets.length === 1 ? 'job' : 'jobs'}`;
+    const label = `${action === 'delete' ? 'Delete' : action === 'stop' ? 'Stop' : 'Rerun'} ${targets.length} selected ${targets.length === 1 ? 'job' : 'jobs'}`;
     const message = action === 'delete'
       ? `Delete all ${targets.length} selected jobs and all their downloaded files? This also removes their files from linked playlists and cannot be undone.`
+      : action === 'stop' ? `Stop all ${targets.length} selected jobs? Downloaded files and process output will be kept.`
       : `Rerun all ${targets.length} selected jobs? Existing files will be kept and missing media downloaded.`;
     if (!await confirm({ title: `${label}?`, message, action, label })) return;
 
@@ -404,7 +407,7 @@ function JobsPage({ tab = 'tasks' }) {
       setJobAction({ id: job.id, action, bulk: true, completed: index, total: targets.length });
       try {
         const jobUrl = `/api/jobs/${encodeURIComponent(job.id)}`;
-        await request(action === 'rerun' ? `${jobUrl}/rerun` : jobUrl, { method: action === 'rerun' ? 'POST' : 'DELETE' });
+        await request(action === 'delete' ? jobUrl : `${jobUrl}/${action}`, { method: action === 'delete' ? 'DELETE' : 'POST' });
         if (action === 'delete') playback.removeJob(job.id);
         selectJobs([job.id], false);
         succeeded += 1;
@@ -559,7 +562,7 @@ function JobsPage({ tab = 'tasks' }) {
         {actionError && <div className="notice error" role="alert"><CircleAlert size={16} />{actionError}</div>}
         {playlistMessage && <div className="notice success" role="status"><Check size={16} />{playlistMessage}</div>}
         {bulkResult && <div className={`notice ${bulkResult.failures.length ? 'error' : 'success'} job-bulk-result`} role={bulkResult.failures.length ? 'alert' : 'status'}>
-          <span>{bulkResult.succeeded} of {bulkResult.total} {bulkResult.total === 1 ? 'job' : 'jobs'} {bulkResult.action === 'delete' ? 'deleted' : 'submitted for rerun'}.</span>
+          <span>{bulkResult.succeeded} of {bulkResult.total} {bulkResult.total === 1 ? 'job' : 'jobs'} {bulkResult.action === 'delete' ? 'deleted' : bulkResult.action === 'stop' ? 'stopped' : 'submitted for rerun'}.</span>
           {bulkResult.failures.length > 0 && <ul>{bulkResult.failures.map((failure) => <li key={failure.id}><strong>{failure.title}:</strong> {failure.message}</li>)}</ul>}
         </div>}
         {selectingJobs && <div className="job-selection-toolbar">
@@ -573,6 +576,9 @@ function JobsPage({ tab = 'tasks' }) {
             title={selectedJobs.length && !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun')) ? 'All selected jobs must be idle, non-imported jobs you can rerun' : 'Rerun selected jobs'}
             disabled={Boolean(jobAction) || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, 'rerun'))}
             onClick={() => runSelectedJobAction('rerun')}><RotateCcw size={18} /></button>
+          <button className="music-icon-button" type="button" aria-label="Stop selected jobs"
+            title="Stop selected jobs" disabled={Boolean(jobAction) || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, 'stop'))}
+            onClick={() => runSelectedJobAction('stop')}><Square size={18} /></button>
           <button className="music-icon-button job-bulk-delete" type="button" aria-label="Delete selected jobs"
             title={selectedJobs.length && !selectedJobs.every((job) => canRunJobAction(user, job, 'delete')) ? 'All selected jobs must be idle jobs you own or administer' : 'Delete selected jobs'}
             disabled={Boolean(jobAction) || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, 'delete'))}
@@ -603,9 +609,9 @@ function JobsPage({ tab = 'tasks' }) {
                 <tr key={job.id} className={selectingJobs && selectedJobIds.has(job.id) ? 'job-selected' : undefined}>
                   {selectingJobs && <td className="job-selection-cell"><label className="job-select-row"><input type="checkbox" aria-label={`Select job ${job.playlistTitle || job.id}`}
                     checked={selectedJobIds.has(job.id)} disabled={Boolean(jobAction)} onChange={(event) => selectJobs([job.id], event.target.checked)} /></label></td>}
-                  <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong>{job.playlistTitle || 'Preparing playlist'}</strong><small>{job.id}</small></div></a></td>
+                  <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong title={job.playlistTitle || 'Preparing playlist'}>{job.playlistTitle || 'Preparing playlist'}</strong><small title={job.id}>{job.id}</small></div></a></td>
                   <td className="job-column-format">{job.isPlaylist ? 'Playlist' : 'Track'}</td>
-                  <td><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} /></td>
+                  <td><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} commandProgress={job.commandProgress} /></td>
                   <td className="job-column-created">{formatDate(job.createdAt)}</td>
                   <td>{job.isPlaylist ? (job.playlistSongCount ?? '-') : 1}</td>
                   <td>{countDownloadedFiles(job.files)}</td>
@@ -617,6 +623,9 @@ function JobsPage({ tab = 'tasks' }) {
                       disabled={Boolean(jobAction) || !(job.files || []).some(isPlayableFile)}
                       onClick={() => { setPlaylistMessage(''); setAddingJob(job); }}><ListPlus size={17} /></button>}
                     {canModifyJob(user, job) && <>
+                    {canRunJobAction(user, job, 'stop') && <button className="icon-link" type="button" title="Stop job" aria-label={`Stop job ${job.id}`} disabled={Boolean(jobAction)} onClick={() => runJobAction(job, 'stop')}>
+                      {jobAction?.id === job.id && jobAction.action === 'stop' ? <RefreshCw className="spin" size={17} /> : <Square size={17} />}
+                    </button>}
                     {!job.source && <button className="icon-link" type="button" title="Rerun job" aria-label={`Rerun job ${job.id}`} disabled={Boolean(jobAction) || !canRunJobAction(user, job, 'rerun')} onClick={() => runJobAction(job, 'rerun')}>
                       {jobAction?.id === job.id && jobAction.action === 'rerun' ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
                     </button>}
@@ -718,6 +727,7 @@ function JobPage({ id }) {
   ]);
   const { data, error } = usePolling(loadJob, POLL_INTERVAL, `${id}:${fileRevision}`);
   const [rerunning, setRerunning] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deletingFiles, setDeletingFiles] = useState({});
   const [editingContributors, setEditingContributors] = useState(false);
@@ -737,7 +747,7 @@ function JobPage({ id }) {
   const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
   const canModify = canModifyJob(user, job);
   const canManage = canManageJob(user, job);
-  const transcriptionDisabled = !canModify || isActive || rerunning || deleting || editingContributors || savingTitle || savingPrivacy;
+  const transcriptionDisabled = !canModify || isActive || rerunning || stopping || deleting || editingContributors || savingTitle || savingPrivacy;
   const mutationDisabled = transcriptionDisabled || hasPendingTranscription || Object.keys(pendingTranscriptions).length > 0 || Object.keys(deletingFiles).length > 0 || transcribingFile !== null;
 
   async function savePrivacy(file = null) {
@@ -807,6 +817,19 @@ function JobPage({ id }) {
       });
       setFileRevision((revision) => revision + 1);
     }
+  }
+
+  async function stop() {
+    if (stopping || !canRunJobAction(user, job, 'stop')) return;
+    if (!await confirm({ title: 'Stop job?', message: `Stop ${job.playlistTitle || job.id}? Downloaded files and process output will be kept.`, action: 'stop' })) return;
+    setStopping(true);
+    setActionError('');
+    try {
+      await request(`/api/jobs/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+      setFileRevision((revision) => revision + 1);
+    } catch (requestError) {
+      setActionError(requestError.message);
+    } finally { setStopping(false); }
   }
 
   async function rerun() {
@@ -887,11 +910,15 @@ function JobPage({ id }) {
           <div>
             <p className="eyebrow">{job.source ? 'Music import' : job.isPlaylist ? 'Playlist download' : 'Track download'}</p>
             <h1>{job.playlistTitle || 'Preparing playlist'}</h1>
-            <div className="detail-meta"><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} /><span>Created {formatDate(job.createdAt)}</span>{job.private && <span><Lock size={14} /> Private — owner only</span>}</div>
+            <div className="detail-meta"><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} commandProgress={job.commandProgress} /><span>Created {formatDate(job.createdAt)}</span>{job.private && <span><Lock size={14} /> Private — owner only</span>}</div>
           </div>
           <div className="detail-actions">
             <div className="record-art"><Disc3 size={70} strokeWidth={1.2} /></div>
             {canModify && <>
+            {canRunJobAction(user, job, 'stop') && <button className="secondary-button job-action-button" disabled={stopping} onClick={stop} type="button">
+              {stopping ? <RefreshCw className="spin" size={17} /> : <Square size={17} />}
+              {stopping ? 'Stopping' : 'Stop job'}
+            </button>}
             {!job.source && <button className="primary-button job-action-button" disabled={mutationDisabled} onClick={rerun} type="button">
               {rerunning ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
               {rerunning ? 'Starting' : 'Rerun job'}
@@ -1426,9 +1453,28 @@ function AdminSharedLinksPage() {
 }
 
 function AdminJobsQueuePage() {
+  const { user } = useContext(AuthContext);
+  const { confirm, dialog } = useConfirmation();
+  const [stoppingId, setStoppingId] = useState(null);
+  const [actionError, setActionError] = useState('');
   const [revision, setRevision] = useState(0);
   const { data, error } = usePolling(loadJobQueue, 2000, revision);
-  return <AppShell jobsTab="queue"><AdminJobQueue data={data} error={error} onRefresh={() => setRevision((value) => value + 1)} /></AppShell>;
+  async function stop(job) {
+    if (stoppingId || !canRunJobAction(user, job, 'stop')) return;
+    if (!await confirm({ title: 'Stop job?', message: `Stop ${job.playlistTitle || job.id}? Downloaded files and process output will be kept.`, action: 'stop' })) return;
+    setStoppingId(job.id);
+    setActionError('');
+    try {
+      await request(`/api/jobs/${encodeURIComponent(job.id)}/stop`, { method: 'POST' });
+      setRevision((value) => value + 1);
+    } catch (requestError) {
+      setActionError(requestError.message);
+    } finally { setStoppingId(null); }
+  }
+  return <AppShell jobsTab="queue">{dialog}
+    {actionError && <p className="notice error" role="alert"><CircleAlert size={16} />{actionError}</p>}
+    <AdminJobQueue data={data} error={error} onRefresh={() => setRevision((value) => value + 1)} onStop={stop} stoppingId={stoppingId} />
+  </AppShell>;
 }
 
 function AdminPage() {

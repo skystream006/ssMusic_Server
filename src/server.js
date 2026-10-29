@@ -8,7 +8,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, getLiveJobOutput, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, transcribeJobFile } from './jobManager.js';
+import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, getLiveJobOutput, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, stopJob, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
@@ -763,6 +763,16 @@ app.get('/api/jobs/:id/contributors/users', async (req, res) => {
 app.put('/api/jobs/:id/contributors', async (req, res) => {
   try {
     const job = await setJobContributors(req.params.id, req.body?.userIds, req.user);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    return res.json(visibleJob(job, req.user));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/jobs/:id/stop', async (req, res) => {
+  try {
+    const job = await stopJob(req.params.id, req.user);
     if (!job) return res.status(404).json({ error: 'Job not found' });
     return res.json(visibleJob(job, req.user));
   } catch (error) {

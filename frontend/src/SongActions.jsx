@@ -168,6 +168,8 @@ export function canEditSong(user, job) {
 }
 
 export function canRunJobAction(user, job, action) {
+  if (action === 'stop') return Boolean(job && !job.source && !job.hidden && ['queued', 'running'].includes(job.status)
+    && canManageJob(user, job) && (!job.private || job.initiatedBy?.id === user.id));
   if (!job || job.status === 'queued' || job.status === 'running') return false;
   if (action === 'delete') return canManageJob(user, job);
   if (action === 'rerun') return !job.source && canModifyJob(user, job);

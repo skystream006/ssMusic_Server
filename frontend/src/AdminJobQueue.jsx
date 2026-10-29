@@ -1,8 +1,8 @@
-import { CircleAlert, Clock3, ExternalLink, ListOrdered, Lock, RefreshCw } from 'lucide-react';
+import { CircleAlert, Clock3, ExternalLink, ListOrdered, Lock, RefreshCw, Square } from 'lucide-react';
 import { formatDate } from './SongActions.jsx';
 import StatusBadge from './StatusBadge.jsx';
 
-function QueueJobRow({ job }) {
+function QueueJobRow({ job, onStop, stoppingId }) {
   return <li className="queue-job-row">
     <div className="queue-job-details">
       {job.hidden ? <strong className="queue-job-title"><Lock size={15} />Private job</strong> : <>
@@ -22,11 +22,16 @@ function QueueJobRow({ job }) {
         <span>{job.status === 'queued' ? 'Queued' : 'Started'} <time dateTime={job.updatedAt}>{formatDate(job.updatedAt)}</time></span></>}
       {job.pausedUntil && <span>Resumes <time dateTime={job.pausedUntil}>{formatDate(job.pausedUntil)}</time></span>}
     </div>
-    <div className="queue-job-state"><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} /></div>
+    <div className="queue-job-state"><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} commandProgress={job.commandProgress} />
+      {onStop && !job.hidden && ['queued', 'running'].includes(job.status) && <button className="music-icon-button" type="button"
+        title="Stop job" aria-label={`Stop job ${job.id}`} disabled={Boolean(stoppingId)} onClick={() => onStop(job)}>
+        {stoppingId === job.id ? <RefreshCw className="spin" size={17} /> : <Square size={17} />}
+      </button>}
+    </div>
   </li>;
 }
 
-export default function AdminJobQueue({ data, error = '', onRefresh }) {
+export default function AdminJobQueue({ data, error = '', onRefresh, onStop, stoppingId }) {
   const loading = !data && !error;
   return <>
     <section className="page-heading admin-heading queue-heading">
@@ -42,12 +47,12 @@ export default function AdminJobQueue({ data, error = '', onRefresh }) {
     {data && <>
       <section className="admin-job-queue" aria-labelledby="running-job-heading">
         <div className="section-title"><div><Clock3 size={19} /><h2 id="running-job-heading">{data.running?.pausedUntil ? 'Paused job' : 'Running job'}</h2></div><strong role="status">{data.running ? '1 / 1' : '0 / 1'}</strong></div>
-        {data.running ? <ul className="queue-job-list"><QueueJobRow job={data.running} /></ul>
+        {data.running ? <ul className="queue-job-list"><QueueJobRow job={data.running} onStop={onStop} stoppingId={stoppingId} /></ul>
           : <div className="empty-state compact"><Clock3 size={28} /><h3>No jobs running</h3></div>}
       </section>
       <section className="admin-job-queue" aria-labelledby="queued-jobs-heading">
         <div className="section-title"><div><ListOrdered size={19} /><h2 id="queued-jobs-heading">Queued jobs</h2></div><strong role="status">{data.queued.length}</strong></div>
-        {data.queued.length ? <ol className="queue-job-list">{data.queued.map((job) => <QueueJobRow key={job.id || `queued-${job.queuePosition}`} job={job} />)}</ol>
+        {data.queued.length ? <ol className="queue-job-list">{data.queued.map((job) => <QueueJobRow key={job.id || `queued-${job.queuePosition}`} job={job} onStop={onStop} stoppingId={stoppingId} />)}</ol>
           : <div className="empty-state compact"><ListOrdered size={28} /><h3>No jobs queued</h3></div>}
       </section>
     </>}

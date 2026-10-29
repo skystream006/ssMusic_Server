@@ -62,8 +62,11 @@ conflicting changes to the same files or playlists still apply.
 
 Before a playlist download starts, its metadata is checked for the total item
 count and song list. Playlists with more than 100 items run a separate yt-dlp
-command with `--no-playlist` for each song, in playlist order, with a fixed
-10-second wait between songs. This applies to audio and video; commands share
+command with `--no-playlist` for each song, in playlist order, normally with a
+10-second wait between songs. If a command reports `has already been downloaded`
+in stdout or stderr (case-insensitive), the next song starts without that wait.
+Later commands without that message retain the normal delay. This applies to
+audio and video; commands share
 the job's output folder, download archive, and format options. No yt-dlp
 `--sleep-interval` or `--max-sleep-interval` flags are added. If a large playlist's
 song list cannot be retrieved, the job fails instead of downloading it as one
@@ -71,11 +74,34 @@ playlist-wide command. Playlists with 100 or fewer items keep the normal
 single-command behavior. Metadata-only jobs do not download songs or wait
 between them.
 
+Large-playlist status badges show **Commands: completed / total** in Recent Jobs,
+job details, and Jobs Queue. The counter advances once per finished song command,
+including failures and skips, but not during cooldown retries. The total is the
+reported playlist item count, not the downloaded-file count. Progress is saved as
+`commandProgress: { completed, total }` and resets on an explicit manual rerun.
+
 Administrators can track the running job and waiting jobs under **Jobs > Jobs
 Queue** (`/admin/jobs-queue`), refreshed every two seconds. The admin-only
 `GET /api/admin/jobs-queue` endpoint returns `{ running, queued, maintenance,
 rateLimit }`. Private jobs owned by someone else expose only an occupied slot
 and queue position, without identifying details.
+
+Owners and administrators can choose **Stop job** in Recent Jobs, job details,
+or the admin Jobs Queue. Recent Jobs also supports **Stop selected jobs**.
+Confirmation is required. Stop works for queued downloads, active metadata or
+download commands, the delay between songs, and rate-limit-paused jobs. It kills
+the active process tree or cancels its wait, removes queued jobs immediately,
+and marks the job **Stopped**. Downloaded files, the archive, progress counter,
+last command, and accumulated process output are retained. The next queued job
+can start once any server cooldown or maintenance gate permits. Stopping a job
+does not lift a server cooldown or cancel imports, transcription, or maintenance.
+Contributors and shared accounts cannot stop jobs; private-job protections remain
+in effect. A stopped job can be explicitly rerun or deleted using the normal controls.
+
+`POST /api/jobs/:id/stop` accepts the usual session, PAT, or mobile credentials and
+returns HTTP 200 with the saved job (`status: "stopped"`) once it has stopped.
+Missing jobs return 404, unauthorized actions return 403, and inactive/imported
+jobs or conflicting changes return 409. Unauthenticated requests return 401.
 
 On a job's details page, administrators can select **Live output** beside
 **Process output** to open a full-screen dialog. It refreshes once per second
@@ -1331,8 +1357,9 @@ Contributor access is per job, not an account role.
 
 Administrators retain full control over every job, including contributor management
 and older jobs without a recorded owner. The original initiating user remains the
-owner after any rerun. Permissions also apply to PAT requests. Queued/running jobs
-cannot be modified, including their contributors, even by administrators.
+owner after any rerun. Permissions also apply to PAT requests. Apart from stopping
+them, queued/running jobs cannot be modified, including their contributors, even
+by administrators.
 
 The dashboard defaults to **My jobs (owned and contributing)** for every user,
 including administrators. **All users** and individual initiator filters remain
@@ -1344,7 +1371,7 @@ is shared by multiple jobs, non-admin users need permission for the requested ac
 on every job sharing the folder.
 
 Jobs are persisted in PostgreSQL and restored after server restarts. Jobs show
-queued/running/completed/partially completed/failed status; any active job interrupted by a restart
+queued/running/completed/partially completed/failed/stopped status; any active job interrupted by a restart
 is restored as failed so it can be rerun safely.
 Private or unavailable videos skipped by yt-dlp produce a partially completed job rather than a failed job.
 Downloaded files are written under `./output/<job-folder>/` and can be downloaded from the job details page.

@@ -605,13 +605,24 @@ test('job action eligibility respects owners, contributors, administrators, acti
     for (const status of ['queued', 'running']) {
       for (const user of [owner, contributor, admin]) assert.equal(canRunJobAction(user, { ...job, status }, action), false);
     }
-    for (const status of ['completed', 'partially_completed', 'failed']) assert.equal(canRunJobAction(owner, { ...job, status }, action), true);
+    for (const status of ['completed', 'partially_completed', 'failed', 'stopped']) assert.equal(canRunJobAction(owner, { ...job, status }, action), true);
   }
   for (const source of ['files', 'itunes']) {
     assert.equal(canRunJobAction(admin, { ...job, source }, 'rerun'), false);
     assert.equal(canRunJobAction(owner, { ...job, source }, 'delete'), true);
   }
   assert.equal(canRunJobAction(owner, job, 'unknown'), false);
+  for (const status of ['queued', 'running']) {
+    const active = { ...job, status, pausedUntil: '2026-10-29T12:00:00Z' };
+    for (const user of [owner, admin]) assert.equal(canRunJobAction(user, active, 'stop'), true);
+    for (const user of [contributor, viewer, { ...owner, role: 'shared' }, null]) assert.equal(canRunJobAction(user, active, 'stop'), false);
+    assert.equal(canRunJobAction(admin, { ...active, private: true }, 'stop'), false);
+    assert.equal(canRunJobAction(owner, { ...active, private: true }, 'stop'), true);
+    assert.equal(canRunJobAction(admin, { ...active, hidden: true }, 'stop'), false);
+    assert.equal(canRunJobAction(owner, { ...active, source: 'files' }, 'stop'), false);
+  }
+  for (const status of ['completed', 'partially_completed', 'failed', 'stopped']) assert.equal(canRunJobAction(owner, { ...job, status }, 'stop'), false);
+  assert.equal(canRunJobAction(owner, null, 'stop'), false);
 });
 
 function renderExportDialog() {

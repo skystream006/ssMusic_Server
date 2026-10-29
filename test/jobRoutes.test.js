@@ -300,7 +300,7 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     }
   });
 
-  await context.test('server cooldown accepts queued jobs and reruns for session, PAT and mobile clients', async () => {
+  await context.test('server cooldown accepts queued jobs and reruns for session, PAT and mobile clients', async (cooldownContext) => {
     assert.deepEqual((await call('/api/jobs/status', 'GET', credentials.Owner[0])).body,
       { limited: false, reenabledAt: null, message: null });
     const until = Date.now() + 65 * 60 * 1000;
@@ -366,6 +366,34 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     const queue = (await call('/api/admin/jobs-queue', 'GET', credentials.Admin[0])).body;
     assert.equal(queue.running, null);
     assert.deepEqual(queue.queued.map((job) => job.id), queuedIds);
+    await cooldownContext.test('job stop endpoint enforces ownership and stops queued jobs for session, PAT and mobile clients', async () => {
+      const ownerJob = queue.queued.find((job) => job.initiatedBy?.id === users.Owner.id);
+      assert.ok(ownerJob);
+      const stopPath = `/api/jobs/${ownerJob.id}/stop`;
+      assert.equal((await call(stopPath, 'POST')).status, 401);
+      for (const headers of [...credentials.Other, ...credentials.Reader, mobileHeaders.Reader]) {
+        assert.equal((await call(stopPath, 'POST', headers)).status, 403);
+      }
+      assert.equal((await call('/api/jobs/missing/stop', 'POST', credentials.Admin[0])).status, 404);
+      assert.equal((await call('/api/jobs/owned/stop', 'POST', credentials.Owner[0])).status, 409);
+      for (const [index, { headers }] of clients.entries()) {
+        for (const id of queuedIds.slice(index * 2, index * 2 + 2)) {
+          const result = await call(`/api/jobs/${id}/stop`, 'POST', headers);
+          assert.equal(result.status, 200, result.text);
+          assert.equal(result.body.status, 'stopped');
+          assert.equal(result.body.error, null);
+          assert.equal(result.body.queuePosition, undefined);
+          assert.match(result.body.output, /Stopped by user/);
+          assert.equal((await call(`/api/jobs/${id}/stop`, 'POST', headers)).status, 409);
+          const saved = await call(`/api/jobs/${id}`, 'GET', headers);
+          assert.equal(saved.body.status, 'stopped');
+        }
+      }
+      const stoppedQueue = (await call('/api/admin/jobs-queue', 'GET', credentials.Admin[0])).body;
+      assert.equal(stoppedQueue.running, null);
+      assert.deepEqual(stoppedQueue.queued, []);
+      assert.equal(stoppedQueue.rateLimit.limited, true);
+    });
     for (const id of queuedIds) await openDatabase().prepare('DELETE FROM jobs WHERE id = $1').run(id);
     await openDatabase().prepare("DELETE FROM job_server_state WHERE key = 'jobsDisabledUntil'").run();
     await closeDatabases();
