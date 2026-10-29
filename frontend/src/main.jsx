@@ -214,7 +214,7 @@ function ThemeDialog({ onClose }) {
   </dialog>;
 }
 
-function AppShell({ children, section = 'jobs' }) {
+function AppShell({ children, section = 'jobs', jobsTab }) {
   const { user, logout } = useContext(AuthContext);
   const [choosingTheme, setChoosingTheme] = useState(false);
   useEffect(() => { document.title = section === 'music' ? `${user.name}'s Music` : `${section.charAt(0).toUpperCase()}${section.slice(1)} | ssMusicServer`; }, [section, user.name]);
@@ -250,7 +250,11 @@ function AppShell({ children, section = 'jobs' }) {
         {section === 'admin' && <nav className="admin-tabs" aria-label="Administration">
           <a href="/admin" aria-current={window.location.pathname === '/admin' ? 'page' : undefined}><Users size={17} />Users</a>
           <a href="/admin/shared-links" aria-current={window.location.pathname === '/admin/shared-links' ? 'page' : undefined}><Share2 size={17} />Shared links</a>
-          <a href="/admin/jobs-queue" aria-current={window.location.pathname === '/admin/jobs-queue' ? 'page' : undefined}><Clock3 size={17} />Jobs Queue</a>
+        </nav>}
+        {jobsTab && user.role !== 'shared' && <nav className="admin-tabs" aria-label="Jobs navigation">
+          <a href="/job" aria-current={jobsTab === 'tasks' ? 'page' : undefined}><ListChecks size={17} />Tasks</a>
+          <a href="/job?tab=recent" aria-current={jobsTab === 'recent' ? 'page' : undefined}><ListMusic size={17} />Recent Jobs</a>
+          {user.role === 'admin' && <a href="/admin/jobs-queue" aria-current={jobsTab === 'queue' ? 'page' : undefined}><Clock3 size={17} />Jobs Queue</a>}
         </nav>}
         {children}
       </main>
@@ -304,7 +308,7 @@ function BackupJobStatus() {
   </section>;
 }
 
-function JobsPage() {
+function JobsPage({ tab = 'tasks' }) {
   const playback = usePlayback();
   const { user } = useContext(AuthContext);
   const { confirm, dialog } = useConfirmation();
@@ -460,7 +464,7 @@ function JobsPage() {
   }, {});
 
   return (
-    <AppShell>
+    <AppShell jobsTab={tab}>
       {dialog}
       {jobRateLimit?.limited && <div className="notice warning page-notice" role="alert"><CircleAlert size={16} />{jobRateLimit.message}</div>}
       {importing && <ImportMusic user={user} request={request} onClose={() => setImporting(false)} onImported={() => setRevision((current) => current + 1)} />}
@@ -475,7 +479,7 @@ function JobsPage() {
           <p>Your local media archive.</p>
         </div>
         <div className="jobs-heading-actions">
-          <button className="secondary-button" type="button" onClick={() => setImporting(true)}><Upload size={17} />Import media</button>
+          {tab === 'tasks' && <button className="secondary-button" type="button" onClick={() => setImporting(true)}><Upload size={17} />Import media</button>}
           <div className="queue-summary" aria-label="Queue summary">
           <div><strong>{jobs ? filteredJobs.length : '-'}</strong><span>Total</span></div>
           <div><strong>{counts.running || 0}</strong><span>Active</span></div>
@@ -484,7 +488,7 @@ function JobsPage() {
         </div>
       </section>
 
-      <section className="create-panel" aria-labelledby="create-heading">
+      {tab === 'tasks' && <><section className="create-panel" aria-labelledby="create-heading">
         <div className="panel-index">01</div>
         <div className="create-copy">
           <h2 id="create-heading">Start a download</h2>
@@ -522,11 +526,11 @@ function JobsPage() {
         {message && <div className={`notice ${message.type}`} role="status">{message.text}</div>}
       </section>
 
-      <BackupJobStatus />
+      <BackupJobStatus /></>}
 
-      <section className="jobs-section">
+      {tab === 'recent' && <section className="jobs-section">
         <div className="section-title">
-          <div><span>03</span><h2>Recent jobs</h2>
+          <div><span>01</span><h2>Recent Jobs</h2>
             <button className="music-icon-button" type="button" title="Select jobs" aria-label="Select jobs" aria-pressed={selectingJobs}
               disabled={(!selectingJobs && !jobs?.length) || Boolean(jobAction)} onClick={() => { setSelectingJobs(!selectingJobs); setSelectedJobIds(new Set()); }}><ListChecks size={19} /></button>
           </div>
@@ -626,7 +630,7 @@ function JobsPage() {
             </table>
           </div>
         )}
-      </section>
+      </section>}
     </AppShell>
   );
 }
@@ -831,7 +835,7 @@ function JobPage({ id }) {
     try {
       await request(`/api/jobs/${id}`, { method: 'DELETE' });
       playback.removeJob(id);
-      navigate('/job');
+      navigate('/job?tab=recent');
     } catch (requestError) {
       setActionError(requestError.message);
       setDeleting(false);
@@ -861,7 +865,7 @@ function JobPage({ id }) {
   return (
     <AppShell>
       {dialog}
-      <a className="back-link" href="/job"><ArrowLeft size={17} /> Back to jobs</a>
+      <a className="back-link" href="/job?tab=recent"><ArrowLeft size={17} /> Back to jobs</a>
       {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
       {sharingFile && <ShareMediaDialog file={{ ...sharingFile, private: getFilePrivacy(sharingFile, job).private }} jobId={id} request={request} onClose={() => setSharingFile(null)} />}
       {editingMetadata && <MetadataDialog file={editingMetadata} jobId={id} request={request} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
@@ -1424,7 +1428,7 @@ function AdminSharedLinksPage() {
 function AdminJobsQueuePage() {
   const [revision, setRevision] = useState(0);
   const { data, error } = usePolling(loadJobQueue, 2000, revision);
-  return <AppShell section="admin"><AdminJobQueue data={data} error={error} onRefresh={() => setRevision((value) => value + 1)} /></AppShell>;
+  return <AppShell jobsTab="queue"><AdminJobQueue data={data} error={error} onRefresh={() => setRevision((value) => value + 1)} /></AppShell>;
 }
 
 function AdminPage() {
@@ -1570,7 +1574,7 @@ function PageRoutes({ user }) {
   if (jobMatch) return <JobPage key={jobMatch[1]} id={decodeURIComponent(jobMatch[1])} />;
   if (window.location.pathname === '/health') return <HealthPage />;
   if (window.location.pathname === '/admin' && user.role === 'admin') return <AdminPage />;
-  if (/^\/job\/?$/.test(window.location.pathname)) return <JobsPage />;
+  if (/^\/job\/?$/.test(window.location.pathname)) return <JobsPage tab={new URLSearchParams(window.location.search).get('tab') === 'recent' ? 'recent' : 'tasks'} />;
   return <MusicHomePage />;
 }
 

@@ -29,10 +29,15 @@ application or repository name. No account or media data migration is required.
 
 ## Audio and video downloads
 
-On **Jobs > Start a download**, choose **Audio (MP3)** or **Video (MP4)** in
+On **Jobs > Tasks > Start a download**, choose **Audio (MP3)** or **Video (MP4)** in
 **Format**, paste a YouTube URL, and choose **Add job**. Audio remains the default.
 Standard YouTube, mobile YouTube, YouTube Music, and `youtu.be` links are accepted.
 Links containing a `list` query parameter download the complete playlist.
+
+The Jobs tabs are ordered **Tasks**, **Recent Jobs**, then **Jobs Queue**.
+Tasks (`/job`) contains downloads, imports, and library backup status.
+Recent Jobs (`/job?tab=recent`) contains the job list, filters, sorting, and job
+actions. Jobs Queue is the last tab and is visible only to administrators.
 
 Video jobs download video with audio, preferring MP4/M4A streams, and use FFmpeg
 to merge or remux the result to MP4. Reruns keep the original format. The same URL
@@ -61,7 +66,7 @@ count. Playlists with more than 100 items add
 both audio and video. Playlists with 100 or fewer items and single-video jobs do
 not receive these flags.
 
-Administrators can track the running job and waiting jobs under **Admin > Jobs
+Administrators can track the running job and waiting jobs under **Jobs > Jobs
 Queue** (`/admin/jobs-queue`), refreshed every two seconds. The admin-only
 `GET /api/admin/jobs-queue` endpoint returns `{ running, queued, maintenance,
 rateLimit }`. Private jobs owned by someone else expose only an occupied slot
