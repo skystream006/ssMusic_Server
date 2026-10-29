@@ -333,6 +333,8 @@ code { font: 400 11px 'DM Mono', monospace; }
 .output-panel { min-width: 0; }
 .output-panel pre { max-height: 440px; margin: 0; padding: 18px; overflow: auto; color: var(--ink); background: var(--field); border: 1px solid var(--line); font: 400 11px/1.65 'DM Mono', monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .output-panel .section-title { flex-wrap: wrap; gap: 12px; }
+.output-panel .section-title > div { flex-wrap: wrap; gap: 8px 12px; }
+.process-output-size { color: var(--muted); font: 400 11px 'DM Mono', monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .live-output-dialog { position: fixed; inset: 0; width: 100%; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 16px; border: 0; border-radius: 0; overflow: hidden; }
 .live-output-dialog[open] { display: flex; flex-direction: column; gap: 14px; }
 .live-output-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex: none; }

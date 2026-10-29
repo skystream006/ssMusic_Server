@@ -742,6 +742,7 @@ function JobPage({ id }) {
   const [transcriptionNotice, setTranscriptionNotice] = useState('');
   const [actionError, setActionError] = useState('');
   const job = data?.[0];
+  const outputSizeBytes = new Blob([job?.output || '']).size;
   const files = sortJobs(data?.[1]?.files || [], 'created', 'desc');
   const firstSong = files.find((file) => file.isPlayable);
   const isActive = job?.status === 'queued' || job?.status === 'running';
@@ -971,7 +972,9 @@ function JobPage({ id }) {
             {job.error && <div className="notice error"><CircleAlert size={16} />{job.error}</div>}
           </section>
           <section className="output-panel">
-            <div className="section-title"><div><span>02</span><h2>Process output</h2></div><LiveJobOutput job={job} user={user} request={request} /></div>
+            <div className="section-title"><div><span>02</span><h2>Process output</h2>
+              <small className="process-output-size" aria-label="Saved process output size" title={`${outputSizeBytes.toLocaleString()} bytes (UTF-8 text)`}>{formatBytes(outputSizeBytes)}</small>
+            </div><LiveJobOutput job={job} user={user} request={request} /></div>
             <pre>{job.output || (isActive ? 'Waiting for process output...' : 'No process output was captured.')}</pre>
           </section>
           <section className="files-panel">
