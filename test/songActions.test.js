@@ -39,6 +39,9 @@ let canEditSong;
 let canChangePlaylistPrivacy;
 let getFilePrivacy;
 let MusicPlayer;
+let NowPlayingPanel;
+let PlaybackQueueRow;
+let mergePlaybackMetadata;
 let PlaybackProvider;
 let readPlaybackSession;
 let writePlaybackSession;
@@ -56,7 +59,7 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -230,6 +233,108 @@ test('playback session persists a full queue, independently browsed page, modes 
   assert.equal(values.has('ssMusicPlaybackPosition:user'), false);
 });
 
+test('queue rating saves survive metadata responses arriving before or after the write', () => {
+  const track = { jobId: 'job', name: 'Song.mp3', streamUrl: '/stream/song', rating: 4 };
+  const snapshot = { rating: track.rating };
+  const readResult = { title: 'Updated title', rating: 4 };
+  const writeResult = { rating: 0 };
+  const writeFirst = mergePlaybackMetadata(mergePlaybackMetadata(track, writeResult), readResult, snapshot);
+  const readFirst = mergePlaybackMetadata(mergePlaybackMetadata(track, readResult, snapshot), writeResult);
+  for (const result of [writeFirst, readFirst]) {
+    assert.equal(result.rating, 0);
+    assert.equal(result.title, 'Updated title');
+    assert.equal(result.streamUrl, track.streamUrl);
+  }
+  assert.equal(mergePlaybackMetadata(track, { rating: 2 }, snapshot).rating, 2);
+  assert.equal(mergePlaybackMetadata({ rating: 0 }, { rating: 5 }, { rating: undefined }).rating, 0);
+  assert.equal(mergePlaybackMetadata({}, { rating: 5 }, { rating: undefined }).rating, 5);
+  assert.equal(mergePlaybackMetadata(null, readResult, snapshot).rating, 4);
+  assert.equal(track.rating, 4);
+});
+
+test('queue ratings expose separate editable stars only for owned, writable MP3 tracks', () => {
+  const track = { jobId: 'job', name: 'Song.mp3', title: 'Song', rating: 3,
+    sourceJob: { id: 'job', initiatedBy: { id: 'owner' }, status: 'completed' } };
+  const render = (overrides = {}) => renderToStaticMarkup(createElement(PlaybackQueueRow, {
+    track, number: 1, current: true, user: { id: 'owner', role: 'user' }, request() {}, onSelect() {}, onMetadataSaved() {}, ...overrides
+  }));
+  const stars = (html) => [...html.matchAll(/<button[^>]+aria-label="[1-5] of 5 stars"[^>]*>/g)].map((match) => match[0]);
+  const html = render();
+  assert.equal(stars(html).length, 5);
+  assert.match(html, /aria-label="3 of 5 stars" aria-pressed="true"/);
+  assert.match(html, /class="queue-song-row is-current"/);
+  assert.doesNotMatch(html.match(/<button class="queue-song-select"[\s\S]*?<\/button>/)[0], /song-rating/);
+  assert.equal(stars(render({ user: { id: 'owner', role: 'admin' } })).length, 5);
+  for (const overrides of [
+    { user: { id: 'other', role: 'admin' } }, { user: { id: 'owner', role: 'shared' } }, { user: null },
+    { track: { ...track, readOnly: true } }, { track: { ...track, sourceJob: undefined } }
+  ]) {
+    const readOnly = render(overrides);
+    assert.equal(stars(readOnly).length, 0);
+    assert.match(readOnly, /role="img" aria-label="3 of 5 stars"/);
+  }
+  for (const name of ['Movie.mp4', 'Song.wav']) assert.doesNotMatch(render({ track: { ...track, name } }), /song-rating/);
+  assert.equal(stars(render({ track: { ...track, sourceJob: undefined }, sourceJob: track.sourceJob })).length, 5);
+  for (const busy of [
+    { ...track, sourceJob: { ...track.sourceJob, status: 'running' } },
+    { ...track, transcription: { status: 'sent' } }
+  ]) assert.ok(stars(render({ track: busy })).every((button) => button.includes('disabled=""')));
+});
+
+test('closing now playing retains its content while making the departing sheet inert', () => {
+  const html = renderToStaticMarkup(createElement(NowPlayingPanel, {
+    panel: 'lyrics', expanded: false, wide: true, onChange() {},
+    player: 'Inactive player', lyrics: 'Retained lyrics', queue: 'Retained queue'
+  }));
+  assert.match(html, /class="now-playing-expanded is-wide is-closing"[^>]*inert=""[^>]*aria-hidden="true"/);
+  assert.match(html, /Retained lyrics/);
+  assert.match(html, /Retained queue/);
+  assert.doesNotMatch(html, /Inactive player/);
+});
+
+test('expanded now playing offers three narrow-screen tabs without mounting inactive player or lyrics content', () => {
+  for (const panel of ['player', 'lyrics', 'queue']) {
+    const html = renderToStaticMarkup(createElement(NowPlayingPanel, {
+      panel, onChange() {}, player: 'Album artwork and rating', lyrics: 'Timed and plain lyrics', queue: 'Queued songs'
+    }));
+    const tabs = [...html.matchAll(/<button[^>]+role="tab"[^>]*>/g)].map((match) => match[0]);
+    assert.equal(tabs.length, 3);
+    assert.match(tabs.find((tab) => tab.includes('aria-selected="true"')), new RegExp(`-${panel}-panel`));
+    assert.equal(html.includes('Album artwork and rating'), panel === 'player');
+    assert.equal(html.includes('Timed and plain lyrics'), panel === 'lyrics');
+    const queue = html.match(/<section class="expanded-queue"[^>]*>/)[0];
+    assert.match(queue, /role="tabpanel"/);
+    assert.equal(queue.includes('hidden=""'), panel !== 'queue');
+    assert.match(html, /aria-label="Collapse now playing"/);
+    assert.doesNotMatch(html, /<audio|<video/);
+  }
+});
+
+test('expanded now playing keeps the wide-screen queue visible beside only Player and Lyrics tabs', () => {
+  for (const panel of ['player', 'lyrics', 'queue']) {
+    const html = renderToStaticMarkup(createElement(NowPlayingPanel, {
+      panel, wide: true, onChange() {}, player: 'Album artwork and rating', lyrics: 'Timed and plain lyrics', queue: 'Queued songs'
+    }));
+    assert.match(html, /class="now-playing-expanded is-wide"/);
+    assert.equal([...html.matchAll(/role="tab" /g)].length, 2);
+    assert.doesNotMatch(html, /-queue-tab/);
+    const queue = html.match(/<section class="expanded-queue"[^>]*>/)[0];
+    assert.match(queue, /role="region"/);
+    assert.doesNotMatch(queue, /hidden/);
+    assert.equal(html.includes('Album artwork and rating'), panel !== 'lyrics');
+    assert.equal(html.includes('Timed and plain lyrics'), panel === 'lyrics');
+    assert.match(html, /Queued songs/);
+  }
+});
+
+test('expanded now playing keeps video playback available while disabling its lyrics tab', () => {
+  const html = renderToStaticMarkup(createElement(NowPlayingPanel, { panel: 'player', isVideo: true, onChange() {} }));
+  const tabs = [...html.matchAll(/<button[^>]+role="tab"[^>]*>/g)].map((match) => match[0]);
+  assert.match(tabs.find((tab) => tab.includes('-lyrics-tab')), /disabled=""/);
+  assert.doesNotMatch(tabs.find((tab) => tab.includes('-player-tab')), /disabled/);
+  assert.doesNotMatch(tabs.find((tab) => tab.includes('-queue-tab')), /disabled/);
+});
+
 test('restored playback does not open or render lyrics before a viewer requests them', () => {
   const previousWindow = globalThis.window;
   const song = { jobId: 'job', name: 'Song.mp3', title: 'Song', artist: 'Artist',
@@ -243,8 +348,9 @@ test('restored playback does not open or render lyrics before a viewer requests 
       userId: 'viewer', request() { assert.fail('Rendering does not request lyrics'); }
     }, createElement(MusicPlayer, { id: 'job' })));
     assert.match(html, /Show lyrics/);
+    assert.match(html, /aria-label="Expand now playing" aria-expanded="false"/);
     assert.match(html, /src="\/artwork\/song" alt="Album cover"/);
-    assert.doesNotMatch(html, /class="music-lyrics"|Loading lyrics|No SYLT lyrics embedded/);
+    assert.doesNotMatch(html, /class="music-lyrics"|class="now-playing-expanded|Loading lyrics|No SYLT lyrics embedded/);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -838,13 +944,13 @@ test('privacy changes require ownership, never contributor, linked or administra
   }
 });
 
-test('application privacy setting hides new private actions but preserves owner public actions', () => {
+test('application privacy setting preserves admin private actions and owner public actions', () => {
   const job = { id: 'playlist', initiatedBy: { id: 'owner' }, privateFiles: ['Secret.mp3'] };
   for (const role of ['user', 'admin', 'ExtServer']) {
     const user = { id: 'owner', role, privateItemsEnabled: false };
-    assert.equal(canChangePrivacy(user, job), false);
+    assert.equal(canChangePrivacy(user, job), role === 'admin');
     assert.equal(canChangePrivacy(user, { ...job, private: true }), true);
-    assert.equal(canChangePrivacy(user, job, false, { name: 'Public.mp3' }), false);
+    assert.equal(canChangePrivacy(user, job, false, { name: 'Public.mp3' }), role === 'admin');
     assert.equal(canChangePrivacy(user, job, false, { name: 'Secret.mp3' }), true);
     assert.equal(canChangePrivacy(user, job, false, { name: 'Other.mp3', private: true }), true);
     assert.equal(canChangePrivacy(user, { ...job, private: true }, true), false);
@@ -852,7 +958,7 @@ test('application privacy setting hides new private actions but preserves owner 
     assert.equal(canChangePrivacy({ ...user, privateItemsEnabled: true }, job), true);
     for (const id of ['individual-songs', 'individual-videos']) {
       const playlist = { id, protected: true };
-      assert.equal(canChangePlaylistPrivacy(user, playlist, 'owner'), false);
+      assert.equal(canChangePlaylistPrivacy(user, playlist, 'owner'), role === 'admin');
       assert.equal(canChangePlaylistPrivacy(user, { ...playlist, private: true }, 'owner'), true);
     }
   }

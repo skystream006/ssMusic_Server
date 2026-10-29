@@ -144,7 +144,7 @@ export function canManageJob(user, job) {
 export function canChangePrivacy(user, job, readOnly = false, file = null) {
   const isPrivate = file ? getFilePrivacy(file, job).private : job?.private === true;
   return Boolean(!readOnly && user?.id && user.role !== 'shared' && user.id === job?.initiatedBy?.id
-    && (user.privateItemsEnabled !== false || isPrivate));
+    && (user.role === 'admin' || user.privateItemsEnabled !== false || isPrivate));
 }
 
 export function canChangePlaylistPrivacy(user, playlist, libraryOwnerId, readOnly = false) {

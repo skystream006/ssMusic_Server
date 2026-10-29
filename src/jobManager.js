@@ -1057,7 +1057,7 @@ async function setPrivacy(id, name, value, user) {
       || (!job.files?.includes(name) && (value || !job.privateFiles?.includes(name))))) {
       throw Object.assign(new Error('Song not found'), { statusCode: 404 });
     }
-    await assertPrivacyEnabled(database, value);
+    await assertPrivacyEnabled(database, value, user);
     const directory = job.outputDir && (await fs.realpath(job.outputDir).catch(() => path.resolve(job.outputDir)));
     const candidates = directory ? await database.prepare(`SELECT id, status, data->>'outputDir' AS output_dir
       FROM jobs WHERE data->>'outputDir' IS NOT NULL`).all() : [job];

@@ -19,10 +19,11 @@ export function createNavigationHistory(browser) {
 
   let currentPage = pageState().page;
   let currentURL = browser.location.href;
-  let lyricsOpen = pageState().lyrics;
+  const savedPanel = (state = pageState()) => state.panel ?? (state.lyrics ? 'lyrics' : null);
+  let playerPanel = savedPanel();
 
   function notify(routeChanged = false) {
-    for (const listener of listeners) listener({ routeChanged, lyricsOpen });
+    for (const listener of listeners) listener({ routeChanged, lyricsOpen: playerPanel === 'lyrics', playerPanel });
   }
 
   function updateListener() {
@@ -32,22 +33,22 @@ export function createNavigationHistory(browser) {
     listening = needed;
   }
 
-  function pushLyrics() {
-    browser.history.pushState({
+  function writePanel(method = 'pushState') {
+    browser.history[method]({
       ...browser.history.state,
-      [historyKey]: { ...pageState(), lyrics: true }
+      [historyKey]: { ...pageState(), lyrics: playerPanel === 'lyrics', panel: playerPanel }
     }, '');
   }
 
   function navigate(destination) {
-    lyricsOpen = false;
+    playerPanel = null;
     if (closing) {
       // Wait for our asynchronous Back before pushing a new route.
       destinationAfterClose = destination;
       notify();
       return;
     }
-    const replace = pageState().lyrics;
+    const replace = Boolean(savedPanel());
     currentPage = `${Date.now()}-${Math.random()}`;
     browser.history[replace ? 'replaceState' : 'pushState']({
       [historyKey]: { page: currentPage, lyrics: false }
@@ -59,8 +60,9 @@ export function createNavigationHistory(browser) {
 
   function onPopState() {
     const state = pageState();
+    const panel = savedPanel(state);
     // Synthetic popstate events must not complete a pending history.back().
-    if (closing && state.page === currentPage && state.lyrics && browser.location.href === currentURL) return;
+    if (closing && state.page === currentPage && panel && browser.location.href === currentURL) return;
     const routeChanged = state.page !== currentPage || browser.location.href !== currentURL;
     currentPage = state.page;
     currentURL = browser.location.href;
@@ -74,11 +76,24 @@ export function createNavigationHistory(browser) {
         return;
       }
       // A rapid reopen must wait until Back has consumed the old overlay entry.
-      if (lyricsOpen && !routeChanged && !state.lyrics) pushLyrics();
-      else lyricsOpen = Boolean(state.lyrics);
-    } else lyricsOpen = Boolean(state.lyrics);
+      if (playerPanel && !routeChanged && !panel) writePanel();
+      else playerPanel = panel;
+    } else playerPanel = panel;
     notify(routeChanged);
     updateListener();
+  }
+
+  function setPlayerPanel(panel) {
+    playerPanel = panel;
+    if (!closing) {
+      if (panel) writePanel(savedPanel() ? 'replaceState' : 'pushState');
+      else if (savedPanel()) {
+        closing = true;
+        updateListener();
+        browser.history.back();
+      }
+    }
+    notify();
   }
 
   return {
@@ -88,27 +103,17 @@ export function createNavigationHistory(browser) {
       browser.history.replaceState(browser.history.state, '', destination);
       currentURL = browser.location.href;
     },
-    setLyricsOpen(open) {
-      lyricsOpen = open;
-      if (!closing) {
-        if (open && !pageState().lyrics) pushLyrics();
-        else if (!open && pageState().lyrics) {
-          closing = true;
-          updateListener();
-          browser.history.back();
-        }
-      }
-      notify();
-    },
+    setLyricsOpen(open) { setPlayerPanel(open ? 'lyrics' : null); },
+    setPlayerPanel,
     subscribe(listener) {
       if (!listening) {
         currentPage = pageState().page;
         currentURL = browser.location.href;
-        lyricsOpen = Boolean(pageState().lyrics);
+        playerPanel = savedPanel();
       }
       listeners.add(listener);
       updateListener();
-      listener({ routeChanged: false, lyricsOpen });
+      listener({ routeChanged: false, lyricsOpen: playerPanel === 'lyrics', playerPanel });
       return () => { listeners.delete(listener); updateListener(); };
     }
   };

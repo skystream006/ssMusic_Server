@@ -22,6 +22,8 @@ test('application privacy setting defaults enabled, persists and never exposes e
   }
   assert.deepEqual(await setPrivacySettings(database, false), { privateItemsEnabled: false });
   await assert.rejects(assertPrivacyEnabled(database, true), { statusCode: 403 });
+  await assert.rejects(assertPrivacyEnabled(database, true, { id: 'owner', role: 'user' }), { statusCode: 403 });
+  await assertPrivacyEnabled(database, true, { id: 'admin', role: 'admin' });
   await assertPrivacyEnabled(database, false);
   const restarted = createPostgresDatabase(process.env.DATABASE_URL);
   try { assert.deepEqual(await getPrivacySettings(restarted), { privateItemsEnabled: false }); }
@@ -33,7 +35,7 @@ test('application privacy setting defaults enabled, persists and never exposes e
   await assertPrivacyEnabled(database, true);
 });
 
-test('application privacy setting gates job, file and built-in playlist mutations for users and admins', async (context) => {
+test('application privacy setting gates user mutations but always allows admins to make their own items private', async (context) => {
   const { database, directory } = await createTestDatabase(context);
   const now = new Date().toISOString();
   const users = [{ id: 'owner', name: 'Owner', role: 'user' }, { id: 'admin', name: 'Admin', role: 'admin' }];
@@ -49,14 +51,24 @@ test('application privacy setting gates job, file and built-in playlist mutation
     await linkLibraryJob(user.id, single, jobs);
     await manager.setJobPrivacy(playlist.id, true, user);
     await manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user);
-    await setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs);
+    await setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs, user);
     fixtures.push({ user, playlist, jobs });
   }
   await setPrivacySettings(database, false);
   for (const { user, playlist, jobs } of fixtures) {
-    await assert.rejects(manager.setJobPrivacy(playlist.id, true, user), { statusCode: 403 });
-    await assert.rejects(manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user), { statusCode: 403 });
-    await assert.rejects(setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs), { statusCode: 403 });
+    if (user.role === 'admin') {
+      await manager.setJobPrivacy(playlist.id, false, user);
+      await manager.setJobFilePrivacy(playlist.id, 'Song.mp3', false, user);
+      await setLibraryPlaylistPrivacy(user.id, 'individual-songs', false, jobs, user);
+      assert.equal((await manager.setJobPrivacy(playlist.id, true, user)).private, true);
+      assert.deepEqual((await manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user)).privateFiles, ['Song.mp3']);
+      assert.equal((await setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs, user))
+        .entries.find((entry) => entry.id === 'individual-songs').private, true);
+    } else {
+      await assert.rejects(manager.setJobPrivacy(playlist.id, true, user), { statusCode: 403 });
+      await assert.rejects(manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user), { statusCode: 403 });
+      await assert.rejects(setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs, user), { statusCode: 403 });
+    }
     const saved = await manager.getJob(playlist.id);
     assert.equal(saved.private, true);
     assert.deepEqual(saved.privateFiles, ['Song.mp3']);
@@ -64,13 +76,13 @@ test('application privacy setting gates job, file and built-in playlist mutation
     assert.equal((await getLibrary(user.id, jobs)).entries.find((entry) => entry.id === 'individual-songs').private, true);
     await manager.setJobPrivacy(playlist.id, false, user);
     await manager.setJobFilePrivacy(playlist.id, 'Song.mp3', false, user);
-    await setLibraryPlaylistPrivacy(user.id, 'individual-songs', false, jobs);
+    await setLibraryPlaylistPrivacy(user.id, 'individual-songs', false, jobs, user);
   }
   await setPrivacySettings(database, true);
   for (const { user, playlist, jobs } of fixtures) {
     assert.equal((await manager.setJobPrivacy(playlist.id, true, user)).private, true);
     assert.deepEqual((await manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user)).privateFiles, ['Song.mp3']);
-    assert.equal((await setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs))
+    assert.equal((await setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs, user))
       .entries.find((entry) => entry.id === 'individual-songs').private, true);
   }
 });

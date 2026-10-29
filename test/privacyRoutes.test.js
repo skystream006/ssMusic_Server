@@ -12,6 +12,7 @@ import AdmZip from 'adm-zip';
 import NodeID3 from 'node-id3';
 import { fileTypeFromBuffer } from 'file-type';
 import { writeJob } from '../src/database.js';
+import { linkLibraryJob } from '../src/libraryStore.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
 test('privacy and search keys enforce owner-only access through HTTP', { timeout: 120_000 }, async (context) => {
@@ -119,6 +120,8 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       await call(adminRoute, headers.Admin, 'PUT', { privateItemsEnabled: true });
       await call('/api/jobs/playlist/privacy', headers.Owner, 'PATCH', { private: false });
       await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: false });
+      await call('/api/library/playlists/individual-songs/privacy', headers.Admin, 'PATCH', { private: false });
+      await call('/api/jobs/admin-private-single', headers.Admin, 'DELETE');
     });
     for (const route of ['/admin/settings', '/admin/settings/']) {
       const page = await call(route, {});
@@ -154,6 +157,26 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       const blocked = await call(route, headers.Owner, 'PATCH', { private: true });
       assert.equal(blocked.status, 403, blocked.text);
       assert.match(blocked.body.error, /disabled by an administrator/);
+    }
+    const adminDirectory = path.join(outputRoot, 'admin-private-single');
+    await fs.mkdir(adminDirectory);
+    await fs.writeFile(path.join(adminDirectory, 'Admin.mp3'), 'admin audio fixture');
+    const now = new Date().toISOString();
+    const adminJob = { id: 'admin-private-single', url: 'import:admin-private-single', status: 'completed',
+      isPlaylist: false, initiatedBy: { id: users.Admin.id }, files: ['Admin.mp3'], outputDir: adminDirectory,
+      createdAt: now, updatedAt: now };
+    await writeJob(database, adminJob);
+    await linkLibraryJob(users.Admin.id, adminJob, [adminJob]);
+    for (const route of ['/api/jobs/admin-private-single/privacy', '/api/library/playlists/admin-private-single/privacy',
+      '/api/jobs/admin-private-single/files/Admin.mp3/privacy', '/api/library/playlists/individual-songs/privacy']) {
+      const allowed = await call(route, headers.Admin, 'PATCH', { private: true });
+      assert.equal(allowed.status, 200, allowed.text);
+      if (route.endsWith('/individual-songs/privacy')) {
+        assert.equal(allowed.body.entries.find((entry) => entry.id === 'individual-songs').private, true);
+      } else {
+        assert.equal((await call('/api/jobs/admin-private-single/stream/Admin.mp3', headers.Owner)).status, 404);
+      }
+      assert.equal((await call(route, headers.Admin, 'PATCH', { private: false })).status, 200);
     }
     assert.equal((await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: false })).status, 200);
     await stop();

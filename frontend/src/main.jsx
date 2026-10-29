@@ -1723,7 +1723,7 @@ function App() {
   if (!user) return <LoginPage onLogin={setUser} />;
   if (preferences?.userId !== user.id) return <div className="auth-loading"><RefreshCw className="spin" size={24} />Loading account</div>;
   const currentUser = { ...user, privateItemsEnabled: privacySettings?.privateItemsEnabled === true };
-  return <AuthContext.Provider value={{ user: currentUser, setUser, logout, privacySettings, privacyError, setPrivacySettings, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} userId={user.id} request={request}><Router user={currentUser} /></PlaybackProvider></AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user: currentUser, setUser, logout, privacySettings, privacyError, setPrivacySettings, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} userId={user.id} user={currentUser} request={request}><Router user={currentUser} /></PlaybackProvider></AuthContext.Provider>;
 }
 
 initializeTouchControls();

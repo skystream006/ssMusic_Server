@@ -252,14 +252,14 @@ export async function setLibrary(userId, value, jobs) {
   }));
 }
 
-export async function setLibraryPlaylistPrivacy(userId, id, value, jobs) {
+export async function setLibraryPlaylistPrivacy(userId, id, value, jobs, user = null) {
   if (typeof value !== 'boolean') invalid('private must be a boolean');
   if (!Object.hasOwn(individualPlaylistNames, id)) invalid('Use the job privacy setting for this playlist');
   return withTransaction(openDatabase(), async () => {
     const current = await getLibrary(userId, jobs);
     const entry = current.entries.find((item) => item.id === id && item.type === 'playlist');
     if (!entry) invalid('Playlist not found', 404);
-    await assertPrivacyEnabled(openDatabase(), value);
+    await assertPrivacyEnabled(openDatabase(), value, user?.id === userId ? user : null);
     entry.private = value;
     await writeLibrary(userId, current, current.version + 1);
     return getLibrary(userId, jobs);

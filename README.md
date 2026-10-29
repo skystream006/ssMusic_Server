@@ -188,9 +188,11 @@ Retained no-vocals files stay private when their private original is deleted.
 
 Administrators can toggle **Allow private playlists and files** under
 **Admin > Settings** (`/admin/settings`). This application-wide setting is enabled
-by default and persists across server restarts. Disabling it prevents all users,
-including administrators, from marking playlists or files private. Existing
-private items remain protected, and owners can still make them nonprivate.
+by default and persists across server restarts. Disabling it prevents non-admin
+users from marking playlists or files private. Administrators can always make
+their own playlists and files private, including their built-in playlists.
+This does not grant access to another owner's private content. Existing private
+items remain protected, and owners can still make them nonprivate.
 Open clients refresh the setting every five seconds; the server enforces changes
 immediately.
 
@@ -529,6 +531,29 @@ clamped after library changes. File details are loaded only for the requested
 page and its instrumental companions. Totals use the saved media inventory.
 Requests with `entryId` retain the full playlist/folder response unless paging
 parameters are supplied.
+
+## Expanded now playing
+
+Tap the track area or an unused part of the bottom playback bar to expand
+Now Playing to the top of the screen. The playback bar remains visible at the
+bottom. While expanded, its track information and shortcut buttons shrink away,
+leaving only the playback controls. Collapsing restores the full bar without
+interrupting playback. The bar and expanded sections animate in both directions;
+rapid toggles reverse the transition, and reduced-motion preferences disable it.
+
+- **Player** shows album artwork, track details, and MP3 ratings that can be
+    updated when the current user has permission to edit the song.
+- **Lyrics** provides synchronized SYLT and plain-text USLT, with seeking,
+    copying, and editing under the existing song permissions. Lyrics load only
+    when the Lyrics view is opened.
+- **Queue** shows the current playback queue, including its page controls and
+    direct song selection, plus editable MP3 ratings under the same song permissions.
+    Ratings stay synchronized with Player without changing the playing song.
+
+At widths of 1024 pixels or more, the queue stays visible on the right at 30%
+of the available width. The left side offers the Player and Lyrics tabs.
+Use the collapse button, Escape, or browser Back to close the expanded view.
+Switching tabs does not add extra browser history entries.
 
 ## Shuffle and repeat
 

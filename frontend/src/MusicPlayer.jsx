@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronLeft, ChevronRight, Copy, Disc3, Folder, GripVertical, Info, Link, ListChecks, ListMusic, Lock, LockOpen, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Repeat1, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
-import { getFilePrivacy, ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
+import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Disc3, Folder, GripVertical, Info, Link, ListChecks, ListMusic, Lock, LockOpen, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Repeat1, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
+import { canEditSong, getFilePrivacy, ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { navigationHistory, replaceURL } from './navigation.js';
 import { findNoVocals, isNoVocals, normalizeSearchText, songKey, songSearchText } from '../../src/library.js';
@@ -174,6 +174,125 @@ function TrackPagination({ pagination, position, label = 'Track' }) {
   </nav>;
 }
 
+export function NowPlayingPanel({ panel, onChange, expanded = true, wide = false, isVideo = false, player, lyrics, queue }) {
+  const tabsId = useId();
+  const activeTab = wide && panel === 'queue' ? 'player' : panel;
+  const tabs = [{ id: 'player', label: 'Player', Icon: Disc3 }, { id: 'lyrics', label: 'Lyrics', Icon: Mic2 },
+    ...wide ? [] : [{ id: 'queue', label: 'Queue', Icon: ListMusic }]];
+
+  function moveTab(event) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const buttons = [...event.currentTarget.querySelectorAll('[role="tab"]:not(:disabled)')];
+    const current = buttons.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+      : (current + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
+    event.preventDefault();
+    buttons[next]?.click();
+    buttons[next]?.focus();
+  }
+
+  return <section id="now-playing-expanded" className={`now-playing-expanded${wide ? ' is-wide' : ''}${expanded ? '' : ' is-closing'}`}
+    aria-label="Now playing views" inert={!expanded} aria-hidden={!expanded}>
+    <header className="now-playing-header">
+      <div className="now-playing-tabs" role="tablist" aria-label="Now playing" onKeyDown={moveTab}>
+        {tabs.map(({ id, label, Icon }) => <button key={id} id={`${tabsId}-${id}-tab`} type="button" role="tab"
+          aria-selected={activeTab === id} aria-controls={`${tabsId}-${id}-panel`} tabIndex={activeTab === id ? 0 : -1}
+          disabled={id === 'lyrics' && isVideo} onClick={() => onChange(id)}><Icon size={18} />{label}</button>)}
+      </div>
+      <button className="music-icon-button" type="button" title="Collapse now playing" aria-label="Collapse now playing"
+        onClick={() => onChange(null)}><ChevronDown size={22} /></button>
+    </header>
+    <div className="now-playing-layout">
+      <div className="expanded-primary" hidden={activeTab === 'queue'}>
+        <section className="expanded-player-panel" role="tabpanel" id={`${tabsId}-player-panel`}
+          aria-labelledby={`${tabsId}-player-tab`} hidden={activeTab !== 'player'}>{activeTab === 'player' && player}</section>
+        <section className="expanded-lyrics lyrics-overlay-content" role="tabpanel" id={`${tabsId}-lyrics-panel`}
+          aria-labelledby={`${tabsId}-lyrics-tab`} hidden={activeTab !== 'lyrics'}>{activeTab === 'lyrics' && lyrics}</section>
+      </div>
+      <section className="expanded-queue" role={wide ? 'region' : 'tabpanel'} id={`${tabsId}-queue-panel`}
+        aria-labelledby={`${tabsId}-queue-${wide ? 'heading' : 'tab'}`} hidden={!wide && activeTab !== 'queue'}>
+        <h2 id={`${tabsId}-queue-heading`}>Queue</h2>
+        {queue}
+      </section>
+    </div>
+  </section>;
+}
+
+export function PlaybackQueueRow({ track, number, current, user, sourceJob, request, onSelect, onMetadataSaved }) {
+  const [ratingError, setRatingError] = useState('');
+  const job = track.sourceJob || track.job || sourceJob;
+  const canRate = !track.readOnly && canEditSong(user, job);
+  const busy = ['queued', 'running'].includes(job?.status)
+    || (track.transcription || job?.transcriptions?.[track.name])?.status === 'sent';
+  return <li className={`queue-song-row${current ? ' is-current' : ''}`}>
+    <button className="queue-song-select" type="button" aria-label={`Play ${track.title || track.name}`}
+      aria-current={current ? 'true' : undefined} onClick={() => onSelect(track)}>
+      <span className="queue-track-number">{number}</span>
+      <SongArtwork track={track} /><span className="queue-track-title"><strong>{track.title || track.name.split('/').at(-1)}</strong><small>{track.artist || track.playlistTitle}</small></span>
+    </button>
+    {/\.mp3$/i.test(track.name) && <ListSongRating file={track} jobId={track.jobId} request={request}
+      canModify={canRate} disabled={busy} onError={setRatingError} onSaved={(result) => onMetadataSaved(track, result)} />}
+    {ratingError && <p className="queue-rating-error" role="alert">{ratingError}</p>}
+  </li>;
+}
+
+export function mergePlaybackMetadata(current, updates, readSnapshot = null) {
+  return { ...current, ...updates,
+    ...(readSnapshot && current && current.rating !== readSnapshot.rating ? { rating: current.rating } : {}) };
+}
+
+function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata }) {
+  const [details, setDetails] = useState(null);
+  const [metadataError, setMetadataError] = useState('');
+  const [ratingError, setRatingError] = useState('');
+  const [retry, setRetry] = useState(0);
+  const [failedArtwork, setFailedArtwork] = useState(null);
+  const supportsRating = /\.mp3$/i.test(song?.name || '');
+
+  useEffect(() => {
+    if (!song || !supportsRating) return;
+    let active = true;
+    const readSnapshot = { rating: song.rating };
+    setDetails(null);
+    setMetadataError('');
+    request(song.metadataUrl || `/api/jobs/${encodeURIComponent(song.jobId)}/files/${encodeURIComponent(song.name)}/metadata`)
+      .then((result) => {
+        if (!active) return;
+        setDetails(result);
+        updateMetadata(song.jobId, song.name, result, readSnapshot);
+      })
+      .catch((error) => { if (active) setMetadataError(error.message); });
+    return () => { active = false; };
+  }, [song?.jobId, song?.name, song?.metadataUrl, song?.streamUrl, request, retry]);
+
+  if (!song) return <div className="expanded-player"><Disc3 size={64} /><h2>Nothing playing</h2></div>;
+  const current = details || metadata || song;
+  const cover = details?.artwork === undefined ? artwork : details.artwork;
+  return <div className="expanded-player">
+    <div className="expanded-artwork">
+      {cover && cover !== failedArtwork ? <img src={cover} alt={`${current.album || current.title || song.name} cover`}
+        onError={() => setFailedArtwork(cover)} /> : mediaType(song.name) === 'video' ? <Film size={80} /> : <Disc3 size={96} strokeWidth={1} />}
+    </div>
+    <div className="expanded-track-heading"><h2>{current.title || song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</h2>
+      {(current.artist || song.artist) && <p>{current.artist || song.artist}</p>}
+      {(current.album || song.album) && <p className="expanded-album">{current.album || song.album}</p>}
+    </div>
+    {supportsRating && <div className="expanded-rating">
+      <ListSongRating file={{ ...song, rating: song.rating ?? details?.rating }} jobId={song.jobId} request={request}
+        canModify={details?.canEdit === true && !song.readOnly} disabled={song.transcription?.status === 'sent'}
+        onError={setRatingError} onSaved={(result) => {
+          setDetails((currentDetails) => ({ ...currentDetails, ...result }));
+          updateMetadata(song.jobId, song.name, result);
+        }} />
+      {!details && !metadataError && <p className="expanded-metadata-status" role="status">Loading rating...</p>}
+    </div>}
+    {metadataError && <div className="notice error" role="alert"><span>{metadataError}</span>
+      <button className="music-icon-button" type="button" title="Retry song details" aria-label="Retry song details"
+        onClick={() => setRetry((value) => value + 1)}><RefreshCw size={18} /></button></div>}
+    {ratingError && <p className="notice error" role="alert">{ratingError}</p>}
+  </div>;
+}
+
 export function usePlayback() { return useContext(PlaybackContext); }
 
 export function readPlaybackSession(userId, browser = window) {
@@ -222,7 +341,7 @@ export function writePlaybackSession(userId, songs, selected, scope, browser = w
   } catch {}
 }
 
-export function PlaybackProvider({ children, request, userId }) {
+export function PlaybackProvider({ children, request, userId, user = null }) {
   const [restored] = useState(() => {
     const saved = readPlaybackSession(userId);
     if (saved && window.location.pathname === '/' && !window.location.search && saved.url !== '/') replaceURL(saved.url);
@@ -315,7 +434,7 @@ export function PlaybackProvider({ children, request, userId }) {
 
   useEffect(() => {
     setMetadata(song ? { title: song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, ''),
-      artist: song.artist || '', album: song.album || '' } : null);
+      artist: song.artist || '', album: song.album || '', rating: song.rating } : null);
     setLyricsLoaded(false);
     setLyricError('');
     setPlayError('');
@@ -456,11 +575,11 @@ export function PlaybackProvider({ children, request, userId }) {
     setSelected((current) => current === key ? null : current);
   }
 
-  function updateMetadata(jobId, name, result) {
-    if (selectedRef.current === JSON.stringify([jobId, name])) setMetadata((current) => ({ ...current, ...result }));
+  function updateMetadata(jobId, name, result, readSnapshot = null) {
+    if (selectedRef.current === JSON.stringify([jobId, name])) setMetadata((current) => mergePlaybackMetadata(current, result, readSnapshot));
     setSongs((current) => current?.map((track) => track.jobId === jobId && track.name === name
-      ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating,
-        transcriptionLocked: result.transcriptionLocked } : track));
+      ? mergePlaybackMetadata(track, { title: result.title, artist: result.artist, album: result.album, rating: result.rating,
+        transcriptionLocked: result.transcriptionLocked }, readSnapshot) : track));
   }
 
   function replaceFile(jobId, name, result) {
@@ -475,7 +594,7 @@ export function PlaybackProvider({ children, request, userId }) {
     setSelected((current) => current && JSON.parse(current)[0] === jobId ? null : current);
   }
 
-  return <PlaybackContext.Provider value={{ songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
+  return <PlaybackContext.Provider value={{ user, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
@@ -492,7 +611,7 @@ export function PlaybackProvider({ children, request, userId }) {
 }
 
 export default function MusicPlayer({ id, request, libraryView = null, dockOnly = false }) {
-  const { songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
+  const { user, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
@@ -501,16 +620,21 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [editingLyrics, setEditingLyrics] = useState(null);
-  const [panel, updatePanel] = useState(null);
+  const [{ panel, renderedPanel }, setPanelState] = useState({ panel: null, renderedPanel: null });
+  const [widePlayer, setWidePlayer] = useState(false);
+  function updatePanel(next) {
+    setPanelState((current) => current.panel === next ? current
+      : { panel: next, renderedPanel: next || (dockOnly ? current.renderedPanel : null) });
+  }
   function setPanel(next) {
     if (next !== 'lyrics') setEditingLyrics(null);
     updatePanel(next);
-    if (dockOnly) navigationHistory().setLyricsOpen(next === 'lyrics');
+    if (dockOnly) navigationHistory().setPlayerPanel(next);
   }
   const dockRef = useRef(null);
   const queueListRef = useRef(null);
-  const lyricsOverlayRef = useRef(null);
-  const lyricsButtonRef = useRef(null);
+  const playerRegionRef = useRef(null);
+  const expandButtonRef = useRef(null);
   const lines = lyricsLoaded ? metadata?.sylt || [] : [];
   const artwork = metadata?.artwork === undefined ? song?.artworkUrl : metadata.artwork;
   const requestedSong = new URLSearchParams(window.location.search).get('song');
@@ -532,14 +656,24 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   }, [panel, setLyricsViewers]);
 
   useEffect(() => {
-    if (isVideo && panel === 'lyrics') setPanel(null);
+    if (isVideo && panel === 'lyrics') setPanel(dockOnly ? 'player' : null);
   }, [isVideo, panel]);
 
   useEffect(() => {
     if (!dockOnly) return;
-    return navigationHistory().subscribe(({ lyricsOpen }) => {
-      updatePanel((current) => lyricsOpen ? 'lyrics' : current === 'lyrics' ? null : current);
+    return navigationHistory().subscribe(({ playerPanel }) => {
+      updatePanel(playerPanel);
+      if (playerPanel !== 'lyrics') setEditingLyrics(null);
     });
+  }, [dockOnly]);
+
+  useEffect(() => {
+    if (!dockOnly) return;
+    const query = window.matchMedia('(min-width: 1024px)');
+    const resize = () => setWidePlayer(query.matches);
+    resize();
+    query.addEventListener('change', resize);
+    return () => query.removeEventListener('change', resize);
   }, [dockOnly]);
 
   useEffect(() => {
@@ -549,7 +683,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
       .then(([loadedJob, result]) => {
         if (!active) return;
         setJob(loadedJob);
-        const tracks = result.files.filter((file) => file.isPlayable).map((file) => ({ ...file, jobId: id, playlistTitle: loadedJob.playlistTitle }));
+        const sourceJob = { id: loadedJob.id, initiatedBy: loadedJob.initiatedBy, status: loadedJob.status };
+        const tracks = result.files.filter((file) => file.isPlayable).map((file) => ({ ...file, jobId: id, playlistTitle: loadedJob.playlistTitle, sourceJob }));
         const saved = restoredSelectionRef.current;
         const restoredTrack = saved?.scope === `job:${id}` && saved.url === `${window.location.pathname}${window.location.search}`
           ? tracks.find((file) => songKey(file) === saved.selected) : null;
@@ -558,6 +693,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         if (track && (queueScopeRef.current !== `job:${id}` || requestedSong)) {
           if (requestedPlay && !restoredTrack) selectSong(track, tracks, `job:${id}`);
           else { queueScopeRef.current = `job:${id}`; setSongs(tracks); setSelected(songKey(track)); }
+        } else if (queueScopeRef.current === `job:${id}`) {
+          setSongs((current) => current?.map((file) => file.jobId === id ? { ...file, sourceJob } : file));
         }
       }).catch((error) => { if (active) setLoadError(error.message); });
     return () => { active = false; };
@@ -588,22 +725,53 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   }, [dockOnly]);
 
   useEffect(() => {
-    if (!dockOnly || panel !== 'lyrics') return;
-    const overlay = lyricsOverlayRef.current;
-    const content = document.querySelector('.app-shell');
+    if (!dockOnly || panel || !renderedPanel) return;
+    let active = true;
+    const finish = () => {
+      if (active) setPanelState((current) => current.panel ? current : { panel: null, renderedPanel: null });
+    };
+    const animations = playerRegionRef.current?.querySelector('.now-playing-expanded')?.getAnimations?.() || [];
+    if (animations.length) Promise.allSettled(animations.map((animation) => animation.finished)).then(finish);
+    else finish();
+    return () => { active = false; };
+  }, [dockOnly, panel, renderedPanel]);
+
+  useEffect(() => {
+    if (!dockOnly || !renderedPanel) return;
+    const region = playerRegionRef.current;
+    const previousFocus = document.activeElement;
+    const content = [...document.querySelectorAll('.app-shell, .movie-player')].map((element) => ({ element, inert: element.inert }));
     const overflow = document.body.style.overflow;
+    const rootOverflow = document.documentElement.style.overflow;
     document.body.style.overflow = 'hidden';
-    if (content) content.inert = true;
-    overlay?.querySelector('[aria-label="Close lyrics"]').focus();
-    const closeOnEscape = (event) => { if (event.key === 'Escape') { event.preventDefault(); setPanel(null); } };
-    document.addEventListener('keydown', closeOnEscape);
+    document.documentElement.style.overflow = 'hidden';
+    for (const { element } of content) element.inert = true;
+    region?.querySelector('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
+    const handleKey = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); setPanel(null); }
+      if (event.key !== 'Tab') return;
+      const controls = [...region.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
+        .filter((element) => element.tabIndex >= 0 && element.getClientRects().length && !element.closest('[inert]'));
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener('keydown', handleKey);
     return () => {
       document.body.style.overflow = overflow;
-      if (content) content.inert = false;
-      document.removeEventListener('keydown', closeOnEscape);
-      if (overlay?.contains(document.activeElement) || document.activeElement === document.body) lyricsButtonRef.current?.focus();
+      document.documentElement.style.overflow = rootOverflow;
+      for (const { element, inert } of content) element.inert = inert;
+      document.removeEventListener('keydown', handleKey);
+      if (region?.contains(document.activeElement) || document.activeElement === document.body) {
+        (previousFocus !== document.body && previousFocus?.isConnected ? previousFocus : expandButtonRef.current)?.focus({ preventScroll: true });
+      }
     };
-  }, [dockOnly, panel]);
+  }, [dockOnly, Boolean(renderedPanel)]);
+
+  useEffect(() => {
+    if (dockOnly && panel) playerRegionRef.current?.querySelector('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
+  }, [dockOnly, Boolean(panel)]);
 
   const lyricsPanel = <section className="music-lyrics" aria-label="Lyrics">
     <div className="section-title"><div><h2>Lyrics</h2></div>
@@ -618,7 +786,6 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           disabled={!lyricsLoaded || Boolean(editingLyrics) || copying || !lyricsText.trim()} onClick={copyLyrics}>
           {copying ? <RefreshCw className="spin" size={17} /> : currentCopy && !currentCopy.error ? <Check size={17} /> : <Copy size={17} />}
         </button>
-        {dockOnly && <button className="music-icon-button" type="button" title="Close lyrics" aria-label="Close lyrics" onClick={() => setPanel(null)}><X size={20} /></button>}
       </div>
     </div>
     {currentCopy && <div className={currentCopy.error ? 'notice error' : 'sr-only'} role={currentCopy.error ? 'alert' : 'status'}>{currentCopy.message}</div>}
@@ -646,7 +813,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     const totalTracks = libraryView?.pagination?.total ?? tracks.length;
     const selection = libraryView?.songSelection;
     const selectedVisible = visibleTracks.filter((track) => selection?.keys.has(songKey(track))).length;
-    return <div className={dockOnly ? 'global-player' : 'library-player'}>
+    return <div className={dockOnly ? 'global-player' : 'library-player'} ref={dockOnly ? playerRegionRef : undefined}
+      role={dockOnly && renderedPanel ? 'dialog' : undefined} aria-modal={dockOnly && renderedPanel ? true : undefined}
+      aria-label={dockOnly && renderedPanel ? 'Now playing' : undefined}>
       {libraryView && <div className="library-layout">
         {libraryView.sidebar}
         <section className="library-songs" aria-label="Playlist songs">
@@ -750,19 +919,29 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         </section>
       </div>}
       {dockOnly && <>
-        {panel === 'queue' && <aside className="player-panel" aria-label="Playback queue">
-          <div className="player-panel-heading"><h3>Up next</h3><button className="music-icon-button" type="button" title="Close panel" aria-label="Close player panel" onClick={() => setPanel(null)}><X size={18} /></button></div>
-          <TrackPagination pagination={queuePagination} position="top" label="Queue" />
-          <ol className="playback-queue" ref={queueListRef} start={(queuePagination.page - 1) * queuePagination.pageSize + 1}>{songs?.slice((queuePagination.page - 1) * queuePagination.pageSize, queuePagination.page * queuePagination.pageSize).map((track) => <li key={songKey(track)}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>{mediaType(track.name) === 'video' ? <Film size={16} /> : <Music2 size={16} />}<span>{track.name.split('/').at(-1)}<small>{track.playlistTitle}</small></span></button></li>)}</ol>
-        </aside>}
-      {panel === 'lyrics' && <div className="lyrics-overlay" onClick={(event) => { if (event.target === event.currentTarget) setPanel(null); }}>
-        <section className="lyrics-overlay-content" role="dialog" aria-label="Lyrics" ref={lyricsOverlayRef}>
-          {lyricsPanel}
-        </section>
-      </div>}
-      <footer className="player-dock" aria-label="Music playback" ref={dockRef}>
-        <div className="dock-track"><div className={`dock-artwork ${playing && !isVideo ? 'is-playing' : ''}`}>{isVideo ? <Film size={30} /> : artwork ? <img src={artwork} alt="Album cover" /> : <Disc3 size={30} />}</div>
-          <div><strong>{metadata?.title || song?.name.split('/').at(-1).replace(/\.[^.]+$/, '') || 'Nothing playing'}</strong><small>{metadata?.artist || song?.playlistTitle || 'ssMusic Player'}</small></div><KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} /></div>
+        {renderedPanel && <NowPlayingPanel panel={renderedPanel} expanded={Boolean(panel)} onChange={setPanel} wide={widePlayer} isVideo={isVideo}
+          player={<NowPlayingTrack key={selected} song={song} metadata={metadata} artwork={artwork} request={request} updateMetadata={updateMetadata} />}
+          lyrics={lyricsPanel} queue={<>
+            <TrackPagination pagination={queuePagination} position="top" label="Queue" />
+            <ol className="playback-queue" ref={queueListRef} start={(queuePagination.page - 1) * queuePagination.pageSize + 1}>
+              {songs?.slice((queuePagination.page - 1) * queuePagination.pageSize, queuePagination.page * queuePagination.pageSize).map((track, offset) => <PlaybackQueueRow
+                key={songKey(track)} track={track} number={(queuePagination.page - 1) * queuePagination.pageSize + offset + 1}
+                current={songKey(track) === selected} user={user} request={request} onSelect={selectSong}
+                sourceJob={track.sourceJob || track.job || songs.find((file) => file.jobId === track.jobId && file.sourceJob)?.sourceJob}
+                onMetadataSaved={(file, result) => updateMetadata(file.jobId, file.name, result)} />)}
+            </ol>
+            {!songs?.length && <p className="music-empty" role="status">The queue is empty.</p>}
+          </>} />}
+      <footer className={`player-dock${panel ? ' is-expanded' : ''}`} aria-label="Music playback" ref={dockRef} onClick={(event) => {
+        if (!event.target.closest('button, input, select, a, label')) setPanel(panel ? null : 'player');
+      }}>
+        <div className="dock-track" inert={Boolean(panel)} aria-hidden={Boolean(panel)}><button className="dock-expand" type="button" ref={expandButtonRef}
+          title={panel ? 'Collapse now playing' : 'Expand now playing'} aria-label={panel ? 'Collapse now playing' : 'Expand now playing'}
+          aria-expanded={Boolean(panel)} aria-controls={panel ? 'now-playing-expanded' : undefined} onClick={() => setPanel(panel ? null : 'player')}>
+          <span className={`dock-artwork ${playing && !isVideo ? 'is-playing' : ''}`}>{isVideo ? <Film size={30} /> : artwork ? <img src={artwork} alt="Album cover" /> : <Disc3 size={30} />}</span>
+          <span className="dock-summary"><strong>{metadata?.title || song?.name.split('/').at(-1).replace(/\.[^.]+$/, '') || 'Nothing playing'}</strong><small>{metadata?.artist || song?.playlistTitle || 'ssMusic Player'}</small></span>
+          {panel ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+        </button><KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} /></div>
         <div className="dock-controls"><div className="dock-transport">
           <button className="music-icon-button" type="button" title={shuffleLabel} aria-label="Shuffle" aria-pressed={shuffle} onClick={() => setShuffle((current) => !current)}><Shuffle size={17} /></button>
           <button className="music-icon-button" type="button" title="Previous song" aria-label="Previous song" disabled={!song} onClick={previousSong}><SkipBack size={20} /></button>
@@ -771,10 +950,10 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <button className="music-icon-button" type="button" title={repeatLabel} aria-label={repeatLabel} aria-pressed={repeatMode !== 'off'} onClick={() => setRepeatMode(nextRepeatMode)}><RepeatIcon size={17} /></button>
         </div><div className="dock-timeline"><time>{timeLabel(position)}</time><input type="range" aria-label="Seek" min="0" max={duration || 0} step="0.1" value={Math.min(position, duration)} disabled={!duration}
           onChange={(event) => { audioRef.current.currentTime = Number(event.target.value); setPosition(Number(event.target.value)); }} /><time>{timeLabel(duration)}</time></div></div>
-        <div className="dock-tools">
+        <div className="dock-tools" inert={Boolean(panel)} aria-hidden={Boolean(panel)}>
           {isVideo && <button className="music-icon-button" type="button" title={videoOpen ? 'Hide movie' : 'Show movie'} aria-label={videoOpen ? 'Hide movie' : 'Show movie'} aria-pressed={videoOpen} onClick={() => { setPanel(null); setVideoOpen(!videoOpen); }}><Film size={18} /></button>}
-          <button ref={lyricsButtonRef} className="music-icon-button" type="button" title="Lyrics" aria-label="Show lyrics" disabled={isVideo} aria-pressed={panel === 'lyrics'} onClick={() => setPanel(panel === 'lyrics' ? null : 'lyrics')}><Mic2 size={18} /></button>
-          <button className="music-icon-button" type="button" title="Playback queue" aria-label="Show playback queue" aria-pressed={panel === 'queue'} onClick={() => setPanel(panel === 'queue' ? null : 'queue')}><ListMusic size={19} /></button>
+          <button className="music-icon-button" type="button" title="Lyrics" aria-label="Show lyrics" disabled={isVideo} aria-pressed={panel === 'lyrics'} onClick={() => setPanel(panel === 'lyrics' ? null : 'lyrics')}><Mic2 size={18} /></button>
+          <button className="music-icon-button" type="button" title="Playback queue" aria-label="Show playback queue" aria-pressed={Boolean(panel && (widePlayer || panel === 'queue'))} onClick={() => setPanel(panel === 'queue' ? null : 'queue')}><ListMusic size={19} /></button>
           <button className="music-icon-button volume-button" type="button" title={muted ? 'Unmute' : 'Mute'} aria-label={muted ? 'Unmute' : 'Mute'} disabled={!song} onClick={() => { audioRef.current.muted = !muted; }}>{muted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}</button>
           <input className="volume-slider" type="range" aria-label="Volume" min="0" max="1" step="0.01" value={muted ? 0 : volume} disabled={!song} onChange={(event) => { audioRef.current.volume = Number(event.target.value); audioRef.current.muted = false; }} />
         </div>

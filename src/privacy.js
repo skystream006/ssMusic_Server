@@ -18,8 +18,8 @@ export async function setPrivacySettings(database, value) {
   return { privateItemsEnabled: value };
 }
 
-export async function assertPrivacyEnabled(database, value) {
-  if (value === true && !(await getPrivacySettings(database)).privateItemsEnabled) {
+export async function assertPrivacyEnabled(database, value, user = null) {
+  if (value === true && user?.role !== 'admin' && !(await getPrivacySettings(database)).privateItemsEnabled) {
     throw Object.assign(new Error('Private playlists and files are disabled by an administrator'), { statusCode: 403 });
   }
 }

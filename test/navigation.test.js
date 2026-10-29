@@ -56,9 +56,58 @@ function setup(url = '/job/one/player?song=Song.mp3&play=1') {
     get leftPage() { return leftPage; },
     get scrolls() { return scrolls; },
     get routeChanges() { return events.filter((event) => event.routeChanged).length; },
+    get playerPanel() { return events.at(-1).playerPanel; },
     get lyricsOpen() { return events.at(-1).lyricsOpen; }
   };
 }
+
+test('expanded player tabs share one history entry and Forward restores the selected tab', () => {
+  const app = setup('/');
+  for (const panel of ['player', 'lyrics', 'queue', 'player', 'queue']) {
+    app.navigation.setPlayerPanel(panel);
+    assert.equal(app.playerPanel, panel);
+    assert.equal(app.lyricsOpen, panel === 'lyrics');
+    assert.equal(app.entries.length, 2);
+  }
+  app.browser.history.back();
+  app.flush();
+  assert.equal(app.playerPanel, null);
+  assert.equal(app.routeChanges, 0);
+  assert.equal(app.scrolls, 0);
+  app.browser.history.forward();
+  app.flush();
+  assert.equal(app.playerPanel, 'queue');
+  assert.equal(app.routeChanges, 0);
+});
+
+test('expanded player rapid close and tab changes preserve the latest intent', () => {
+  const app = setup('/');
+  app.navigation.setPlayerPanel('player');
+  app.navigation.setPlayerPanel(null);
+  app.navigation.setPlayerPanel('lyrics');
+  app.navigation.setPlayerPanel('queue');
+  app.popstate();
+  app.flush();
+  assert.equal(app.playerPanel, 'queue');
+  assert.equal(app.entries.length, 2);
+  assert.equal(app.backCalls, 1);
+  app.navigation.setPlayerPanel(null);
+  app.flush();
+  app.browser.history.back();
+  app.flush();
+  assert.equal(app.leftPage, true);
+});
+
+test('route navigation replaces the expanded player without leaving a stale panel', () => {
+  const app = setup('/');
+  app.navigation.setPlayerPanel('queue');
+  app.navigation.navigate('/settings');
+  assert.equal(app.playerPanel, null);
+  app.browser.history.back();
+  app.flush();
+  assert.equal(app.url, '/');
+  assert.equal(app.playerPanel, null);
+});
 
 test('Back dismisses lyrics on a directly loaded player without remounting or scrolling the route', () => {
   const app = setup();

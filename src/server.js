@@ -240,7 +240,7 @@ app.patch('/api/library/playlists/:id/privacy', async (req, res) => {
     if (job) {
       await setJobPrivacy(job.id, req.body?.private, req.user);
     } else {
-      await setLibraryPlaylistPrivacy(req.user.id, req.params.id, req.body?.private, await getLibraryJobs(req.user));
+      await setLibraryPlaylistPrivacy(req.user.id, req.params.id, req.body?.private, await getLibraryJobs(req.user), req.user);
     }
     return res.json(await readPostgresLibrary(openDatabase(), req.user.id, req.user.id));
   } catch (error) {
