@@ -278,7 +278,8 @@ tbody tr:hover { background: var(--surface); }
 .status { width: fit-content; display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; font-size: 10px; font-weight: 700; text-transform: uppercase; border: 1px solid currentColor; }
 .status svg { flex-shrink: 0; }
 .status-completed { color: var(--green); background: rgba(48, 128, 105, .2); }
-.status-running { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.status-running, .status-paused { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.status-paused { text-transform: none; white-space: normal; }
 .status-partially_completed { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .status-queued { color: var(--muted); background: var(--surface-raised); text-transform: none; white-space: normal; }
 .status-failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, transparent); }

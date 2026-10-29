@@ -64,6 +64,12 @@ test('queued job badges and the admin queue view show positions, ordering and op
     assert.ok(badge.includes(status.replaceAll('_', ' ')));
   }
   assert.ok(!renderToStaticMarkup(createElement(StatusBadge, { status: 'queued' })).includes('#undefined'));
+  const pausedUntil = '2026-10-28T13:05:00Z';
+  const pausedBadge = renderToStaticMarkup(createElement(StatusBadge, { status: 'running', pausedUntil }));
+  assert.match(pausedBadge, /status-paused/);
+  assert.match(pausedBadge, /Paused - Rate limit/);
+  assert.ok(!pausedBadge.includes('status-running'));
+  assert.ok(!renderToStaticMarkup(createElement(StatusBadge, { status: 'failed', pausedUntil })).includes('status-paused'));
   const render = (props) => renderToStaticMarkup(createElement(AdminJobQueue, props));
   assert.match(render({ data: null }), /Loading job queue/);
   const unavailable = render({ data: null, error: 'Offline' });
@@ -93,6 +99,16 @@ test('queued job badges and the admin queue view show positions, ordering and op
   assert.match(populated, /Unknown/);
   assert.match(populated, /Metadata only/);
   assert.match(populated, /aria-label="Refresh job queue"/);
+  const paused = render({ data: { ...data, running: { ...job, pausedUntil } } });
+  assert.match(paused, /Paused job/);
+  assert.match(paused, /Paused - Rate limit/);
+  assert.match(paused, /Resumes <time/);
+  assert.match(paused, /Queued - Current Position #1/);
+  const hiddenPaused = render({ data: { running: { hidden: true, status: 'running', pausedUntil }, queued: [] } });
+  assert.match(hiddenPaused, /Private job/);
+  assert.match(hiddenPaused, /Paused - Rate limit/);
+  assert.ok(!hiddenPaused.includes('href="/job/'));
+  assert.ok(!hiddenPaused.includes('Submitted by'));
   const hidden = render({ data: { running: null, queued: [{ hidden: true, status: 'queued', queuePosition: 1 }] } });
   assert.match(hidden, /Private job/);
   assert.match(hidden, /Queued - Current Position #1/);

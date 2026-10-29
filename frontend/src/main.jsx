@@ -605,7 +605,7 @@ function JobsPage({ tab = 'tasks' }) {
                     checked={selectedJobIds.has(job.id)} disabled={Boolean(jobAction)} onChange={(event) => selectJobs([job.id], event.target.checked)} /></label></td>}
                   <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong>{job.playlistTitle || 'Preparing playlist'}</strong><small>{job.id}</small></div></a></td>
                   <td className="job-column-format">{job.isPlaylist ? 'Playlist' : 'Track'}</td>
-                  <td><StatusBadge status={job.status} queuePosition={job.queuePosition} /></td>
+                  <td><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} /></td>
                   <td className="job-column-created">{formatDate(job.createdAt)}</td>
                   <td>{job.isPlaylist ? (job.playlistSongCount ?? '-') : 1}</td>
                   <td>{countDownloadedFiles(job.files)}</td>
@@ -887,7 +887,7 @@ function JobPage({ id }) {
           <div>
             <p className="eyebrow">{job.source ? 'Music import' : job.isPlaylist ? 'Playlist download' : 'Track download'}</p>
             <h1>{job.playlistTitle || 'Preparing playlist'}</h1>
-            <div className="detail-meta"><StatusBadge status={job.status} queuePosition={job.queuePosition} /><span>Created {formatDate(job.createdAt)}</span>{job.private && <span><Lock size={14} /> Private — owner only</span>}</div>
+            <div className="detail-meta"><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} /><span>Created {formatDate(job.createdAt)}</span>{job.private && <span><Lock size={14} /> Private — owner only</span>}</div>
           </div>
           <div className="detail-actions">
             <div className="record-art"><Disc3 size={70} strokeWidth={1.2} /></div>

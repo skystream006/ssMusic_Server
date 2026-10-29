@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { isPlaylistUrl, normalizeJobUrl, normalizeVideoUrl, sanitizeFolderName, randomSongFolderName } from './utils.js';
 import { openDatabase, writeJob, withTransaction } from './database.js';
 import { deletePostgresJob, indexPostgresSongMetadata, normalizePostgresSearchIndex, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
@@ -86,6 +87,11 @@ async function loadJobs() {
   for (const { id } of storedJobs) {
     const job = await readPostgresJob(database, id);
     let updatedStoredJob = false;
+    if (job.pausedUntil) {
+      delete job.pausedUntil;
+      job.warning = null;
+      updatedStoredJob = true;
+    }
     if (!job.playlistTitle) {
       job.playlistTitle = inferPlaylistTitle(job);
       updatedStoredJob = true;
@@ -371,22 +377,87 @@ export function parsePlaylistMetadata(output) {
   const playlistSongCount = Number.isSafeInteger(metadata.playlist_count) && metadata.playlist_count >= 0
     ? metadata.playlist_count
     : Array.isArray(metadata.entries) ? metadata.entries.length : null;
-  return { playlistTitle, folderName: sanitizeFolderName(playlistTitle || 'playlist'), playlistSongCount };
+  const playlistSongUrls = Array.isArray(metadata.entries) ? metadata.entries.flatMap((entry) => (
+    typeof entry?.id === 'string' && entry.id ? [`https://www.youtube.com/watch?v=${encodeURIComponent(entry.id)}`] : []
+  )) : [];
+  return { playlistTitle, folderName: sanitizeFolderName(playlistTitle || 'playlist'), playlistSongCount, playlistSongUrls };
 }
 
-async function getSourceMetadata(url, denoPath, isPlaylist, signal, onOutput) {
+async function waitForCooldown() {
+  while (getJobRateLimit().limited) {
+    await new Promise((resolve) => setTimeout(resolve, jobsDisabledUntil - Date.now()));
+  }
+}
+
+function appendJobOutput(job, output) {
+  job.output = [job.output, output].filter(Boolean).join('\n\n');
+}
+
+async function runJobCommand(job, command, args, { metadata = false, includeCommand = false } = {}) {
+  const commandText = [command, ...args].map((value) => value.includes(' ') ? `"${value}"` : value).join(' ');
+  let retried = false;
+  const recordOutput = (result) => {
+    const output = formatCommandOutput(result) || result.message || 'Command completed without output.';
+    appendJobOutput(job, includeCommand || retried ? `[command]\n${commandText}\n\n${output}` : output);
+  };
+  for (;;) {
+    job.command = commandText;
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+    const controller = new AbortController();
+    activeJobControllers.set(job.id, controller);
+    appendLiveJobOutput(job.id, metadata ? 'metadata command' : 'command', `${commandText}\n`);
+    try {
+      const result = await runCommand(command, args, controller.signal,
+        (stream, chunk) => appendLiveJobOutput(job.id, metadata ? `metadata ${stream}` : stream, chunk));
+      if (!metadata || retried) recordOutput(result);
+      await persistJob(job);
+      return result;
+    } catch (error) {
+      const classification = classifyCommandOutput(error);
+      if (error.code !== 'JOBS_RATE_LIMITED' && !classification.hasPrivateVideoWarning && !classification.hasNonPrivateError) {
+        const message = `ERROR: ${error.message}\n`;
+        error.stderr = `${error.stderr || ''}\n${message}`;
+        appendLiveJobOutput(job.id, metadata ? 'metadata stderr' : 'stderr', message);
+      }
+      if (!metadata || retried || error.code === 'JOBS_RATE_LIMITED') recordOutput(error);
+      if (error.code !== 'JOBS_RATE_LIMITED') {
+        await persistJob(job);
+        throw error;
+      }
+      job.pausedUntil = getJobRateLimit().reenabledAt;
+      job.warning = `Rate limit reached. Paused until ${job.pausedUntil}. The last command will retry automatically.`;
+      appendJobOutput(job, `[system]\n${job.warning}`);
+      appendLiveJobOutput(job.id, 'system', `${job.warning}\n`);
+      job.updatedAt = new Date().toISOString();
+      await cooldownPersistence;
+      await persistJob(job);
+      await waitForCooldown();
+      delete job.pausedUntil;
+      job.warning = null;
+      const message = 'Rate limit cooldown ended. Retrying the last command.';
+      appendJobOutput(job, `[system]\n${message}`);
+      appendLiveJobOutput(job.id, 'system', `${message}\n`);
+      retried = true;
+    } finally {
+      activeJobControllers.delete(job.id);
+    }
+  }
+}
+
+async function getSourceMetadata(job, denoPath) {
   const args = [
     '--flat-playlist',
     '--dump-single-json',
     '--skip-download',
     '--ignore-errors',
-    isPlaylist ? '--yes-playlist' : '--no-playlist',
+    job.isPlaylist ? '--yes-playlist' : '--no-playlist',
     '--js-runtimes',
     `deno:${denoPath}`,
-    url
+    job.url
   ];
 
-  const { stdout } = await runCommand(resolveYtDlpPath(), args, signal, onOutput);
+  const { stdout } = await runJobCommand(job, resolveYtDlpPath(), args, { metadata: true });
   return parsePlaylistMetadata(stdout);
 }
 
@@ -433,6 +504,10 @@ function startJob(job) {
     removeQueuedJob(job);
     job.status = 'failed';
     job.error = error.message;
+    if (job.pausedUntil) {
+      delete job.pausedUntil;
+      job.warning = null;
+    }
     job.output ||= error.message;
     job.updatedAt = new Date().toISOString();
     await persistJob(job).catch((persistError) => console.error('Unable to persist job:', persistError.message));
@@ -507,20 +582,16 @@ async function removeJobOutput(job) {
 async function executeJob(job) {
   while (updateGate || getJobRateLimit().limited) {
     await waitForUpdateGate();
-    const remainingCooldown = jobsDisabledUntil - Date.now();
-    if (remainingCooldown > 0) await new Promise((resolve) => setTimeout(resolve, remainingCooldown));
+    await waitForCooldown();
   }
-  const controller = new AbortController();
-  activeJobControllers.set(job.id, controller);
   let counted = false;
   try {
-    controller.signal.throwIfAborted();
     assertJobsEnabled();
     removeQueuedJob(job);
     runningJobsCount += 1;
     counted = true;
     liveJobOutputs.set(job.id, { output: '', stream: null, truncated: false });
-    await executeJobWork(job, controller.signal);
+    await executeJobWork(job);
   } finally {
     liveJobOutputs.delete(job.id);
     activeJobControllers.delete(job.id);
@@ -529,8 +600,35 @@ async function executeJob(job) {
   }
 }
 
-async function executeJobWork(job, signal) {
-  signal.throwIfAborted();
+async function runDownloadCommands(job, command, args, urls) {
+  if (!urls.length) {
+    const error = new Error('Unable to enumerate songs in this playlist. Rerun the job to retrieve its song list.');
+    appendJobOutput(job, error.message);
+    throw error;
+  }
+  let stdout = '';
+  let stderr = '';
+  let lastError;
+  for (const [index, url] of urls.entries()) {
+    if (index > 0) await sleep(10_000);
+    let result;
+    try {
+      result = await runJobCommand(job, command, [...args, url], { includeCommand: urls.length > 1 });
+    } catch (error) {
+      result = error;
+      lastError = error;
+    }
+    if (classifyCommandOutput(result).hasNonPrivateError) {
+      lastError ||= new Error('One or more downloads failed. See process output for details.');
+    }
+    stdout += `${result.stdout || ''}\n`;
+    stderr += `${result.stderr || ''}\n`;
+  }
+  if (lastError) throw Object.assign(lastError, { stdout, stderr });
+  return { stdout, stderr };
+}
+
+async function executeJobWork(job) {
   assertJobsEnabled();
 
   const denoPath = resolveDenoPath();
@@ -542,16 +640,10 @@ async function executeJobWork(job, signal) {
   await persistJob(job);
 
   let metadataError;
-  const sourceMetadata = await getSourceMetadata(job.url, denoPath, job.isPlaylist, signal,
-    (stream, chunk) => appendLiveJobOutput(job.id, `metadata ${stream}`, chunk)).catch((error) => {
+  const sourceMetadata = await getSourceMetadata(job, denoPath).catch((error) => {
     metadataError = error;
     return null;
   });
-  if (signal.aborted) {
-    job.output = formatCommandOutput(metadataError || {}) || signal.reason.message;
-    await cooldownPersistence;
-    signal.throwIfAborted();
-  }
   const folderName = job.folderName || (job.isPlaylist && sourceMetadata?.playlistTitle
     ? `${sourceMetadata.folderName}_${job.id}` : randomSongFolderName());
 
@@ -591,13 +683,11 @@ async function executeJobWork(job, signal) {
     `thumbnail:${path.join(job.outputDir, '.thumbnails', '%(title)s.%(ext)s')}`
   ];
 
-  args.push(job.isPlaylist ? '--yes-playlist' : '--no-playlist');
-  if (job.isPlaylist && job.playlistSongCount > 100) {
-    args.push('--sleep-interval', '10', '--max-sleep-interval', '20');
-  }
-  args.push(job.url);
+  const individualSongs = job.isPlaylist && job.playlistSongCount > 100;
+  const urls = individualSongs ? sourceMetadata.playlistSongUrls : [job.url];
+  args.push(job.isPlaylist && !individualSongs ? '--yes-playlist' : '--no-playlist');
 
-  job.command = job.metadataOnly ? null : [ytDlpPath, ...args]
+  job.command = job.metadataOnly || !urls.length ? null : [ytDlpPath, ...args, urls[0]]
     .map((value) => (value.includes(' ') ? `"${value}"` : value))
     .join(' ');
 
@@ -605,14 +695,12 @@ async function executeJobWork(job, signal) {
 
   let completedStatus;
   try {
-    signal.throwIfAborted();
     if (job.metadataOnly && metadataError) throw metadataError;
     const result = job.metadataOnly
       ? { stdout: 'Metadata retrieved. Media download skipped.', stderr: '' }
-      : await runCommand(ytDlpPath, args, signal,
-        (stream, chunk) => appendLiveJobOutput(job.id, stream, chunk));
+      : await runDownloadCommands(job, ytDlpPath, args, urls);
     const classification = classifyCommandOutput(result);
-    job.output = formatCommandOutput(result) || 'Command completed without output.';
+    if (job.metadataOnly) appendJobOutput(job, formatCommandOutput(result));
     job.files = await listDownloadedFiles(job.outputDir);
     completedStatus = classification.hasPrivateVideoWarning ? 'partially_completed' : 'completed';
     job.warning = classification.hasPrivateVideoWarning ? 'One or more private or unavailable videos were skipped.' : null;
@@ -622,21 +710,16 @@ async function executeJobWork(job, signal) {
     completedStatus = privateVideosOnly ? 'partially_completed' : 'failed';
     job.error = privateVideosOnly ? null : error.message;
     job.warning = privateVideosOnly ? 'One or more private or unavailable videos were skipped.' : null;
-    job.output = formatCommandOutput(error) || error.message;
+    job.output ||= formatCommandOutput(error) || error.message;
     job.files = await listDownloadedFiles(job.outputDir);
   } finally {
     await cooldownPersistence;
     job.playlistTitle ||= inferPlaylistTitle(job);
-    if (!job.metadataOnly && !signal.aborted) await embedDownloadedArtwork(job);
+    if (!job.metadataOnly) await embedDownloadedArtwork(job);
     await refreshSongMetadata(job);
-    if (signal.aborted) {
-      completedStatus = 'failed';
-      job.error = signal.reason.message;
-      job.warning = null;
-    }
     job.updatedAt = new Date().toISOString();
     await persistJob({ ...job, status: completedStatus || job.status });
-    if (!signal.aborted) await refreshJobThumbnails(job, job.files, { force: !job.metadataOnly });
+    await refreshJobThumbnails(job, job.files, { force: !job.metadataOnly });
     if (completedStatus) job.status = completedStatus;
   }
 }
@@ -879,6 +962,7 @@ export async function rerunJob(id, user = null) {
   job.status = 'queued';
   job.error = null;
   job.warning = null;
+  delete job.pausedUntil;
   job.command = null;
   job.output = null;
   job.updatedAt = new Date().toISOString();
@@ -1279,7 +1363,8 @@ export async function setJobContributors(id, userIds, user = null) {
 export function getJobQueue(user) {
   const summarize = (job) => {
     const visible = user === undefined ? job : visibleJob(job, user);
-    if (!visible) return { hidden: true, status: job.status, queuePosition: job.queuePosition };
+    if (!visible) return { hidden: true, status: job.status, queuePosition: job.queuePosition,
+      ...(job.pausedUntil ? { pausedUntil: job.pausedUntil } : {}) };
     return {
       id: visible.id,
       url: visible.url,
@@ -1287,6 +1372,7 @@ export function getJobQueue(user) {
       initiatedBy: visible.initiatedBy,
       status: visible.status,
       queuePosition: visible.queuePosition,
+      pausedUntil: visible.pausedUntil,
       isPlaylist: visible.isPlaylist,
       playlistSongCount: visible.playlistSongCount,
       downloadType: visible.downloadType,

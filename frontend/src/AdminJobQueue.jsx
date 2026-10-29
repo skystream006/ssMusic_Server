@@ -20,8 +20,9 @@ function QueueJobRow({ job }) {
     <div className="queue-job-owner">
       {!job.hidden && <><span>Submitted by</span><strong>{job.initiatedBy?.name || 'Unknown'}</strong>
         <span>{job.status === 'queued' ? 'Queued' : 'Started'} <time dateTime={job.updatedAt}>{formatDate(job.updatedAt)}</time></span></>}
+      {job.pausedUntil && <span>Resumes <time dateTime={job.pausedUntil}>{formatDate(job.pausedUntil)}</time></span>}
     </div>
-    <div className="queue-job-state"><StatusBadge status={job.status} queuePosition={job.queuePosition} /></div>
+    <div className="queue-job-state"><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} /></div>
   </li>;
 }
 
@@ -40,7 +41,7 @@ export default function AdminJobQueue({ data, error = '', onRefresh }) {
     {data?.maintenance && <p className="notice" role="status"><RefreshCw size={16} className="spin" />Runtime maintenance in progress</p>}
     {data && <>
       <section className="admin-job-queue" aria-labelledby="running-job-heading">
-        <div className="section-title"><div><Clock3 size={19} /><h2 id="running-job-heading">Running job</h2></div><strong role="status">{data.running ? '1 / 1' : '0 / 1'}</strong></div>
+        <div className="section-title"><div><Clock3 size={19} /><h2 id="running-job-heading">{data.running?.pausedUntil ? 'Paused job' : 'Running job'}</h2></div><strong role="status">{data.running ? '1 / 1' : '0 / 1'}</strong></div>
         {data.running ? <ul className="queue-job-list"><QueueJobRow job={data.running} /></ul>
           : <div className="empty-state compact"><Clock3 size={28} /><h3>No jobs running</h3></div>}
       </section>

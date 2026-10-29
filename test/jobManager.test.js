@@ -14,6 +14,7 @@ import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import timers from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import { fileTypeFromBuffer } from 'file-type';
 import { readSongArtwork, readSongMetadata } from '../src/music.js';
@@ -163,16 +164,34 @@ for (const { label, url, isPlaylist } of [
   });
 }
 
-for (const { label, metadata, isPlaylist = true, downloadType = 'audio', paced } of [
-  { label: '100-item playlist', metadata: { playlist_count: 100 }, paced: false },
-  { label: '101-item playlist', metadata: { playlist_count: 101 }, paced: true },
-  { label: 'entry-count fallback', metadata: { entries: Array.from({ length: 101 }, () => ({ id: 'track' })) }, paced: true },
-  { label: 'unknown playlist count', metadata: {}, paced: false },
-  { label: 'single video', metadata: { playlist_count: 101 }, isPlaylist: false, paced: false },
-  { label: 'large video playlist', metadata: { playlist_count: 101 }, downloadType: 'video', paced: true }
+const largePlaylistEntries = Array.from({ length: 101 }, (_, index) => ({
+  id: `track-${index}`, url: `https://www.youtube.com/watch?v=track-${index}`
+}));
+
+for (const { label, metadata, isPlaylist = true, downloadType = 'audio', metadataOnly = false, individual = false,
+  failures = [], expectedStatus = 'completed' } of [
+  { label: '100-item playlist', metadata: { playlist_count: 100, entries: largePlaylistEntries.slice(0, 100) } },
+  { label: '101-item playlist', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true },
+  { label: 'entry-count fallback', metadata: { entries: largePlaylistEntries }, individual: true },
+  { label: 'unknown playlist count', metadata: {} },
+  { label: 'single video', metadata: { playlist_count: 101 }, isPlaylist: false },
+  { label: 'large video playlist', metadata: { playlist_count: 101, entries: largePlaylistEntries }, downloadType: 'video', individual: true },
+  { label: 'metadata-only playlist', metadata: { playlist_count: 101, entries: largePlaylistEntries }, metadataOnly: true },
+  { label: 'missing song list', metadata: { playlist_count: 101 }, individual: true, expectedStatus: 'failed' },
+  { label: 'private video failure', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true,
+    failures: [{ song: 1, stderr: 'ERROR: Private video\n', exitCode: 1 }], expectedStatus: 'partially_completed' },
+  { label: 'mixed download failures', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true,
+    failures: [{ song: 1, exitCode: 1 }, { song: 2, stderr: 'ERROR: Private video\n', exitCode: 1 }], expectedStatus: 'failed' },
+  { label: 'ignored download error', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true,
+    failures: [{ song: 1, stderr: 'ERROR: Requested format is not available\n', exitCode: 0 }], expectedStatus: 'failed' }
 ]) {
   test(`large-playlist pacing: ${label}`, async (t) => {
     const calls = [];
+    const pauses = [];
+    const delayMock = t.mock.method(timers, 'setTimeout', async (delay) => {
+      assert.equal(delay, 10_000);
+      pauses.push(calls.length);
+    });
     const spawnMock = t.mock.method(childProcess, 'spawn', (command, args) => {
       calls.push(args);
       const child = new EventEmitter();
@@ -180,28 +199,43 @@ for (const { label, metadata, isPlaylist = true, downloadType = 'audio', paced }
       child.stderr = new PassThrough();
       process.nextTick(() => {
         if (args.includes('--dump-single-json')) child.stdout.end(JSON.stringify({ title: 'Collection', ...metadata }));
-        child.emit('close', 0);
+        else child.stdout.end(`Downloaded ${args.at(-1)}\n`);
+        const failure = failures.find(({ song }) => args.at(-1) === largePlaylistEntries[song].url);
+        if (failure?.stderr) child.stderr.end(failure.stderr);
+        child.emit('close', failure?.exitCode ?? 0);
       });
       return child;
     });
     syncBuiltinESMExports();
-    t.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
+    t.after(() => { spawnMock.mock.restore(); delayMock.mock.restore(); syncBuiltinESMExports(); });
     const manager = await import(`../src/jobManager.js?pacing=${encodeURIComponent(fixtureDirectory)}`);
     const url = isPlaylist ? 'https://music.youtube.com/playlist?list=pacing' : 'https://music.youtube.com/watch?v=pacing';
-    const job = await manager.createJob(url, null, { downloadType });
+    const job = await manager.createJob(url, null, { downloadType, metadataOnly });
     await waitForJobToFinish(job);
-    assert.equal(job.status, 'completed');
-    assert.equal(calls.length, 2);
+    assert.equal(job.status, expectedStatus);
+    const downloads = metadataOnly ? 0 : individual ? metadata.entries?.length || 0 : 1;
+    assert.equal(calls.length, downloads + 1);
     assert.ok(calls[0].includes('--dump-single-json'));
-    assert.ok(!calls[0].includes('--sleep-interval'));
-    assert.equal(calls[1].includes('--sleep-interval'), paced);
-    assert.equal(calls[1].includes('--max-sleep-interval'), paced);
-    if (paced) {
-      assert.equal(calls[1][calls[1].indexOf('--sleep-interval') + 1], '10');
-      assert.equal(calls[1][calls[1].indexOf('--max-sleep-interval') + 1], '20');
-      assert.match(job.command, /--sleep-interval 10 --max-sleep-interval 20/);
+    for (const args of calls) {
+      assert.ok(!args.includes('--sleep-interval'));
+      assert.ok(!args.includes('--max-sleep-interval'));
     }
-    assert.equal(calls[1].at(-1), job.url);
+    assert.deepEqual(pauses, individual ? Array.from({ length: Math.max(0, downloads - 1) }, (_, index) => index + 2) : []);
+    for (const [index, args] of calls.slice(1).entries()) {
+      assert.ok(args.includes(individual || !isPlaylist ? '--no-playlist' : '--yes-playlist'));
+      assert.ok(!args.includes(individual || !isPlaylist ? '--yes-playlist' : '--no-playlist'));
+      const source = individual ? largePlaylistEntries[index].url : job.url;
+      assert.equal(args.at(-1), source);
+      assert.ok(job.output.includes(`Downloaded ${source}\n`) || job.output.endsWith(`Downloaded ${source}`));
+      assert.ok(args.includes(downloadType === 'video' ? '--remux-video' : '--extract-audio'));
+    }
+    if (metadataOnly) assert.equal(job.command, null);
+    if (!metadataOnly && !downloads) assert.match(job.output, /Unable to enumerate songs/);
+    if (expectedStatus === 'partially_completed') {
+      assert.equal(job.error, null);
+      assert.match(job.output, /WARNING: Private video/);
+    }
+    if (expectedStatus === 'failed') assert.ok(job.error);
   });
 }
 
@@ -210,16 +244,26 @@ async function makeQueueFixture(t) {
   let active = 0;
   let maxActive = 0;
   const spawnMock = t.mock.method(childProcess, 'spawn', (command, args) => {
+    if (command === 'taskkill') {
+      calls.find((call) => String(call.pid) === args[1]).kill();
+      return new EventEmitter();
+    }
     const child = new EventEmitter();
+    child.pid = 999000 + calls.length;
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     active += 1;
     maxActive = Math.max(maxActive, active);
-    calls.push({ command, args, stdout: child.stdout, stderr: child.stderr, finish(output = '{"title":"Collection","playlist_count":101}', code = 0) {
+    let closed = false;
+    const finish = (output = '{"title":"Collection","playlist_count":100}', code = 0) => {
+      if (closed) return;
+      closed = true;
       active -= 1;
       child.stdout.end(output);
       child.emit('close', code);
-    } });
+    };
+    child.kill = () => { process.nextTick(() => finish('', null)); };
+    calls.push({ command, args, pid: child.pid, stdout: child.stdout, stderr: child.stderr, finish, kill: child.kill });
     return child;
   });
   syncBuiltinESMExports();
@@ -236,6 +280,162 @@ async function makeQueueFixture(t) {
     }
   };
 }
+
+test('large playlist resumes the failed song after repeated cooldowns without losing its slot or output', { timeout: 30_000 }, async (context) => {
+  let now = Date.now();
+  context.mock.method(Date, 'now', () => now);
+  const cooldowns = [];
+  const realSetTimeout = globalThis.setTimeout;
+  context.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    if (delay === 65 * 60 * 1000) { cooldowns.push(callback); return; }
+    return realSetTimeout(callback, delay, ...args);
+  });
+  const delays = [];
+  const delayMock = context.mock.method(timers, 'setTimeout', (delay) => {
+    assert.equal(delay, 10_000);
+    return new Promise((resolve) => delays.push(resolve));
+  });
+  context.after(() => { delayMock.mock.restore(); syncBuiltinESMExports(); });
+  const { manager, calls, nextCommand, maxActive } = await makeQueueFixture(context);
+  async function nextTimer(scheduled, index) {
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      if (scheduled[index]) return scheduled[index];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.fail(`Timed out waiting for timer ${index}`);
+  }
+
+  const owner = { id: 'owner', role: 'user' };
+  const job = await manager.createJob('https://music.youtube.com/playlist?list=resume-songs', owner);
+  const waiting = await manager.createJob('https://music.youtube.com/watch?v=waiting', owner, { metadataOnly: true });
+  (await nextCommand(0)).finish(JSON.stringify({ title: 'Resume songs', playlist_count: 101, entries: largePlaylistEntries }));
+  const firstSong = await nextCommand(1);
+  assert.equal(firstSong.args.at(-1), largePlaylistEntries[0].url);
+  const completedFile = path.join(job.outputDir, 'First song.mp3');
+  const archive = firstSong.args[firstSong.args.indexOf('--download-archive') + 1];
+  await fs.writeFile(completedFile, NodeID3.create({ title: 'First song' }));
+  await fs.writeFile(archive, 'youtube track-0\n');
+  firstSong.finish(`Song 0 completed\n${'x'.repeat(300 * 1024)}\n`);
+  const firstDelay = await nextTimer(delays, 0);
+  assert.equal(calls.length, 2, 'the next song waits for the full delay');
+  const completedOutput = job.output;
+  now += 10_000;
+  firstDelay();
+  let commandIndex = 2;
+  let secondSong = await nextCommand(commandIndex);
+  const failedArgs = [...secondSong.args];
+  assert.equal(failedArgs.at(-1), largePlaylistEntries[1].url);
+  const failedCommand = job.command;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    secondSong.stdout.write(`Song 1 attempt ${attempt + 1}\n`);
+    secondSong.stderr.write('ERROR: The current session has been rate-limited by YouTube for up to an hour\n');
+    const resume = await nextTimer(cooldowns, attempt);
+    const state = manager.getJobRateLimit();
+    assert.equal(job.status, 'running');
+    assert.equal(job.error, null);
+    assert.equal(job.command, failedCommand);
+    assert.equal(job.pausedUntil, state.reenabledAt);
+    assert.equal(manager.getJobQueue(owner).running.id, job.id);
+    assert.equal(manager.getJobQueue(owner).running.pausedUntil, state.reenabledAt);
+    job.private = true;
+    assert.deepEqual(manager.getJobQueue({ id: 'other-admin', role: 'admin' }).running, {
+      hidden: true, status: 'running', queuePosition: undefined, pausedUntil: state.reenabledAt
+    });
+    job.private = false;
+    assert.deepEqual(manager.getJobQueue(owner).queued.map((entry) => [entry.id, entry.queuePosition]), [[waiting.id, 1]]);
+    assert.ok(job.output.startsWith(completedOutput));
+    assert.equal(manager.getLiveJobOutput(job).truncated, true);
+    assert.match(manager.getLiveJobOutput(job).output, /The last command will retry automatically/);
+    const stored = JSON.parse((await openDatabase().prepare('SELECT data FROM jobs WHERE id = $1').get(job.id)).data);
+    assert.equal(stored.status, 'running');
+    assert.equal(stored.pausedUntil, state.reenabledAt);
+    assert.equal(stored.command, failedCommand);
+    assert.ok(stored.output.includes('Song 0 completed'));
+    assert.ok(stored.output.includes(`Song 1 attempt ${attempt + 1}`));
+    assert.equal(await fs.readFile(archive, 'utf8'), 'youtube track-0\n');
+    assert.ok((await fs.stat(completedFile)).size > 0);
+    await assert.rejects(manager.rerunJob(job.id, owner), { statusCode: 409 });
+    now = Date.parse(state.reenabledAt) - 1;
+    assert.equal(manager.getJobRateLimit().limited, true);
+    assert.equal(calls.length, commandIndex + 1);
+    now += 1;
+    resume();
+    secondSong = await nextCommand(++commandIndex);
+    assert.deepEqual(secondSong.args, failedArgs);
+    assert.equal(job.command, failedCommand);
+    assert.equal(job.pausedUntil, undefined);
+    assert.equal(waiting.queuePosition, 1);
+    assert.equal(manager.getLiveJobOutput(job).truncated, true);
+    assert.match(manager.getLiveJobOutput(job).output, /Retrying the last command/);
+    assert.equal(delays.length, 1, 'cooldown retries do not advance the song loop');
+  }
+
+  secondSong.finish('Song 1 completed\n');
+  for (let index = 2; index < largePlaylistEntries.length; index += 1) {
+    const resume = await nextTimer(delays, index - 1);
+    assert.equal(calls.length, commandIndex + 1);
+    now += 10_000;
+    resume();
+    const song = await nextCommand(++commandIndex);
+    assert.equal(song.args.at(-1), largePlaylistEntries[index].url);
+    assert.ok(song.args.includes('--no-playlist'));
+    assert.equal(song.args[song.args.indexOf('--download-archive') + 1], archive);
+    assert.equal(waiting.queuePosition, 1);
+    song.finish(`Song ${index} completed\n`);
+  }
+  await waitForJobToFinish(job);
+  assert.equal(job.status, 'completed');
+  assert.equal(job.error, null);
+  assert.equal(job.warning, null);
+  assert.equal(job.pausedUntil, undefined);
+  assert.ok(job.output.startsWith(completedOutput));
+  assert.ok(job.output.length > 300 * 1024);
+  for (let index = 0; index < largePlaylistEntries.length; index += 1) {
+    assert.ok(job.output.includes(`Song ${index} completed`));
+  }
+  assert.ok(job.output.includes('Song 1 attempt 1'));
+  assert.ok(job.output.includes('Song 1 attempt 2'));
+  assert.ok(job.output.indexOf('Song 1 attempt 1') < job.output.indexOf('Song 1 attempt 2'));
+  assert.ok(job.output.indexOf('Song 1 attempt 2') < job.output.indexOf('Song 1 completed'));
+  assert.deepEqual(job.files, ['First song.mp3']);
+  assert.equal(calls.filter(({ args }) => !args.includes('--dump-single-json') && args.at(-1) === largePlaylistEntries[0].url).length, 1);
+  assert.equal(calls.filter(({ args }) => !args.includes('--dump-single-json') && args.at(-1) === largePlaylistEntries[1].url).length, 3);
+  assert.equal(delays.length, 100);
+  assert.equal(maxActive(), 1);
+  (await nextCommand(++commandIndex)).finish('{"title":"Waiting job"}');
+  await waitForJobToFinish(waiting);
+  assert.equal(waiting.status, 'completed');
+  assert.deepEqual(manager.getJobQueue(), { running: null, queued: [] });
+});
+
+test('paused job checkpoints survive for inspection after restart while manual reruns start fresh', async (context) => {
+  const now = new Date().toISOString();
+  const owner = { id: 'owner', role: 'user' };
+  await writeJob(openDatabase(), {
+    id: 'interrupted-playlist', url: 'https://music.youtube.com/playlist?list=interrupted', isPlaylist: true,
+    status: 'running', playlistTitle: 'Interrupted playlist', initiatedBy: owner,
+    pausedUntil: new Date(Date.now() + 65 * 60 * 1000).toISOString(), warning: 'Rate limit pause',
+    command: 'yt-dlp --no-playlist https://www.youtube.com/watch?v=last-song',
+    output: 'Previous successful song\nLast command hit a rate limit', files: [], createdAt: now, updatedAt: now
+  });
+  const { manager, nextCommand } = await makeQueueFixture(context);
+  const job = await manager.getJob('interrupted-playlist');
+  assert.equal(job.status, 'failed');
+  assert.match(job.error, /server restart/);
+  assert.equal(job.pausedUntil, undefined);
+  assert.equal(job.warning, null);
+  assert.match(job.command, /last-song/);
+  assert.match(job.output, /Previous successful song/);
+  const rerun = await manager.rerunJob(job.id, owner);
+  assert.equal(rerun.pausedUntil, undefined);
+  assert.equal(rerun.output, null);
+  (await nextCommand(0)).finish();
+  (await nextCommand(1)).finish('Fresh manual rerun\n');
+  await waitForJobToFinish(rerun);
+  assert.equal(rerun.status, 'completed');
+  assert.equal(rerun.output, '[stdout]\nFresh manual rerun');
+});
 
 for (const exitCode of [0, 1]) {
   test(`live job output exposes both streams before exit code ${exitCode}`, async (t) => {
@@ -323,7 +523,7 @@ test('job queue runs metadata and downloads one at a time, updates positions, an
   firstMetadata.finish();
   const firstDownload = await nextCommand(1);
   assert.ok(!firstDownload.args.includes('--dump-single-json'));
-  assert.ok(firstDownload.args.includes('--sleep-interval'));
+  assert.ok(!firstDownload.args.includes('--sleep-interval'));
   assert.equal(calls.length, 2);
   assert.deepEqual([second.queuePosition, third.queuePosition], [1, 2]);
   firstDownload.finish('');
@@ -530,14 +730,16 @@ for (const phase of ['metadata', 'download']) {
     assert.ok(Date.parse(state.reenabledAt) >= before + 65 * 60 * 1000);
     assert.ok(Date.parse(state.reenabledAt) <= Date.now() + 65 * 60 * 1000);
     assert.equal(state.message, `yt-dlp jobs are currently rate limited on this server. Downloads and metadata lookups will resume at ${state.reenabledAt}. New jobs and reruns can still be queued. Manual imports and other library functions remain available.`);
-    await waitForJobToFinish(first);
     for (let attempt = 0; !resumeQueue && attempt < 500; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     assert.equal(typeof resumeQueue, 'function');
     for (const child of active) assert.equal(child.killed, true);
-    assert.equal(first.status, 'failed');
-    assert.equal(first.error, state.message);
+    assert.equal(first.status, 'running');
+    assert.equal(first.error, null);
+    assert.equal(first.pausedUntil, state.reenabledAt);
+    const pausedCommand = first.command;
+    const pausedOutput = first.output;
     assert.equal(first.queuePosition, undefined);
     for (const job of [second, third]) {
       assert.equal(job.status, 'queued');
@@ -545,23 +747,22 @@ for (const phase of ['metadata', 'download']) {
       assert.equal(job.output, null);
       assert.equal((await manager.getJob(job.id)).status, 'queued');
     }
-    assert.equal(manager.getJobQueue().running, null);
+    assert.equal(manager.getJobQueue().running.id, first.id);
     assert.deepEqual(manager.getJobQueue().queued.map((job) => [job.id, job.queuePosition]), [[second.id, 1], [third.id, 2]]);
     assert.equal(children.length, count);
     assert.match(first.output, /rate-limited by YouTube/);
     const fourth = await manager.createJob('https://music.youtube.com/watch?v=fourth', owner, { metadataOnly: true });
-    const rerun = await manager.rerunJob(first.id, owner);
-    for (const job of [fourth, rerun]) {
+    for (const job of [fourth]) {
       assert.equal(job.status, 'queued');
       assert.equal(job.error, null);
       assert.equal(job.command, null);
       assert.equal(job.output, null);
     }
     assert.deepEqual(manager.getJobQueue().queued.map((job) => [job.id, job.queuePosition]),
-      [[second.id, 1], [third.id, 2], [fourth.id, 3], [rerun.id, 4]]);
+      [[second.id, 1], [third.id, 2], [fourth.id, 3]]);
     assert.equal(children.length, count);
     await assert.rejects(manager.createJob(fourth.url, owner), { statusCode: 409, code: 'JOB_ALREADY_EXISTS' });
-    await assert.rejects(manager.rerunJob(rerun.id, owner), { statusCode: 409 });
+    await assert.rejects(manager.rerunJob(first.id, owner), { statusCode: 409 });
     const songPath = path.join(fixtureDirectory, 'manual.mp3');
     await fs.writeFile(songPath, NodeID3.create({ title: 'Manual song' }));
     const imported = await manager.importJobFiles({
@@ -582,17 +783,36 @@ for (const phase of ['metadata', 'download']) {
     assert.equal(children.length, count);
     assert.deepEqual([second.queuePosition, third.queuePosition], [1, 2]);
     const maintenance = phase === 'download' ? manager.runMaintenanceUpdate() : null;
+    assert.equal(children.length, count);
+    now += 1;
+    resumeQueue();
+    for (const metadata of phase === 'metadata' ? [true, false] : [false]) {
+      for (let attempt = 0; children.length <= count && attempt < 500; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(children.length, count + 1);
+      assert.equal(first.status, 'running');
+      assert.equal(first.pausedUntil, undefined);
+      assert.deepEqual([second.queuePosition, third.queuePosition, fourth.queuePosition], [1, 2, 3]);
+      const child = children[count++];
+      assert.equal(child.metadata, metadata);
+      if (metadata === (phase === 'metadata')) {
+        assert.deepEqual(child.args, active[0].args);
+        assert.equal(first.command, pausedCommand);
+      }
+      child.stdout.end(metadata ? '{"title":"First resumed"}' : 'First download resumed successfully');
+      child.emit('close', 0);
+    }
+    await waitForJobToFinish(first);
+    assert.equal(first.status, 'completed');
+    assert.equal(first.error, null);
+    assert.ok(first.output.startsWith(pausedOutput));
+    assert.match(first.output, /Retrying the last command/);
+    assert.match(first.output, /First download resumed successfully/);
     if (maintenance) {
       for (let attempt = 0; children.length < count + 1 && attempt < 500; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      assert.equal(children.length, count + 1);
-      assert.deepEqual(children[count].args, ['-U']);
-    }
-    now += 1;
-    resumeQueue();
-    if (maintenance) {
-      await new Promise((resolve) => setImmediate(resolve));
       assert.equal(manager.getJobRateLimit().limited, false);
       assert.equal(children.length, count + 1);
       assert.deepEqual([second.status, third.status], ['queued', 'queued']);
@@ -630,7 +850,7 @@ for (const phase of ['metadata', 'download']) {
     assert.equal(second.status, 'completed');
     assert.equal(third.status, 'completed');
     let commandIndex = count + 2;
-    for (const job of [fourth, rerun]) {
+    for (const job of [fourth]) {
       for (const metadata of job.metadataOnly ? [true] : [true, false]) {
         for (let attempt = 0; children.length <= commandIndex && attempt < 500; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1036,13 +1256,16 @@ if (args.includes('--dump-single-json')) {
 test('playlist metadata counts all songs independently of downloaded files', async () => {
   const { parsePlaylistMetadata } = await import(`../src/jobManager.js?metadata=${Date.now()}`);
   assert.deepEqual(parsePlaylistMetadata(JSON.stringify({ title: 'My playlist', playlist_count: 12, entries: [{ id: 'one' }] })), {
-    playlistTitle: 'My playlist', folderName: 'My_playlist', playlistSongCount: 12
+    playlistTitle: 'My playlist', folderName: 'My_playlist', playlistSongCount: 12,
+    playlistSongUrls: ['https://www.youtube.com/watch?v=one']
   });
   assert.equal(parsePlaylistMetadata('{"title":"Jazz / Soul: live"}').playlistTitle, 'Jazz / Soul: live');
   assert.equal(parsePlaylistMetadata('{}').playlistTitle, null);
   assert.equal(parsePlaylistMetadata(JSON.stringify({ entries: [{ id: 'one' }, null, { id: 'private' }] })).playlistSongCount, 3);
   assert.equal(parsePlaylistMetadata('{"entries":[]}').playlistSongCount, 0);
   assert.equal(parsePlaylistMetadata('{"playlist_count":0}').playlistSongCount, 0);
+  assert.deepEqual(parsePlaylistMetadata(JSON.stringify({ entries: [{ id: 'one' }, null, { id: 'private' }, {}] })).playlistSongUrls,
+    ['https://www.youtube.com/watch?v=one', 'https://www.youtube.com/watch?v=private']);
   for (const playlist_count of [null, -1, 1.5, '12']) {
     assert.equal(parsePlaylistMetadata(JSON.stringify({ playlist_count })).playlistSongCount, null);
   }

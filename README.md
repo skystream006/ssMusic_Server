@@ -61,10 +61,15 @@ They are not paused by its rate-limit cooldown. Existing protections against
 conflicting changes to the same files or playlists still apply.
 
 Before a playlist download starts, its metadata is checked for the total item
-count. Playlists with more than 100 items add
-`--sleep-interval 10 --max-sleep-interval 20` to the yt-dlp download command for
-both audio and video. Playlists with 100 or fewer items and single-video jobs do
-not receive these flags.
+count and song list. Playlists with more than 100 items run a separate yt-dlp
+command with `--no-playlist` for each song, in playlist order, with a fixed
+10-second wait between songs. This applies to audio and video; commands share
+the job's output folder, download archive, and format options. No yt-dlp
+`--sleep-interval` or `--max-sleep-interval` flags are added. If a large playlist's
+song list cannot be retrieved, the job fails instead of downloading it as one
+playlist-wide command. Playlists with 100 or fewer items keep the normal
+single-command behavior. Metadata-only jobs do not download songs or wait
+between them.
 
 Administrators can track the running job and waiting jobs under **Jobs > Jobs
 Queue** (`/admin/jobs-queue`), refreshed every two seconds. The admin-only
@@ -79,14 +84,23 @@ keeps the latest lines visible; scrolling up pauses following. Closing the dialo
 or finishing the job stops polling. The admin-only, uncached
 `GET /api/jobs/:id/live-output` endpoint returns `{ status, output, truncated }`.
 The live view retains the latest 262,144 characters; completed jobs keep their
-normal saved output. Private job and file restrictions also apply to live logs.
+full saved process output from every download command attempt, including attempts
+interrupted by a cooldown. Automatic retries append to the existing log instead
+of resetting it. Private job and file restrictions also apply to live logs.
 
 If yt-dlp reports "The current session has been rate-limited by YouTube for up to
-an hour", the server immediately stops all active download/metadata jobs and
+an hour", the server immediately stops the current yt-dlp process and
 pauses yt-dlp execution for 65 minutes. The cooldown survives server restarts.
-The active job is marked failed and can be queued for a manual rerun immediately.
-Waiting jobs stay queued with their positions intact and resume automatically,
-one at a time, when the cooldown expires and runtime maintenance has finished.
+The active job keeps its execution slot and saved command, remains
+`status: "running"` with a `pausedUntil` timestamp, and displays **Paused - Rate
+limit**. When the timer expires, the exact interrupted command retries; a large
+playlist continues from that song without restarting completed songs. Repeated
+rate limits pause the same job again, retaining all previous process output.
+Waiting jobs keep their positions and start only after the active job finishes
+and any pending runtime maintenance completes. A paused job cannot be manually
+rerun while it still owns the active slot. Server restarts still mark interrupted
+jobs failed, retaining their saved command and output for inspection; an explicit
+manual rerun starts a fresh log.
 New jobs and reruns remain available during cooldown and join the same queue.
 The Jobs page keeps its controls enabled and displays the notice and UTC resume timestamp.
 Authenticated clients can read `{ limited, reenabledAt, message }` from
