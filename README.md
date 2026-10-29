@@ -62,8 +62,19 @@ conflicting changes to the same files or playlists still apply.
 
 Before a playlist download starts, its metadata is checked for the total item
 count and song list. Playlists with more than 100 items run a separate yt-dlp
-command with `--no-playlist` for each song, in playlist order, normally with a
-10-second wait between songs. If a command reports `has already been downloaded`
+command with `--no-playlist` for each media item, in playlist order, normally with a
+10-second wait between items. Before each individual command, the server checks
+the job's output folder for a nonempty finished MP3 (audio) or MP4 (video) matching
+the playlist entry's title, including yt-dlp's default filename substitutions.
+A matching file skips both the command and its wait, advances the progress
+counter, and records `Skipping existing file: ...` in the job log. The filesystem
+is checked again for each entry, so files downloaded earlier in the same run are
+also reused. Empty files, partial downloads, thumbnails, directories, symlinks,
+and the wrong media type do not count as completed downloads. The playlist
+metadata lookup still runs once to obtain the current titles and song count;
+entries without a usable title or matching file follow the normal download path.
+
+If a command reports `has already been downloaded`
 in stdout or stderr (case-insensitive), the next song starts without that wait.
 Later commands without that message retain the normal delay. This applies to
 audio and video; commands share
@@ -75,8 +86,8 @@ single-command behavior. Metadata-only jobs do not download songs or wait
 between them.
 
 Large-playlist status badges show **Commands: completed / total** in Recent Jobs,
-job details, and Jobs Queue. The counter advances once per finished song command,
-including failures and skips, but not during cooldown retries. The total is the
+job details, and Jobs Queue. The counter advances once per processed playlist entry,
+including local-file skips and finished command failures, but not during cooldown retries. The total is the
 reported playlist item count, not the downloaded-file count. Progress is saved as
 `commandProgress: { completed, total }` and resets on an explicit manual rerun.
 

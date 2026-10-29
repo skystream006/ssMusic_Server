@@ -388,10 +388,14 @@ export function parsePlaylistMetadata(output) {
   const playlistSongCount = Number.isSafeInteger(metadata.playlist_count) && metadata.playlist_count >= 0
     ? metadata.playlist_count
     : Array.isArray(metadata.entries) ? metadata.entries.length : null;
-  const playlistSongUrls = Array.isArray(metadata.entries) ? metadata.entries.flatMap((entry) => (
-    typeof entry?.id === 'string' && entry.id ? [`https://www.youtube.com/watch?v=${encodeURIComponent(entry.id)}`] : []
+  const playlistSongs = Array.isArray(metadata.entries) ? metadata.entries.flatMap((entry) => (
+    typeof entry?.id === 'string' && entry.id ? [{
+      url: `https://www.youtube.com/watch?v=${encodeURIComponent(entry.id)}`,
+      title: typeof entry.title === 'string' ? entry.title : null
+    }] : []
   )) : [];
-  return { playlistTitle, folderName: sanitizeFolderName(playlistTitle || 'playlist'), playlistSongCount, playlistSongUrls };
+  const playlistSongUrls = playlistSongs.map((song) => song.url);
+  return { playlistTitle, folderName: sanitizeFolderName(playlistTitle || 'playlist'), playlistSongCount, playlistSongUrls, playlistSongs };
 }
 
 async function waitForCooldown(signal) {
@@ -649,9 +653,25 @@ async function executeJob(job, execution) {
   }
 }
 
-async function runDownloadCommands(job, command, args, urls, signal) {
-  if (!urls.length) {
-    const error = new Error('Unable to enumerate songs in this playlist. Rerun the job to retrieve its song list.');
+async function findExistingMediaFile(job, title) {
+  if (!title) return null;
+  const sanitizedTitle = title.replace(/\0/g, '').replace(/[0-9]+(?::[0-9]+)+/g, (timestamp) => timestamp.replaceAll(':', '_'))
+    .replace(/\n/g, '\0 ').replace(/[\x01-\x1f\x7f]/g, '')
+    .replace(/["*:<>?|/\\]/g, (character) => character === '/' ? '\u29f8'
+      : character === '\\' ? '\u29f9' : String.fromCharCode(character.charCodeAt(0) + 0xfee0))
+    .replace(/(?:\0 ){2,}/g, '\0 ').replace(/^\0 (?:\0 |[ _-])*|(?:\0 |[ _-])*\0 $/g, '').replaceAll('\0', '') || '_';
+  for (const name of new Set([sanitizedTitle, title])) {
+    const fileName = `${name}.${job.downloadType === 'video' ? 'mp4' : 'mp3'}`;
+    if (path.basename(fileName) !== fileName || /[\\/:\0]/.test(fileName)) continue;
+    const file = await fs.lstat(path.join(job.outputDir, fileName)).catch(() => null);
+    if (file?.isFile() && file.size > 0) return fileName;
+  }
+  return null;
+}
+
+async function runDownloadCommands(job, command, args, songs, signal) {
+  if (!songs.length) {
+    const error = new Error('Unable to enumerate playlist items. Rerun the job to retrieve its media list.');
     appendJobOutput(job, error.message);
     throw error;
   }
@@ -659,23 +679,32 @@ async function runDownloadCommands(job, command, args, urls, signal) {
   let stderr = '';
   let lastError;
   let skipNextDelay = false;
-  for (const [index, url] of urls.entries()) {
+  for (const [index, { url, title }] of songs.entries()) {
     signal.throwIfAborted();
-    if (index > 0 && !skipNextDelay) await sleep(10_000, undefined, { signal });
+    const existingFile = job.commandProgress ? await findExistingMediaFile(job, title) : null;
+    signal.throwIfAborted();
     let result;
-    try {
-      result = await runJobCommand(job, command, [...args, url], { includeCommand: urls.length > 1, signal });
-    } catch (error) {
-      if (signal.aborted) throw error;
-      result = error;
-      lastError = error;
+    if (existingFile) {
+      const message = `Skipping existing file: ${existingFile}`;
+      appendJobOutput(job, `[system]\n${message}`);
+      appendLiveJobOutput(job.id, 'system', `${message}\n`);
+      result = { stdout: message, stderr: '' };
+    } else {
+      if (index > 0 && !skipNextDelay) await sleep(10_000, undefined, { signal });
+      try {
+        result = await runJobCommand(job, command, [...args, url], { includeCommand: songs.length > 1, signal });
+      } catch (error) {
+        if (signal.aborted) throw error;
+        result = error;
+        lastError = error;
+      }
     }
     if (classifyCommandOutput(result).hasNonPrivateError) {
       lastError ||= new Error('One or more downloads failed. See process output for details.');
     }
     stdout += `${result.stdout || ''}\n`;
     stderr += `${result.stderr || ''}\n`;
-    skipNextDelay = /\bhas already been downloaded\b/i.test(`${result.stdout || ''}\n${result.stderr || ''}`);
+    skipNextDelay = Boolean(existingFile) || /\bhas already been downloaded\b/i.test(`${result.stdout || ''}\n${result.stderr || ''}`);
     if (job.commandProgress) {
       job.commandProgress.completed = index + 1;
       job.updatedAt = new Date().toISOString();
@@ -744,7 +773,7 @@ async function executeJobWork(job, signal) {
   ];
 
   const individualSongs = job.isPlaylist && job.playlistSongCount > 100;
-  const urls = individualSongs ? sourceMetadata.playlistSongUrls : [job.url];
+  const songs = individualSongs ? sourceMetadata.playlistSongs : [{ url: job.url }];
   if (individualSongs && !job.metadataOnly) {
     job.commandProgress = { completed: 0, total: job.playlistSongCount };
   } else {
@@ -752,7 +781,7 @@ async function executeJobWork(job, signal) {
   }
   args.push(job.isPlaylist && !individualSongs ? '--yes-playlist' : '--no-playlist');
 
-  job.command = job.metadataOnly || !urls.length ? null : [ytDlpPath, ...args, urls[0]]
+  job.command = job.metadataOnly || individualSongs ? null : [ytDlpPath, ...args, job.url]
     .map((value) => (value.includes(' ') ? `"${value}"` : value))
     .join(' ');
 
@@ -763,7 +792,7 @@ async function executeJobWork(job, signal) {
     if (job.metadataOnly && metadataError) throw metadataError;
     const result = job.metadataOnly
       ? { stdout: 'Metadata retrieved. Media download skipped.', stderr: '' }
-      : await runDownloadCommands(job, ytDlpPath, args, urls, signal);
+      : await runDownloadCommands(job, ytDlpPath, args, songs, signal);
     const classification = classifyCommandOutput(result);
     if (job.metadataOnly) appendJobOutput(job, formatCommandOutput(result));
     job.files = await listDownloadedFiles(job.outputDir);

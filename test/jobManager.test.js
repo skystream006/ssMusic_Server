@@ -244,7 +244,7 @@ for (const { label, metadata, isPlaylist = true, downloadType = 'audio', metadat
       assert.ok(args.includes(downloadType === 'video' ? '--remux-video' : '--extract-audio'));
     }
     if (metadataOnly) assert.equal(job.command, null);
-    if (!metadataOnly && !downloads) assert.match(job.output, /Unable to enumerate songs/);
+    if (!metadataOnly && !downloads) assert.match(job.output, /Unable to enumerate playlist items/);
     if (expectedStatus === 'partially_completed') {
       assert.equal(job.error, null);
       assert.match(job.output, /WARNING: Private video/);
@@ -293,6 +293,115 @@ async function makeQueueFixture(t) {
       assert.fail(`Timed out waiting for command ${index}`);
     }
   };
+}
+
+for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['video', false], ['video', true]]) {
+  test(`large playlist skips existing local files before spawning commands (${downloadType}, ${allExisting ? 'all existing' : 'missing final song'})`, { timeout: 15_000 }, async (context) => {
+    const extension = downloadType === 'video' ? 'mp4' : 'mp3';
+    const ffmpegPath = process.env.FFMPEG_PATH;
+    if (downloadType === 'video') {
+      process.env.FFMPEG_PATH = path.join(fixtureDirectory, 'missing-thumbnail-helper');
+      context.after(() => {
+        if (ffmpegPath === undefined) delete process.env.FFMPEG_PATH;
+        else process.env.FFMPEG_PATH = ffmpegPath;
+      });
+    }
+    const pauses = [];
+    const delayMock = context.mock.method(timers, 'setTimeout', async (delay) => { pauses.push(delay); });
+    context.after(() => { delayMock.mock.restore(); syncBuiltinESMExports(); });
+    const { manager, calls, nextCommand } = await makeQueueFixture(context);
+    const owner = { id: 'owner', role: 'user' };
+    const outputDir = path.join(fixtureDirectory, 'local-duplicates');
+    const entries = largePlaylistEntries.map((entry, index) => ({ ...entry, title: `Track ${index}` }));
+    await fs.mkdir(outputDir);
+    const specialTitles = [
+      { title: 'Artist / Song: "Live"?', name: 'Artist \u29f8 Song\uff1a \uff02Live\uff02\uff1f' },
+      { title: 'Set 01:23:45 <live>|take*2\\remix', name: 'Set 01_23_45 \uff1clive\uff1e\uff5ctake\uff0a2\u29f9remix' },
+      { title: '\n_Caf\u00e9 \u6771\u4eac\n\nLive-\n', name: 'Caf\u00e9 \u6771\u4eac Live' }
+    ];
+    for (const [index, { title }] of specialTitles.entries()) entries[index + 10].title = title;
+    await Promise.all(entries.slice(0, allExisting ? 101 : 100).map((entry) => fs.writeFile(
+      path.join(outputDir, `${specialTitles.find((special) => special.title === entry.title)?.name || entry.title}.${extension}`), NodeID3.create({ title: entry.title })
+    )));
+    if (!allExisting) {
+      await fs.writeFile(path.join(outputDir, `Track 100.${extension}`), '');
+      await fs.writeFile(path.join(outputDir, `Track 100.${extension}.part`), 'partial download');
+      await fs.writeFile(path.join(outputDir, `Track 100.${downloadType === 'video' ? 'mp3' : 'mp4'}`), 'wrong media type');
+      await fs.writeFile(path.join(outputDir, 'Track 100.jpg'), 'thumbnail');
+    }
+    const now = new Date().toISOString();
+    await writeJob(openDatabase(), {
+      id: 'local-duplicates', url: 'https://music.youtube.com/playlist?list=local-duplicates', isPlaylist: true,
+      status: 'completed', playlistTitle: 'Local duplicates', downloadType, initiatedBy: owner, folderName: 'local-duplicates', outputDir,
+      files: entries.map((entry) => `${entry.title}.${extension}`), createdAt: now, updatedAt: now
+    });
+    const job = await manager.rerunJob('local-duplicates', owner);
+    fixtureCleanups.set(context, async () => {
+      if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+    });
+    (await nextCommand(0)).finish(JSON.stringify({ title: 'Local duplicates', playlist_count: 101, entries }));
+    if (!allExisting) {
+      const download = await nextCommand(1);
+      assert.equal(download.args.at(-1), entries[100].url);
+      assert.deepEqual(job.commandProgress, { completed: 100, total: 101 });
+      await fs.writeFile(path.join(outputDir, `Track 100.${extension}`), NodeID3.create({ title: 'Track 100' }));
+      download.finish('Downloaded missing Track 100\n');
+    } else {
+      for (let attempt = 0; job.status === 'running' && calls.length === 1 && attempt < 500; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(calls.length, 1, 'existing songs must not start individual yt-dlp commands');
+    }
+    await waitForJobToFinish(job);
+    assert.equal(job.status, 'completed');
+    assert.equal(calls.length, allExisting ? 1 : 2);
+    assert.deepEqual(pauses, []);
+    assert.deepEqual(job.commandProgress, { completed: 101, total: 101 });
+    assert.ok(job.output.includes(`Skipping existing file: Track 0.${extension}`));
+    assert.ok(job.output.includes(`Skipping existing file: Track 99.${extension}`));
+    for (const { name } of specialTitles) assert.ok(job.output.includes(`Skipping existing file: ${name}.${extension}`));
+    const saved = JSON.parse((await openDatabase().prepare('SELECT data FROM jobs WHERE id = $1').get(job.id)).data);
+    assert.deepEqual(saved.commandProgress, { completed: 101, total: 101 });
+    assert.ok(saved.output.includes(`Skipping existing file: Track 0.${extension}`));
+  });
+}
+
+for (const downloadType of ['audio', 'video']) {
+  test(`large playlist skips duplicate entries downloaded earlier in the same job (${downloadType})`, { timeout: 15_000 }, async (context) => {
+    const extension = downloadType === 'video' ? 'mp4' : 'mp3';
+    const ffmpegPath = process.env.FFMPEG_PATH;
+    if (downloadType === 'video') {
+      process.env.FFMPEG_PATH = path.join(fixtureDirectory, 'missing-thumbnail-helper');
+      context.after(() => {
+        if (ffmpegPath === undefined) delete process.env.FFMPEG_PATH;
+        else process.env.FFMPEG_PATH = ffmpegPath;
+      });
+    }
+    const pauses = [];
+    const delayMock = context.mock.method(timers, 'setTimeout', async (delay) => { pauses.push(delay); });
+    context.after(() => { delayMock.mock.restore(); syncBuiltinESMExports(); });
+    const { manager, calls, nextCommand } = await makeQueueFixture(context);
+    const owner = { id: 'owner', role: 'user' };
+    const job = await manager.createJob('https://music.youtube.com/playlist?list=repeated-local-media', owner, { downloadType });
+    fixtureCleanups.set(context, async () => {
+      if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+    });
+    (await nextCommand(0)).finish(JSON.stringify({ title: 'Repeated media', playlist_count: 101,
+      entries: Array.from({ length: 101 }, () => ({ id: 'repeated', title: 'Repeated item' })) }));
+    const download = await nextCommand(1);
+    assert.ok(download.args.includes(downloadType === 'video' ? '--remux-video' : '--extract-audio'));
+    await fs.writeFile(path.join(job.outputDir, `Repeated item.${extension}`), NodeID3.create({ title: 'Repeated item' }));
+    download.finish('Downloaded repeated item\n');
+    for (let attempt = 0; job.status === 'running' && calls.length === 2 && attempt < 500; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(calls.length, 2);
+    await waitForJobToFinish(job);
+    assert.equal(job.status, 'completed');
+    assert.deepEqual(job.commandProgress, { completed: 101, total: 101 });
+    assert.deepEqual(pauses, []);
+    assert.equal(job.output.split(`Skipping existing file: Repeated item.${extension}`).length - 1, 100);
+  });
 }
 
 test('stopping a queued job removes its slot and a rerun cannot revive the old queue entry', { timeout: 10_000 }, async (context) => {
@@ -1440,7 +1549,8 @@ test('playlist metadata counts all songs independently of downloaded files', asy
   const { parsePlaylistMetadata } = await import(`../src/jobManager.js?metadata=${Date.now()}`);
   assert.deepEqual(parsePlaylistMetadata(JSON.stringify({ title: 'My playlist', playlist_count: 12, entries: [{ id: 'one' }] })), {
     playlistTitle: 'My playlist', folderName: 'My_playlist', playlistSongCount: 12,
-    playlistSongUrls: ['https://www.youtube.com/watch?v=one']
+    playlistSongUrls: ['https://www.youtube.com/watch?v=one'],
+    playlistSongs: [{ url: 'https://www.youtube.com/watch?v=one', title: null }]
   });
   assert.equal(parsePlaylistMetadata('{"title":"Jazz / Soul: live"}').playlistTitle, 'Jazz / Soul: live');
   assert.equal(parsePlaylistMetadata('{}').playlistTitle, null);
