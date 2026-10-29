@@ -827,7 +827,7 @@ app.get('/app-login', (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
-app.get(['/admin', '/admin/shared-links', '/admin/users/:id', '/settings'], (_req, res) => {
+app.get(['/admin', '/admin/shared-links', '/admin/jobs-queue', '/admin/users/:id', '/settings'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 

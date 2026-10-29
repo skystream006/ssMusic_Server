@@ -275,6 +275,15 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     } while (['queued', 'running'].includes(response.body.status));
     return response;
   }
+  await context.test('Jobs Queue frontend route serves the app shell on direct navigation', async () => {
+    for (const route of ['/admin/jobs-queue', '/admin/jobs-queue/']) {
+      const response = await call(route);
+      assert.equal(response.status, 200, response.text);
+      assert.match(response.headers['content-type'], /^text\/html/);
+      assert.equal(response.text, '<!doctype html><title>Test app shell</title>');
+    }
+  });
+
   await context.test('admin job queue endpoint is uncached and restricted for session, PAT and mobile clients', async () => {
     assert.equal((await call('/api/admin/jobs-queue')).status, 401);
     for (const headers of [...credentials.Owner, ...credentials.Other, ...credentials.Reader, mobileHeaders.Owner, mobileHeaders.Reader]) {
