@@ -8,7 +8,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobRateLimit, importJobFiles, isFileInsideJobFolder, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, transcribeJobFile } from './jobManager.js';
+import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
@@ -125,6 +125,10 @@ app.use(restrictSharedAccess);
 const mediaCount = createMediaCountMonitor(async () => scanMediaFiles((await getJobs())));
 registerAuthRoutes(app, authLimiters, () => mediaCount.getStatus());
 app.use('/api/admin/media-shares', requireAdmin, mediaShareHeaders, adminMediaSharesRouter());
+app.get('/api/admin/queue-jobs', requireAdmin, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ ...getJobQueue(req.user), maintenance: isUpdateInProgress(), rateLimit: getJobRateLimit() });
+});
 app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
   next();

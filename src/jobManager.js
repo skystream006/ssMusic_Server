@@ -15,6 +15,8 @@ import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from '.
 import { attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
 
 const jobs = new Map();
+const queuedJobs = [];
+let jobExecutionTail = Promise.resolve();
 const jobMutations = new Set();
 const transcriptionQueues = new Map();
 const deletingFiles = new Map();
@@ -392,12 +394,22 @@ function newJob(url, initiatedBy, metadataOnly = false, downloadType = 'audio') 
   return job;
 }
 
+function removeQueuedJob(job) {
+  const index = queuedJobs.indexOf(job);
+  if (index !== -1) queuedJobs.splice(index, 1);
+  delete job.queuePosition;
+  queuedJobs.forEach((queued, position) => { queued.queuePosition = position + 1; });
+}
+
 function startJob(job) {
-  executeJob(job).catch((error) => {
+  job.queuePosition = queuedJobs.push(job);
+  jobExecutionTail = jobExecutionTail.then(() => executeJob(job)).catch(async (error) => {
+    removeQueuedJob(job);
     job.status = 'failed';
     job.error = error.message;
+    job.output ||= error.message;
     job.updatedAt = new Date().toISOString();
-    persistJob(job).catch((persistError) => console.error('Unable to persist job:', persistError.message));
+    await persistJob(job).catch((persistError) => console.error('Unable to persist job:', persistError.message));
   });
 }
 
@@ -467,13 +479,18 @@ async function removeJobOutput(job) {
 }
 
 async function executeJob(job) {
+  while (updateGate || getJobRateLimit().limited) {
+    await waitForUpdateGate();
+    const remainingCooldown = jobsDisabledUntil - Date.now();
+    if (remainingCooldown > 0) await new Promise((resolve) => setTimeout(resolve, remainingCooldown));
+  }
   const controller = new AbortController();
   activeJobControllers.set(job.id, controller);
   let counted = false;
   try {
-    await waitForUpdateGate();
     controller.signal.throwIfAborted();
     assertJobsEnabled();
+    removeQueuedJob(job);
     runningJobsCount += 1;
     counted = true;
     await executeJobWork(job, controller.signal);
@@ -544,6 +561,9 @@ async function executeJobWork(job, signal) {
   ];
 
   args.push(job.isPlaylist ? '--yes-playlist' : '--no-playlist');
+  if (job.isPlaylist && job.playlistSongCount > 100) {
+    args.push('--sleep-interval', '10', '--max-sleep-interval', '20');
+  }
   args.push(job.url);
 
   job.command = job.metadataOnly ? null : [ytDlpPath, ...args]
@@ -1224,6 +1244,29 @@ export async function setJobContributors(id, userIds, user = null) {
     await persistJob(job);
     return job;
   } finally { jobMutations.delete(id); }
+}
+
+export function getJobQueue(user) {
+  const summarize = (job) => {
+    const visible = user === undefined ? job : visibleJob(job, user);
+    if (!visible) return { hidden: true, status: job.status, queuePosition: job.queuePosition };
+    return {
+      id: visible.id,
+      url: visible.url,
+      playlistTitle: visible.playlistTitle,
+      initiatedBy: visible.initiatedBy,
+      status: visible.status,
+      queuePosition: visible.queuePosition,
+      isPlaylist: visible.isPlaylist,
+      playlistSongCount: visible.playlistSongCount,
+      downloadType: visible.downloadType,
+      metadataOnly: visible.metadataOnly,
+      createdAt: visible.createdAt,
+      updatedAt: visible.updatedAt
+    };
+  };
+  const running = [...jobs.values()].find((job) => job.status === 'running');
+  return { running: running ? summarize(running) : null, queued: queuedJobs.map(summarize) };
 }
 
 export async function getJobs(userId) {

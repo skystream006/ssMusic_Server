@@ -51,6 +51,8 @@ import appIcon from './assets/ic_launcher.png';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
 import PublicMedia, { PublicPlaylist } from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
+import AdminJobQueue from './AdminJobQueue.jsx';
+import StatusBadge from './StatusBadge.jsx';
 import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
 import { LibraryAccessList, LinkedUsers, OrganizedSharedUsers, OrganizerControl, SettingsTabs, SharedRegistrationFields, UsernameForm } from './AccountSettings.jsx';
 import ImportMusic from './ImportMusic.jsx';
@@ -173,6 +175,7 @@ function usePolling(loader, interval = POLL_INTERVAL, pollingKey = 'default') {
 }
 
 const loadJobs = () => request('/api/jobs');
+const loadJobQueue = () => request('/api/admin/queue-jobs');
 const loadJobRateLimit = () => request('/api/jobs/status');
 const loadBackup = () => request('/api/library/backup');
 const loadHealth = () => request('/api/health');
@@ -246,21 +249,13 @@ function AppShell({ children, section = 'jobs' }) {
         {section === 'admin' && <nav className="admin-tabs" aria-label="Administration">
           <a href="/admin" aria-current={window.location.pathname === '/admin' ? 'page' : undefined}><Users size={17} />Users</a>
           <a href="/admin/shared-links" aria-current={window.location.pathname === '/admin/shared-links' ? 'page' : undefined}><Share2 size={17} />Shared links</a>
+          <a href="/admin/queue-jobs" aria-current={window.location.pathname === '/admin/queue-jobs' ? 'page' : undefined}><Clock3 size={17} />Queue Jobs</a>
         </nav>}
         {children}
       </main>
       {choosingTheme && <ThemeDialog onClose={() => setChoosingTheme(false)} />}
     </div>
   );
-}
-
-function StatusBadge({ status }) {
-  const icon = status === 'completed' ? <Check size={13} />
-    : status === 'failed' ? <X size={13} />
-      : status === 'partially_completed' ? <CircleAlert size={13} />
-      : status === 'running' ? <RefreshCw size={13} /> : <Clock3 size={13} />;
-  const label = status === 'partially_completed' ? 'partially completed' : status;
-  return <span className={`status status-${status}`}>{icon}{label}</span>;
 }
 
 function MusicHomePage() {
@@ -605,7 +600,7 @@ function JobsPage() {
                     checked={selectedJobIds.has(job.id)} disabled={Boolean(jobAction)} onChange={(event) => selectJobs([job.id], event.target.checked)} /></label></td>}
                   <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong>{job.playlistTitle || 'Preparing playlist'}</strong><small>{job.id}</small></div></a></td>
                   <td className="job-column-format">{job.isPlaylist ? 'Playlist' : 'Track'}</td>
-                  <td><StatusBadge status={job.status} /></td>
+                  <td><StatusBadge status={job.status} queuePosition={job.queuePosition} /></td>
                   <td className="job-column-created">{formatDate(job.createdAt)}</td>
                   <td>{job.isPlaylist ? (job.playlistSongCount ?? '-') : 1}</td>
                   <td>{countDownloadedFiles(job.files)}</td>
@@ -887,7 +882,7 @@ function JobPage({ id }) {
           <div>
             <p className="eyebrow">{job.source ? 'Music import' : job.isPlaylist ? 'Playlist download' : 'Track download'}</p>
             <h1>{job.playlistTitle || 'Preparing playlist'}</h1>
-            <div className="detail-meta"><StatusBadge status={job.status} /><span>Created {formatDate(job.createdAt)}</span>{job.private && <span><Lock size={14} /> Private — owner only</span>}</div>
+            <div className="detail-meta"><StatusBadge status={job.status} queuePosition={job.queuePosition} /><span>Created {formatDate(job.createdAt)}</span>{job.private && <span><Lock size={14} /> Private — owner only</span>}</div>
           </div>
           <div className="detail-actions">
             <div className="record-art"><Disc3 size={70} strokeWidth={1.2} /></div>
@@ -1425,6 +1420,12 @@ function AdminSharedLinksPage() {
   return <AppShell section="admin"><AdminMediaShares request={request} confirm={confirm} />{dialog}</AppShell>;
 }
 
+function AdminQueueJobsPage() {
+  const [revision, setRevision] = useState(0);
+  const { data, error } = usePolling(loadJobQueue, 2000, revision);
+  return <AppShell section="admin"><AdminJobQueue data={data} error={error} onRefresh={() => setRevision((value) => value + 1)} /></AppShell>;
+}
+
 function AdminPage() {
   const { user: currentUser } = useContext(AuthContext);
   const [users, setUsers] = useState([]);
@@ -1558,6 +1559,7 @@ function SharedSettingsPage() {
 function PageRoutes({ user }) {
   if (user.role === 'shared') return window.location.pathname === '/settings' ? <SharedSettingsPage /> : <MusicHomePage />;
   if (window.location.pathname === '/admin/shared-links' && user.role === 'admin') return <AdminSharedLinksPage />;
+  if (window.location.pathname === '/admin/queue-jobs' && user.role === 'admin') return <AdminQueueJobsPage />;
   const userMatch = window.location.pathname.match(/^\/admin\/users\/([^/]+)\/?$/);
   if (userMatch && user.role === 'admin') return <UserSettingsPage userId={decodeURIComponent(userMatch[1])} />;
   if (window.location.pathname === '/settings') return <UserSettingsPage />;

@@ -275,6 +275,22 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     } while (['queued', 'running'].includes(response.body.status));
     return response;
   }
+  await context.test('admin job queue endpoint is uncached and restricted for session, PAT and mobile clients', async () => {
+    assert.equal((await call('/api/admin/queue-jobs')).status, 401);
+    for (const headers of [...credentials.Owner, ...credentials.Other, ...credentials.Reader, mobileHeaders.Owner, mobileHeaders.Reader]) {
+      assert.equal((await call('/api/admin/queue-jobs', 'GET', headers)).status, 403);
+    }
+    for (const headers of [...credentials.Admin, mobileHeaders.Admin]) {
+      const result = await call('/api/admin/queue-jobs', 'GET', headers);
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.headers['cache-control'], 'no-store');
+      assert.deepEqual(result.body, {
+        running: null, queued: [], maintenance: false,
+        rateLimit: { limited: false, reenabledAt: null, message: null }
+      });
+    }
+  });
+
   await context.test('server cooldown status and job rejection match for session, PAT and mobile clients', async () => {
     assert.deepEqual((await call('/api/jobs/status', 'GET', credentials.Owner[0])).body,
       { limited: false, reenabledAt: null, message: null });
