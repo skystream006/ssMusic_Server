@@ -25,7 +25,9 @@ const jobMutations = new Set();
 const transcriptionQueues = new Map();
 const deletingFiles = new Map();
 const fileMutationTails = new Map();
+const jobPersistenceTails = new Map();
 const downloadArchiveName = '.download-archive.txt';
+const completedFilePrefix = '[ssmusic:file] ';
 
 async function mutateJobFiles(id, mutate) {
   const operation = (fileMutationTails.get(id) || Promise.resolve()).then(mutate);
@@ -123,10 +125,20 @@ async function loadJobs() {
   }
 }
 
-async function persistJob(job) {
-  (await writeJob(database, job));
-  if (job.status === 'queued' || job.status === 'running') jobs.set(job.id, job);
-  else jobs.delete(job.id);
+async function persistJob(job, update) {
+  const operation = (jobPersistenceTails.get(job.id) || Promise.resolve()).then(async () => {
+    update?.();
+    await writeJob(database, job);
+    if (job.status === 'queued' || job.status === 'running') jobs.set(job.id, job);
+    else jobs.delete(job.id);
+  });
+  const tail = operation.catch(() => {});
+  jobPersistenceTails.set(job.id, tail);
+  try {
+    return await operation;
+  } finally {
+    if (jobPersistenceTails.get(job.id) === tail) jobPersistenceTails.delete(job.id);
+  }
 }
 
 await loadJobs();
@@ -153,10 +165,10 @@ async function refreshSongMetadata(job, names = job.files || []) {
   }
 }
 
-async function embedDownloadedArtwork(job) {
+async function embedDownloadedArtwork(job, names = job.files || []) {
   const outputDir = job.outputDir && await fs.realpath(job.outputDir).catch(() => null);
   if (!outputDir) return;
-  for (const name of job.files || []) {
+  for (const name of names) {
     if (!isValidJobFileName(name) || !/\.mp3$/i.test(name)) continue;
     const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
     if (!filePath || !isFileInsideJobFolder({ outputDir }, filePath)) continue;
@@ -414,7 +426,84 @@ function appendJobOutput(job, output) {
   job.output = [job.output, output].filter(Boolean).join('\n\n');
 }
 
-async function runJobCommand(job, command, args, { metadata = false, includeCommand = false, signal: jobSignal } = {}) {
+function createJobPublisher(job) {
+  const pending = new Set();
+  const published = new Set();
+  let worker = null;
+  let artwork = Promise.resolve();
+  let checkpoint = null;
+  let checkpointRequested = false;
+  let failure;
+  const recordFailure = (error) => {
+    failure ||= error;
+    const message = `Unable to publish completed media: ${error.message}`;
+    appendJobOutput(job, `[system]\n${message}`);
+    appendLiveJobOutput(job.id, 'system', `${message}\n`);
+  };
+  async function publish() {
+    while (pending.size) {
+      const batch = [...pending];
+      pending.clear();
+      const names = [];
+      for (const filePath of batch) {
+        const name = path.relative(path.resolve(job.outputDir), path.resolve(filePath));
+        if (path.basename(name) !== name || !isValidJobFileName(name)
+          || path.extname(name).toLowerCase() !== (job.downloadType === 'video' ? '.mp4' : '.mp3') || published.has(name)) continue;
+        const stat = await fs.lstat(path.join(job.outputDir, name)).catch(() => null);
+        if (stat?.isFile() && stat.size > 0) names.push(name);
+      }
+      if (!names.length) continue;
+      const metadataJob = { ...job, files: names,
+        songMetadata: Object.fromEntries(names.map((name) => [name, job.songMetadata?.[name] || {}])) };
+      await refreshSongMetadata(metadataJob, names);
+      await persistJob(job, () => {
+        job.files = [...new Set([...(job.files || []), ...names])];
+        job.songMetadata = { ...job.songMetadata, ...metadataJob.songMetadata };
+        job.updatedAt = new Date().toISOString();
+      });
+      for (const name of names) published.add(name);
+      artwork = artwork.then(async () => {
+        await embedDownloadedArtwork(metadataJob, names);
+        await refreshJobThumbnails(metadataJob, names);
+      }).catch(recordFailure);
+    }
+  }
+  function start() {
+    if (worker || failure || !pending.size) return;
+    worker = publish().catch(recordFailure).finally(() => {
+      worker = null;
+      start();
+    });
+  }
+  function saveCheckpoint() {
+    checkpointRequested = true;
+    if (checkpoint || failure) return;
+    checkpoint = (async () => {
+      while (checkpointRequested && !failure) {
+        checkpointRequested = false;
+        await persistJob(job);
+      }
+    })().catch(recordFailure).finally(() => {
+      checkpoint = null;
+      if (checkpointRequested && !failure) saveCheckpoint();
+    });
+  }
+  return {
+    checkpoint: saveCheckpoint,
+    enqueue(filePath) {
+      if (typeof filePath !== 'string' || !filePath) return;
+      pending.add(filePath);
+      start();
+    },
+    async flush() {
+      while (worker || checkpoint) await Promise.all([worker, checkpoint]);
+      await artwork;
+      if (failure) throw failure;
+    }
+  };
+}
+
+async function runJobCommand(job, command, args, { metadata = false, includeCommand = false, signal: jobSignal, publisher } = {}) {
   const commandText = [command, ...args].map((value) => value.includes(' ') ? `"${value}"` : value).join(' ');
   let retried = false;
   const recordOutput = (result) => {
@@ -425,18 +514,35 @@ async function runJobCommand(job, command, args, { metadata = false, includeComm
     jobSignal.throwIfAborted();
     job.command = commandText;
     job.updatedAt = new Date().toISOString();
-    await persistJob(job);
+    if (publisher) publisher.checkpoint();
+    else await persistJob(job);
     const controller = new AbortController();
     activeJobControllers.set(job.id, controller);
     const signal = AbortSignal.any([controller.signal, jobSignal]);
+    let pendingLine = '';
+    const completedLine = (line) => {
+      if (!line.startsWith(completedFilePrefix)) return;
+      try { publisher.enqueue(JSON.parse(line.slice(completedFilePrefix.length))); }
+      catch {}
+    };
     appendLiveJobOutput(job.id, metadata ? 'metadata command' : 'command', `${commandText}\n`);
     try {
       const result = await runCommand(command, args, signal,
-        (stream, chunk) => appendLiveJobOutput(job.id, metadata ? `metadata ${stream}` : stream, chunk));
+        (stream, chunk) => {
+          appendLiveJobOutput(job.id, metadata ? `metadata ${stream}` : stream, chunk);
+          if (publisher && stream === 'stdout') {
+            const lines = (pendingLine + chunk).split(/\r?\n/);
+            pendingLine = lines.pop();
+            for (const line of lines) completedLine(line);
+          }
+        });
+      if (publisher && pendingLine) completedLine(pendingLine);
       if (!metadata || retried) recordOutput(result);
-      await persistJob(job);
+      if (publisher) publisher.checkpoint();
+      else await persistJob(job);
       return result;
     } catch (error) {
+      if (publisher && pendingLine) completedLine(pendingLine);
       const classification = classifyCommandOutput(error);
       if (!jobSignal.aborted && error.code !== 'JOBS_RATE_LIMITED' && !classification.hasPrivateVideoWarning && !classification.hasNonPrivateError) {
         const message = `ERROR: ${error.message}\n`;
@@ -446,7 +552,8 @@ async function runJobCommand(job, command, args, { metadata = false, includeComm
       if (!metadata || retried || jobSignal.aborted || error.code === 'JOBS_RATE_LIMITED') recordOutput(error);
       if (jobSignal.aborted) throw error;
       if (error.code !== 'JOBS_RATE_LIMITED') {
-        await persistJob(job);
+        if (publisher) publisher.checkpoint();
+        else await persistJob(job);
         throw error;
       }
       job.pausedUntil = getJobRateLimit().reenabledAt;
@@ -618,7 +725,7 @@ async function finishStoppedJob(job) {
   delete job.pausedUntil;
   job.updatedAt = new Date().toISOString();
   appendJobOutput(job, '[system]\nStopped by user. Downloaded files have been kept.');
-  if (job.outputDir) {
+  if (job.outputDir && !jobExecutions.get(job.id)?.publisher) {
     job.files = await listDownloadedFiles(job.outputDir);
     await refreshSongMetadata(job);
   }
@@ -669,7 +776,7 @@ async function findExistingMediaFile(job, title) {
   return null;
 }
 
-async function runDownloadCommands(job, command, args, songs, signal) {
+async function runDownloadCommands(job, command, args, songs, signal, publisher) {
   if (!songs.length) {
     const error = new Error('Unable to enumerate playlist items. Rerun the job to retrieve its media list.');
     appendJobOutput(job, error.message);
@@ -688,11 +795,12 @@ async function runDownloadCommands(job, command, args, songs, signal) {
       const message = `Skipping existing file: ${existingFile}`;
       appendJobOutput(job, `[system]\n${message}`);
       appendLiveJobOutput(job.id, 'system', `${message}\n`);
+      publisher?.enqueue(path.resolve(job.outputDir, existingFile));
       result = { stdout: message, stderr: '' };
     } else {
       if (index > 0 && !skipNextDelay) await sleep(10_000, undefined, { signal });
       try {
-        result = await runJobCommand(job, command, [...args, url], { includeCommand: songs.length > 1, signal });
+        result = await runJobCommand(job, command, [...args, url], { includeCommand: songs.length > 1, signal, publisher });
       } catch (error) {
         if (signal.aborted) throw error;
         result = error;
@@ -708,7 +816,8 @@ async function runDownloadCommands(job, command, args, songs, signal) {
     if (job.commandProgress) {
       job.commandProgress.completed = index + 1;
       job.updatedAt = new Date().toISOString();
-      await persistJob(job);
+      if (publisher) publisher.checkpoint();
+      else await persistJob(job);
     }
   }
   if (lastError) throw Object.assign(lastError, { stdout, stderr });
@@ -779,6 +888,11 @@ async function executeJobWork(job, signal) {
   } else {
     delete job.commandProgress;
   }
+  const publisher = individualSongs && !job.metadataOnly ? createJobPublisher(job) : null;
+  if (publisher) {
+    jobExecutions.get(job.id).publisher = publisher;
+    args.push('--print', `after_move:${completedFilePrefix}%(filepath)j`, '--no-quiet', '--no-simulate');
+  }
   args.push(job.isPlaylist && !individualSongs ? '--yes-playlist' : '--no-playlist');
 
   job.command = job.metadataOnly || individualSongs ? null : [ytDlpPath, ...args, job.url]
@@ -792,10 +906,10 @@ async function executeJobWork(job, signal) {
     if (job.metadataOnly && metadataError) throw metadataError;
     const result = job.metadataOnly
       ? { stdout: 'Metadata retrieved. Media download skipped.', stderr: '' }
-      : await runDownloadCommands(job, ytDlpPath, args, songs, signal);
+      : await runDownloadCommands(job, ytDlpPath, args, songs, signal, publisher);
     const classification = classifyCommandOutput(result);
     if (job.metadataOnly) appendJobOutput(job, formatCommandOutput(result));
-    job.files = await listDownloadedFiles(job.outputDir);
+    if (!publisher) job.files = await listDownloadedFiles(job.outputDir);
     completedStatus = classification.hasPrivateVideoWarning ? 'partially_completed' : 'completed';
     job.warning = classification.hasPrivateVideoWarning ? 'One or more private or unavailable videos were skipped.' : null;
   } catch (error) {
@@ -806,17 +920,20 @@ async function executeJobWork(job, signal) {
     job.error = privateVideosOnly ? null : error.message;
     job.warning = privateVideosOnly ? 'One or more private or unavailable videos were skipped.' : null;
     job.output ||= formatCommandOutput(error) || error.message;
-    job.files = await listDownloadedFiles(job.outputDir);
+    if (!publisher) job.files = await listDownloadedFiles(job.outputDir);
   } finally {
+    await publisher?.flush();
     await cooldownPersistence;
     job.playlistTitle ||= inferPlaylistTitle(job);
     if (!signal.aborted) {
-      if (!job.metadataOnly) await embedDownloadedArtwork(job);
-      await refreshSongMetadata(job);
+      if (!publisher) {
+        if (!job.metadataOnly) await embedDownloadedArtwork(job);
+        await refreshSongMetadata(job);
+      }
       signal.throwIfAborted();
       job.updatedAt = new Date().toISOString();
       await persistJob({ ...job, status: completedStatus || job.status });
-      await refreshJobThumbnails(job, job.files, { force: !job.metadataOnly });
+      if (!publisher) await refreshJobThumbnails(job, job.files, { force: !job.metadataOnly });
       if (completedStatus) job.status = completedStatus;
     }
   }

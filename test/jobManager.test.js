@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { closeDatabases, openDatabase, writeJob, writeUser } from '../src/database.js';
 import { pagePostgresTracks } from '../src/postgresCatalog.js';
+import { linkLibraryJob } from '../src/libraryStore.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 import http from 'node:http';
 import AdmZip from 'adm-zip';
@@ -295,6 +296,240 @@ async function makeQueueFixture(t) {
   };
 }
 
+test('large playlist publishes completed files while the next download runs without indexing unfinished files', { timeout: 15_000 }, async (context) => {
+  const delayMock = context.mock.method(timers, 'setTimeout', async () => {});
+  context.after(() => { delayMock.mock.restore(); syncBuiltinESMExports(); });
+  const { manager, nextCommand } = await makeQueueFixture(context);
+  const owner = { id: 'owner', name: 'Owner', userHandle: 'owner', role: 'user', status: 'approved', credentials: [],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await writeUser(openDatabase(), owner);
+  const job = await manager.createJob('https://music.youtube.com/playlist?list=publish-while-downloading', owner);
+  await linkLibraryJob(owner.id, job, await manager.getJobs());
+  let releaseMetadata;
+  const metadataGate = new Promise((resolve) => { releaseMetadata = resolve; });
+  let releaseIndex;
+  const indexGate = new Promise((resolve) => { releaseIndex = resolve; });
+  fixtureCleanups.set(context, async () => {
+    releaseMetadata();
+    releaseIndex();
+    if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+  });
+  (await nextCommand(0)).finish(JSON.stringify({ title: 'Publish progressively', playlist_count: 101, entries: largePlaylistEntries }));
+  const first = await nextCommand(1);
+  const firstPath = path.join(job.outputDir, 'First finished.mp3');
+  await fs.writeFile(firstPath, NodeID3.create({ title: 'First indexed title', artist: 'Progressive artist' }));
+  await fs.writeFile(path.join(job.outputDir, 'Unfinished.mp3.part'), 'partial download');
+  await fs.writeFile(path.join(job.outputDir, 'Artwork.jpg'), 'thumbnail');
+  await fs.writeFile(path.join(job.outputDir, 'Empty.mp3'), '');
+  await fs.mkdir(path.join(job.outputDir, 'Directory.mp3'));
+  await fs.writeFile(path.join(fixtureDirectory, 'Outside.mp3'), NodeID3.create({ title: 'Outside' }));
+  const open = fs.open.bind(fs);
+  let metadataStarted = false;
+  context.mock.method(fs, 'open', async (filePath, ...args) => {
+    if (filePath === firstPath) {
+      metadataStarted = true;
+      await metadataGate;
+    }
+    return open(filePath, ...args);
+  });
+  const database = openDatabase();
+  const prepare = database.prepare.bind(database);
+  let indexStarted = false;
+  context.mock.method(database, 'prepare', (sql) => {
+    const statement = prepare(sql);
+    if (!sql.includes('INSERT INTO songs ')) return statement;
+    return { ...statement, async run(...args) {
+      if (!indexStarted && String(args[0]).includes('First finished.mp3')) {
+        indexStarted = true;
+        await indexGate;
+      }
+      return statement.run(...args);
+    } };
+  });
+  first.stdout.write('[ssmusic:file] not-json\n');
+  for (const filePath of [path.join(job.outputDir, 'Unfinished.mp3.part'), path.join(job.outputDir, 'Artwork.jpg'),
+    path.join(job.outputDir, 'Empty.mp3'), path.join(job.outputDir, 'Directory.mp3'), path.join(fixtureDirectory, 'Outside.mp3')]) {
+    first.stdout.write(`[ssmusic:file] ${JSON.stringify(filePath)}\n`);
+  }
+  const notification = `[ssmusic:file] ${JSON.stringify(firstPath)}\n`;
+  first.stdout.write(notification.slice(0, 10));
+  first.finish(notification.slice(10) + 'First finished\n');
+  const second = await nextCommand(2);
+  assert.equal(second.args.at(-1), largePlaylistEntries[1].url);
+  await fs.writeFile(path.join(job.outputDir, 'Still writing.mp3'), 'unfinished final extension');
+  for (let attempt = 0; !metadataStarted && attempt < 100; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(metadataStarted, true, 'publication begins before the next command finishes');
+  assert.equal(job.status, 'running');
+  assert.deepEqual(job.files, [], 'files are not exposed before their metadata is ready');
+  releaseMetadata();
+  for (let attempt = 0; !indexStarted && attempt < 100; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(indexStarted, true);
+  second.finish('Second download failed before its final file was ready\n', 1);
+  const third = await nextCommand(3);
+  assert.equal(third.args.at(-1), largePlaylistEntries[2].url, 'indexing must not block the next download');
+  releaseIndex();
+  let indexed;
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    indexed = await openDatabase().prepare('SELECT name, metadata FROM songs WHERE job_id = $1').all(job.id);
+    if (indexed.length) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.deepEqual(indexed.map((file) => file.name), ['First finished.mp3']);
+  const metadata = JSON.parse(indexed[0].metadata);
+  assert.equal(metadata.title, 'First indexed title');
+  assert.equal(metadata.artist, 'Progressive artist');
+  const tracks = await pagePostgresTracks(openDatabase(), owner.id, { search: 'First indexed title' });
+  assert.equal(tracks.total, 1);
+  assert.equal(tracks.files[0].name, 'First finished.mp3');
+  assert.deepEqual((await manager.getJob(job.id)).files, ['First finished.mp3']);
+  assert.equal(job.status, 'running');
+  assert.deepEqual(job.commandProgress, { completed: 2, total: 101 });
+  assert.equal((await openDatabase().prepare('SELECT status FROM jobs WHERE id = $1').get(job.id)).status, 'running');
+  await manager.stopJob(job.id, owner);
+  assert.equal(job.status, 'stopped');
+  assert.deepEqual(job.files, ['First finished.mp3']);
+});
+
+test('large video playlist publishes completed MP4 files before its next command finishes', { timeout: 15_000 }, async (context) => {
+  const ffmpegPath = process.env.FFMPEG_PATH;
+  process.env.FFMPEG_PATH = path.join(fixtureDirectory, 'missing-thumbnail-helper');
+  context.after(() => {
+    if (ffmpegPath === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = ffmpegPath;
+  });
+  const delayMock = context.mock.method(timers, 'setTimeout', async () => {});
+  context.after(() => { delayMock.mock.restore(); syncBuiltinESMExports(); });
+  const { manager, nextCommand } = await makeQueueFixture(context);
+  const owner = { id: 'video-owner', name: 'Video owner', userHandle: 'video-owner', role: 'user', status: 'approved', credentials: [],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await writeUser(openDatabase(), owner);
+  const job = await manager.createJob('https://music.youtube.com/playlist?list=publish-video', owner, { downloadType: 'video' });
+  await linkLibraryJob(owner.id, job, await manager.getJobs());
+  fixtureCleanups.set(context, async () => {
+    if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+  });
+  (await nextCommand(0)).finish(JSON.stringify({ title: 'Video publication', playlist_count: 101, entries: largePlaylistEntries }));
+  const first = await nextCommand(1);
+  assert.ok(first.args.includes('--remux-video'));
+  assert.ok(first.args.includes('after_move:[ssmusic:file] %(filepath)j'));
+  assert.ok(first.args.includes('--no-simulate'));
+  const completed = path.join(job.outputDir, 'Finished video.mp4');
+  await fs.writeFile(completed, 'completed video fixture');
+  await fs.writeFile(path.join(job.outputDir, 'Wrong format.mp3'), NodeID3.create({ title: 'Not a video' }));
+  first.stdout.write(`[ssmusic:file] ${JSON.stringify(path.join(job.outputDir, 'Wrong format.mp3'))}\n`);
+  first.finish(`[ssmusic:file] ${JSON.stringify(completed)}\nFinished video\n`);
+  await nextCommand(2);
+  await fs.writeFile(path.join(job.outputDir, 'Incomplete.mp4'), 'unreported download');
+  let tracks;
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    tracks = await pagePostgresTracks(openDatabase(), owner.id);
+    if (tracks.total) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(tracks.total, 1);
+  assert.equal(tracks.files[0].name, 'Finished video.mp4');
+  assert.deepEqual(job.files, ['Finished video.mp4']);
+  assert.equal(job.status, 'running');
+  await manager.stopJob(job.id, owner);
+  assert.equal(job.status, 'stopped');
+  assert.deepEqual(job.files, ['Finished video.mp4']);
+});
+
+test('large playlist waits for background publication before completing', { timeout: 15_000 }, async (context) => {
+  const delayMock = context.mock.method(timers, 'setTimeout', async () => {});
+  context.after(() => { delayMock.mock.restore(); syncBuiltinESMExports(); });
+  const { manager, calls, nextCommand } = await makeQueueFixture(context);
+  const owner = { id: 'owner', name: 'Owner', userHandle: 'owner', role: 'user', status: 'approved', credentials: [],
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await writeUser(openDatabase(), owner);
+  const job = await manager.createJob('https://music.youtube.com/playlist?list=publish-final', owner);
+  await linkLibraryJob(owner.id, job, await manager.getJobs());
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  fixtureCleanups.set(context, async () => {
+    release();
+    if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+  });
+  (await nextCommand(0)).finish(JSON.stringify({ title: 'Final publication', playlist_count: 101,
+    entries: Array.from({ length: 101 }, () => ({ id: 'final', title: 'Final file' })) }));
+  const download = await nextCommand(1);
+  const filePath = path.join(job.outputDir, 'Final file.mp3');
+  await fs.writeFile(filePath, NodeID3.create({ title: 'Final indexed title' }));
+  const open = fs.open.bind(fs);
+  let metadataStarted = false;
+  context.mock.method(fs, 'open', async (name, ...args) => {
+    if (name === filePath) {
+      metadataStarted = true;
+      await gate;
+    }
+    return open(name, ...args);
+  });
+  download.finish(`[ssmusic:file] ${JSON.stringify(filePath)}\nDownload finished\n`);
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (metadataStarted && job.commandProgress?.completed === 101) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(metadataStarted, true);
+  assert.deepEqual(job.commandProgress, { completed: 101, total: 101 });
+  assert.equal(job.status, 'running');
+  assert.deepEqual(job.files, []);
+  assert.equal(calls.length, 2);
+  release();
+  await waitForJobToFinish(job);
+  assert.equal(job.status, 'completed');
+  assert.deepEqual(job.files, ['Final file.mp3']);
+  assert.equal((await pagePostgresTracks(openDatabase(), owner.id, { search: 'Final indexed title' })).total, 1);
+  const saved = await openDatabase().prepare('SELECT status, data FROM jobs WHERE id = $1').get(job.id);
+  assert.equal(saved.status, 'completed');
+  assert.deepEqual(JSON.parse(saved.data).commandProgress, { completed: 101, total: 101 });
+});
+
+test('large playlist surfaces background index failures and releases the next queued job', { timeout: 15_000 }, async (context) => {
+  const delayMock = context.mock.method(timers, 'setTimeout', async () => {});
+  context.after(() => { delayMock.mock.restore(); syncBuiltinESMExports(); });
+  const { manager, nextCommand } = await makeQueueFixture(context);
+  const owner = { id: 'owner', role: 'user' };
+  const job = await manager.createJob('https://music.youtube.com/playlist?list=publish-error', owner);
+  fixtureCleanups.set(context, async () => {
+    if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+  });
+  (await nextCommand(0)).finish(JSON.stringify({ title: 'Publication error', playlist_count: 101,
+    entries: Array.from({ length: 101 }, () => ({ id: 'publish-error', title: 'Publish error' })) }));
+  const download = await nextCommand(1);
+  const waiting = await manager.createJob('https://music.youtube.com/watch?v=after-publish-error', owner, { metadataOnly: true });
+  const filePath = path.join(job.outputDir, 'Publish error.mp3');
+  await fs.writeFile(filePath, NodeID3.create({ title: 'Publication error' }));
+  const database = openDatabase();
+  const prepare = database.prepare.bind(database);
+  let failed = false;
+  context.mock.method(database, 'prepare', (sql) => {
+    const statement = prepare(sql);
+    if (!sql.includes('INSERT INTO songs ')) return statement;
+    return { ...statement, async run(...args) {
+      if (!failed && String(args[0]).includes('Publish error.mp3')) {
+        failed = true;
+        throw new Error('Simulated index failure');
+      }
+      return statement.run(...args);
+    } };
+  });
+  download.finish(`[ssmusic:file] ${JSON.stringify(filePath)}\nOutput before indexing failed\n`);
+  const next = await nextCommand(2);
+  assert.equal(failed, true);
+  assert.equal(job.status, 'failed');
+  assert.match(job.error, /Simulated index failure/);
+  assert.match(job.output, /Output before indexing failed/);
+  assert.match(job.output, /Unable to publish completed media/);
+  assert.equal(next.args.at(-1), waiting.url);
+  next.finish();
+  await waitForJobToFinish(waiting);
+  assert.equal(waiting.status, 'completed');
+});
+
 for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['video', false], ['video', true]]) {
   test(`large playlist skips existing local files before spawning commands (${downloadType}, ${allExisting ? 'all existing' : 'missing final song'})`, { timeout: 15_000 }, async (context) => {
     const extension = downloadType === 'video' ? 'mp4' : 'mp3';
@@ -333,6 +568,7 @@ for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['
     await writeJob(openDatabase(), {
       id: 'local-duplicates', url: 'https://music.youtube.com/playlist?list=local-duplicates', isPlaylist: true,
       status: 'completed', playlistTitle: 'Local duplicates', downloadType, initiatedBy: owner, folderName: 'local-duplicates', outputDir,
+      songMetadata: { [`Track 0.${extension}`]: { transcriptionLocked: true } },
       files: entries.map((entry) => `${entry.title}.${extension}`), createdAt: now, updatedAt: now
     });
     const job = await manager.rerunJob('local-duplicates', owner);
@@ -345,7 +581,7 @@ for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['
       assert.equal(download.args.at(-1), entries[100].url);
       assert.deepEqual(job.commandProgress, { completed: 100, total: 101 });
       await fs.writeFile(path.join(outputDir, `Track 100.${extension}`), NodeID3.create({ title: 'Track 100' }));
-      download.finish('Downloaded missing Track 100\n');
+      download.finish(`[ssmusic:file] ${JSON.stringify(path.join(outputDir, `Track 100.${extension}`))}\nDownloaded missing Track 100\n`);
     } else {
       for (let attempt = 0; job.status === 'running' && calls.length === 1 && attempt < 500; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -355,6 +591,7 @@ for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['
     await waitForJobToFinish(job);
     assert.equal(job.status, 'completed');
     assert.equal(calls.length, allExisting ? 1 : 2);
+    assert.equal(job.songMetadata[`Track 0.${extension}`].transcriptionLocked, true);
     assert.deepEqual(pauses, []);
     assert.deepEqual(job.commandProgress, { completed: 101, total: 101 });
     assert.ok(job.output.includes(`Skipping existing file: Track 0.${extension}`));
@@ -391,7 +628,7 @@ for (const downloadType of ['audio', 'video']) {
     const download = await nextCommand(1);
     assert.ok(download.args.includes(downloadType === 'video' ? '--remux-video' : '--extract-audio'));
     await fs.writeFile(path.join(job.outputDir, `Repeated item.${extension}`), NodeID3.create({ title: 'Repeated item' }));
-    download.finish('Downloaded repeated item\n');
+    download.finish(`[ssmusic:file] ${JSON.stringify(path.join(job.outputDir, `Repeated item.${extension}`))}\nDownloaded repeated item\n`);
     for (let attempt = 0; job.status === 'running' && calls.length === 2 && attempt < 500; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
@@ -478,6 +715,7 @@ for (const phase of ['metadata', 'download', 'song delay', 'cooldown']) {
       archive = active.args[active.args.indexOf('--download-archive') + 1];
       await fs.writeFile(keptFile, NodeID3.create({ title: 'Kept song' }));
       await fs.writeFile(archive, 'youtube kept-song\n');
+      active.stdout.write(`[ssmusic:file] ${JSON.stringify(keptFile)}\n`);
     }
     active.stdout.write('Output before stop\n');
     if (phase === 'song delay') {
@@ -597,7 +835,7 @@ test('large playlist resumes the failed song after repeated cooldowns without lo
   const archive = firstSong.args[firstSong.args.indexOf('--download-archive') + 1];
   await fs.writeFile(completedFile, NodeID3.create({ title: 'First song' }));
   await fs.writeFile(archive, 'youtube track-0\n');
-  firstSong.finish(`Song 0 completed\n${'x'.repeat(300 * 1024)}\n`);
+  firstSong.finish(`[ssmusic:file] ${JSON.stringify(completedFile)}\nSong 0 completed\n${'x'.repeat(300 * 1024)}\n`);
   const firstDelay = await nextTimer(delays, 0);
   assert.equal(calls.length, 2, 'the next song waits for the full delay');
   assert.deepEqual(job.commandProgress, { completed: 1, total: 101 });

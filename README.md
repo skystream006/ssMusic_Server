@@ -91,6 +91,22 @@ including local-file skips and finished command failures, but not during cooldow
 reported playlist item count, not the downloaded-file count. Progress is saved as
 `commandProgress: { completed, total }` and resets on an explicit manual rerun.
 
+For per-item large playlists, completed MP3/MP4 files are published while later
+items are still downloading. yt-dlp's `after_move` notification identifies the
+final file after conversion or merging; locally skipped files are also eligible.
+An ordered background publisher batches pending files, reads their metadata, and
+updates the library index before processing their artwork and thumbnails. Job
+writes are serialized and progress checkpoints are coalesced, so downloads do not
+wait for metadata reads or index transactions. Existing library polling picks up
+the new files without waiting for the playlist to finish.
+
+Only nonempty final media files inside the job folder are accepted. Partial,
+unreported, wrong-format, and out-of-folder files are not published. Completion
+and Stop wait for accepted files and their artwork work to drain; publication
+errors are recorded and prevent a false successful result. A cooldown pauses
+yt-dlp but does not pause publication of files that have already finished.
+Playlists using the normal single-command path retain end-of-job publication.
+
 Administrators can track the running job and waiting jobs under **Jobs > Jobs
 Queue** (`/admin/jobs-queue`), refreshed every two seconds. The admin-only
 `GET /api/admin/jobs-queue` endpoint returns `{ running, queued, maintenance,
@@ -106,6 +122,8 @@ and marks the job **Stopped**. Downloaded files, the archive, progress counter,
 last command, and accumulated process output are retained. The next queued job
 can start once any server cooldown or maintenance gate permits. Stopping a job
 does not lift a server cooldown or cancel imports, transcription, or maintenance.
+For per-item large playlists, unfinished files remain on disk but are not added
+to the library; completed files accepted by the publisher remain available.
 Contributors and shared accounts cannot stop jobs; private-job protections remain
 in effect. A stopped job can be explicitly rerun or deleted using the normal controls.
 
