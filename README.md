@@ -1486,7 +1486,7 @@ on the next request (or an admin rebuild), then removed for that source file. A 
 generation failure does not roll back a song upload or edit; check FFmpeg and retry.
 Artwork requests still require authentication and granted-library access.
 
-On **Admin → Users**, use **Regenerate all thumbnails** in the album artwork section to
+On **Admin → Settings**, use **Regenerate all thumbnails** in the album artwork section to
 rebuild thumbnails for all indexed MP3 songs, across all users. Regeneration runs in
 the background in bounded batches, with processed, generated, missing, and failed
 counts. Only administrators may start or view this operation, and only one rebuild

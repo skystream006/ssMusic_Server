@@ -1514,6 +1514,7 @@ function AdminSettingsPage() {
       {saving && <p className="sr-only" role="status">Saving privacy settings</p>}
       {(error || privacyError) && <p className="notice error" role="alert">{error || privacyError}</p>}
     </section>
+    <AdminArtworkThumbnails request={request} />
   </AppShell>;
 }
 
@@ -1619,7 +1620,6 @@ function AdminPage() {
         </div>
       </article>)}</div>
     </section>
-    <AdminArtworkThumbnails request={request} />
     {dialog}
   </AppShell>;
 }
