@@ -29,7 +29,7 @@ import { loadHttpsOptions } from './tls.js';
 import { openDatabase } from './database.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresLibrary } from './postgresCatalog.js';
 import { addMediaShareToLibrary, adminMediaSharesRouter, createMediaShare, createPlaylistShare, mediaShareHeaders, publicMediaRouter } from './mediaShares.js';
-import { canReadAllFiles, canReadFile, entryVisibilitySql, fileVisibilitySql, visibleJob } from './privacy.js';
+import { canReadAllFiles, canReadFile, entryVisibilitySql, fileVisibilitySql, getPrivacySettings, setPrivacySettings, visibleJob } from './privacy.js';
 import { attachSearchKey, requireSearchKey, searchSongs } from './songSearch.js';
 import { ensureKaraokePartyUser } from './authStore.js';
 import { getKaraokeJob, submitKaraokeJob } from './karaoke.js';
@@ -128,6 +128,18 @@ app.use('/api/admin/media-shares', requireAdmin, mediaShareHeaders, adminMediaSh
 app.get('/api/admin/jobs-queue', requireAdmin, (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ ...getJobQueue(req.user), maintenance: isUpdateInProgress(), rateLimit: getJobRateLimit() });
+});
+app.get('/api/settings/privacy', requireAuth, async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(await getPrivacySettings(openDatabase()));
+});
+app.put('/api/admin/settings/privacy', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json(await setPrivacySettings(openDatabase(), req.body?.privateItemsEnabled));
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message });
+  }
 });
 app.use(['/api/jobs', '/api/library', '/api/preferences'], requireAuth, (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
@@ -837,7 +849,7 @@ app.get('/app-login', (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
-app.get(['/admin', '/admin/shared-links', '/admin/jobs-queue', '/admin/users/:id', '/settings'], (_req, res) => {
+app.get(['/admin', '/admin/settings', '/admin/shared-links', '/admin/jobs-queue', '/admin/users/:id', '/settings'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 

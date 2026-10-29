@@ -173,7 +173,7 @@ function usePolling(loader, interval = POLL_INTERVAL, pollingKey = 'default') {
     };
   }, [interval, pollingKey]);
 
-  return { data, error };
+  return { data, error, setData };
 }
 
 const loadJobs = () => request('/api/jobs');
@@ -250,6 +250,7 @@ function AppShell({ children, section = 'jobs', jobsTab }) {
       <main className={section === 'music' ? 'music-main' : undefined}>
         {section === 'admin' && <nav className="admin-tabs" aria-label="Administration">
           <a href="/admin" aria-current={window.location.pathname === '/admin' ? 'page' : undefined}><Users size={17} />Users</a>
+          <a href="/admin/settings" aria-current={/^\/admin\/settings\/?$/.test(window.location.pathname) ? 'page' : undefined}><Settings size={17} />Settings</a>
           <a href="/admin/shared-links" aria-current={window.location.pathname === '/admin/shared-links' ? 'page' : undefined}><Share2 size={17} />Shared links</a>
         </nav>}
         {jobsTab && user.role !== 'shared' && <nav className="admin-tabs" aria-label="Jobs navigation">
@@ -751,7 +752,7 @@ function JobPage({ id }) {
   const mutationDisabled = transcriptionDisabled || hasPendingTranscription || Object.keys(pendingTranscriptions).length > 0 || Object.keys(deletingFiles).length > 0 || transcribingFile !== null;
 
   async function savePrivacy(file = null) {
-    if (!canChangePrivacy(user, job) || mutationDisabled || privacySavingRef.current || (file && getFilePrivacy(file, job).inherited)) return;
+    if (!canChangePrivacy(user, job, false, file) || mutationDisabled || privacySavingRef.current || (file && getFilePrivacy(file, job).inherited)) return;
     privacySavingRef.current = true;
     setSavingPrivacy(true);
     setActionError('');
@@ -1008,7 +1009,7 @@ function JobPage({ id }) {
                       setFileRevision((revision) => revision + 1);
                     }} />
                   <SongActions name={file.name} className="file-row-actions" file={file} jobId={id} request={request}>
-                    {canChangePrivacy(user, job) && <button className="icon-link" type="button"
+                    {canChangePrivacy(user, job, false, file) && <button className="icon-link" type="button"
                       title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}
                       aria-label={`${privacyLabel}: ${file.name}`} aria-pressed={privacy.private}
                       disabled={mutationDisabled || privacy.inherited} onClick={() => savePrivacy(file)}>
@@ -1477,6 +1478,42 @@ function AdminJobsQueuePage() {
   </AppShell>;
 }
 
+function AdminSettingsPage() {
+  const { privacySettings, privacyError, setPrivacySettings } = useContext(AuthContext);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const savingRef = useRef(false);
+
+  async function savePrivacySettings(privateItemsEnabled) {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    setError('');
+    try {
+      const settings = await request('/api/admin/settings/privacy', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ privateItemsEnabled })
+      });
+      setPrivacySettings(settings);
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally { savingRef.current = false; setSaving(false); }
+  }
+
+  return <AppShell section="admin">
+    <section className="page-heading settings-heading"><h1>Application settings</h1></section>
+    <section className="theme-section" aria-labelledby="privacy-heading" aria-busy={saving}>
+      <div className="section-title"><div><Lock size={19} /><h2 id="privacy-heading">Privacy</h2></div></div>
+      <label className="admin-privacy-setting">
+        <input type="checkbox" checked={privacySettings?.privateItemsEnabled === true} disabled={!privacySettings || saving}
+          onChange={(event) => savePrivacySettings(event.target.checked)} />
+        <span>Allow private playlists and files</span>
+      </label>
+      {saving && <p className="sr-only" role="status">Saving privacy settings</p>}
+      {(error || privacyError) && <p className="notice error" role="alert">{error || privacyError}</p>}
+    </section>
+  </AppShell>;
+}
+
 function AdminPage() {
   const { user: currentUser } = useContext(AuthContext);
   const [users, setUsers] = useState([]);
@@ -1609,6 +1646,7 @@ function SharedSettingsPage() {
 
 function PageRoutes({ user }) {
   if (user.role === 'shared') return window.location.pathname === '/settings' ? <SharedSettingsPage /> : <MusicHomePage />;
+  if (/^\/admin\/settings\/?$/.test(window.location.pathname) && user.role === 'admin') return <AdminSettingsPage />;
   if (window.location.pathname === '/admin/shared-links' && user.role === 'admin') return <AdminSharedLinksPage />;
   if (window.location.pathname === '/admin/jobs-queue' && user.role === 'admin') return <AdminJobsQueuePage />;
   const userMatch = window.location.pathname.match(/^\/admin\/users\/([^/]+)\/?$/);
@@ -1631,6 +1669,9 @@ function App() {
   const [themeError, setThemeError] = useState('');
   const accountRef = useRef(null);
   const themeSaveRef = useRef(false);
+  const { data: privacySettings, error: privacyError, setData: setPrivacySettings } = usePolling(
+    () => user ? request('/api/settings/privacy') : Promise.resolve(null), POLL_INTERVAL, user?.id || 'anonymous'
+  );
 
   useEffect(() => {
     request('/api/auth/me').then((result) => setUser(result.user)).catch(() => setUser(null));
@@ -1678,7 +1719,8 @@ function App() {
   if (user === undefined) return <div className="auth-loading"><Fingerprint className="spin" size={28} />Checking passkey session</div>;
   if (!user) return <LoginPage onLogin={setUser} />;
   if (preferences?.userId !== user.id) return <div className="auth-loading"><RefreshCw className="spin" size={24} />Loading account</div>;
-  return <AuthContext.Provider value={{ user, setUser, logout, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} userId={user.id} request={request}><Router user={user} /></PlaybackProvider></AuthContext.Provider>;
+  const currentUser = { ...user, privateItemsEnabled: privacySettings?.privateItemsEnabled === true };
+  return <AuthContext.Provider value={{ user: currentUser, setUser, logout, privacySettings, privacyError, setPrivacySettings, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} userId={user.id} request={request}><Router user={currentUser} /></PlaybackProvider></AuthContext.Provider>;
 }
 
 initializeTouchControls();

@@ -108,7 +108,60 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       request.end(body === undefined ? undefined : JSON.stringify(body));
     });
   }
+  await fs.mkdir(path.join(directory, 'public'), { recursive: true });
+  await fs.writeFile(path.join(directory, 'public', 'index.html'), '<!doctype html><title>Privacy settings route</title>');
   await start();
+
+  await context.test('application privacy settings are admin-only, persistent and enforced across privacy routes', async (subcontext) => {
+    const settingsRoute = '/api/settings/privacy';
+    const adminRoute = '/api/admin/settings/privacy';
+    subcontext.after(async () => {
+      await call(adminRoute, headers.Admin, 'PUT', { privateItemsEnabled: true });
+      await call('/api/jobs/playlist/privacy', headers.Owner, 'PATCH', { private: false });
+      await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: false });
+    });
+    for (const route of ['/admin/settings', '/admin/settings/']) {
+      const page = await call(route, {});
+      assert.equal(page.status, 200, page.text);
+      assert.match(page.text, /Privacy settings route/);
+    }
+    assert.equal((await call(settingsRoute, {})).status, 401);
+    assert.equal((await call(adminRoute, {}, 'PUT', { privateItemsEnabled: false })).status, 401);
+    for (const auth of Object.values(headers)) {
+      const settings = await call(settingsRoute, auth);
+      assert.equal(settings.status, 200, settings.text);
+      assert.equal(settings.headers['cache-control'], 'no-store');
+      assert.deepEqual(settings.body, { privateItemsEnabled: true });
+      if (auth !== headers.Admin) {
+        assert.equal((await call(adminRoute, auth, 'PUT', { privateItemsEnabled: false })).status, 403);
+      }
+    }
+    for (const privateItemsEnabled of ['false', null, 0, undefined]) {
+      assert.equal((await call(adminRoute, headers.Admin, 'PUT', { privateItemsEnabled })).status, 400);
+    }
+    assert.equal((await call('/api/jobs/playlist/privacy', headers.Owner, 'PATCH', { private: true })).status, 200);
+    assert.equal((await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: true })).status, 200);
+    const disabled = await call(adminRoute, headers.Admin, 'PUT', { privateItemsEnabled: false });
+    assert.equal(disabled.status, 200, disabled.text);
+    assert.equal(disabled.headers['cache-control'], 'no-store');
+    assert.deepEqual(disabled.body, { privateItemsEnabled: false });
+    assert.deepEqual((await call(settingsRoute)).body, { privateItemsEnabled: false });
+    assert.equal((await call('/api/jobs/playlist', headers.Owner)).body.private, true);
+    assert.equal((await call('/api/jobs/playlist', headers.Contributor)).status, 404);
+    assert.equal((await call('/api/jobs/playlist/privacy', headers.Owner, 'PATCH', { private: false })).status, 200);
+    assert.equal((await call('/api/jobs/playlist/stream/secret-file.mp3', headers.Contributor)).status, 404);
+    for (const route of ['/api/jobs/playlist/privacy', '/api/library/playlists/playlist/privacy', '/api/jobs/playlist/files/open.mp3/privacy']) {
+      const blocked = await call(route, headers.Owner, 'PATCH', { private: true });
+      assert.equal(blocked.status, 403, blocked.text);
+      assert.match(blocked.body.error, /disabled by an administrator/);
+    }
+    assert.equal((await call('/api/jobs/playlist/files/secret-file.mp3/privacy', headers.Owner, 'PATCH', { private: false })).status, 200);
+    await stop();
+    await start();
+    assert.deepEqual((await call(settingsRoute)).body, { privateItemsEnabled: false });
+    assert.equal((await call(adminRoute, headers.Admin, 'PUT', { privateItemsEnabled: true })).status, 200);
+    assert.equal((await call('/api/library/playlists/playlist/privacy', headers.Owner, 'PATCH', { private: true })).status, 200);
+  });
 
   await context.test('admin live output is uncached and protects private job and file logs', async (subcontext) => {
     const route = '/api/jobs/playlist/live-output';

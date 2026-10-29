@@ -17,7 +17,7 @@ export function restrictSharedAccess(req, res, next) {
   if (user?.role !== 'shared' || !pathname.startsWith('/api/')) return next();
   const authentication = req.method === 'POST' && ['/api/auth/logout', '/api/auth/login/options', '/api/auth/login/verify', '/api/auth/app/token'].includes(pathname);
   const reading = ['GET', 'HEAD'].includes(req.method) && (
-    ['/api/auth/me', '/api/auth/pats', '/api/auth/passkeys', '/api/preferences', '/api/library', '/api/library/tracks', '/api/library/playlist-links', '/api/library/shared-users'].includes(pathname)
+    ['/api/auth/me', '/api/auth/pats', '/api/auth/passkeys', '/api/preferences', '/api/settings/privacy', '/api/library', '/api/library/tracks', '/api/library/playlist-links', '/api/library/shared-users'].includes(pathname)
     || /^\/api\/library\/playlists\/[^/]+\/download$/.test(pathname)
     || /^\/api\/jobs\/[^/]+\/files\/[^/]+\/metadata$/.test(pathname)
     || /^\/api\/jobs\/[^/]+\/(stream|download|lyrics|artwork)\/[^/]+$/.test(pathname));

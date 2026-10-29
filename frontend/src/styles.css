@@ -1084,6 +1084,9 @@ code { font: 400 11px 'DM Mono', monospace; }
 .admin-tabs { display: flex; flex-wrap: wrap; gap: 0 24px; margin-bottom: 28px; border-bottom: 1px solid var(--line); }
 .admin-tabs a { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; border-bottom: 2px solid transparent; text-decoration: none; color: var(--muted); font-size: 13px; }
 .admin-tabs a[aria-current="page"] { color: var(--royal); border-color: var(--royal); }
+.admin-privacy-setting { display: flex; align-items: center; gap: 12px; min-height: 44px; width: fit-content; max-width: 100%; }
+.admin-privacy-setting input { flex: 0 0 20px; width: 20px; height: 20px; margin: 0; padding: 0; accent-color: var(--royal); }
+.admin-privacy-setting span { min-width: 0; overflow-wrap: anywhere; }
 .page-heading.queue-heading { flex-direction: row; align-items: center; gap: 16px; }
 .queue-heading h1 { font-size: 36px; }
 .queue-heading .music-icon-button { flex-shrink: 0; }

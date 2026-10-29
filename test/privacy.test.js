@@ -7,11 +7,73 @@ import NodeID3 from 'node-id3';
 import { writeJob, writeUser } from '../src/database.js';
 import { createPostgresDatabase } from '../src/postgres.js';
 import { pagePostgresTracks, postgresPageJobs, readPostgresJob, readPostgresLibrary, readPostgresJobs, rebuildPostgresLibrary } from '../src/postgresCatalog.js';
-import { canReadAllFiles, canReadFile, canReadJob, fileVisibilitySql, visibleJob } from '../src/privacy.js';
+import { assertPrivacyEnabled, canReadAllFiles, canReadFile, canReadJob, fileVisibilitySql, getPrivacySettings, setPrivacySettings, visibleJob } from '../src/privacy.js';
 import { addLibraryJobFiles, getLibrary, linkLibraryJob, moveLibrarySong, mutateLibraryEntry, removeLibrarySongLink, setLibrary, setLibraryPlaylistPrivacy } from '../src/libraryStore.js';
 import { songKey } from '../src/library.js';
 import { canReadLibrarySong, canReadSharedSong, libraryReaderId } from '../src/sharedAccess.js';
 import { createTestDatabase } from '../test-support/postgres.js';
+
+test('application privacy setting defaults enabled, persists and never exposes existing private items', async (context) => {
+  const { database } = await createTestDatabase(context);
+  assert.deepEqual(await getPrivacySettings(database), { privateItemsEnabled: true });
+  await assertPrivacyEnabled(database, true);
+  for (const value of ['false', 0, null, undefined, {}]) {
+    await assert.rejects(setPrivacySettings(database, value), { statusCode: 400 });
+  }
+  assert.deepEqual(await setPrivacySettings(database, false), { privateItemsEnabled: false });
+  await assert.rejects(assertPrivacyEnabled(database, true), { statusCode: 403 });
+  await assertPrivacyEnabled(database, false);
+  const restarted = createPostgresDatabase(process.env.DATABASE_URL);
+  try { assert.deepEqual(await getPrivacySettings(restarted), { privateItemsEnabled: false }); }
+  finally { await restarted.close(); }
+  const job = { private: true, initiatedBy: { id: 'owner' }, files: ['Secret.mp3'] };
+  assert.equal(canReadJob(job, { id: 'other', role: 'admin' }), false);
+  assert.equal(canReadFile(job, 'Secret.mp3', { id: 'owner' }), true);
+  assert.deepEqual(await setPrivacySettings(database, true), { privateItemsEnabled: true });
+  await assertPrivacyEnabled(database, true);
+});
+
+test('application privacy setting gates job, file and built-in playlist mutations for users and admins', async (context) => {
+  const { database, directory } = await createTestDatabase(context);
+  const now = new Date().toISOString();
+  const users = [{ id: 'owner', name: 'Owner', role: 'user' }, { id: 'admin', name: 'Admin', role: 'admin' }];
+  const fixtures = [];
+  const manager = await import(`../src/jobManager.js?privacy-setting=${encodeURIComponent(directory)}`);
+  for (const user of users) {
+    await writeUser(database, { ...user, userHandle: user.id, status: 'approved', credentials: [], createdAt: now, updatedAt: now });
+    const playlist = { id: `${user.id}-playlist`, url: `import:${user.id}-playlist`, status: 'completed',
+      isPlaylist: true, initiatedBy: user, files: ['Song.mp3'], createdAt: now, updatedAt: now };
+    const single = { ...playlist, id: `${user.id}-single`, url: `import:${user.id}-single`, isPlaylist: false };
+    for (const job of [playlist, single]) await writeJob(database, job);
+    const jobs = await readPostgresJobs(database, user.id);
+    await linkLibraryJob(user.id, single, jobs);
+    await manager.setJobPrivacy(playlist.id, true, user);
+    await manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user);
+    await setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs);
+    fixtures.push({ user, playlist, jobs });
+  }
+  await setPrivacySettings(database, false);
+  for (const { user, playlist, jobs } of fixtures) {
+    await assert.rejects(manager.setJobPrivacy(playlist.id, true, user), { statusCode: 403 });
+    await assert.rejects(manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user), { statusCode: 403 });
+    await assert.rejects(setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs), { statusCode: 403 });
+    const saved = await manager.getJob(playlist.id);
+    assert.equal(saved.private, true);
+    assert.deepEqual(saved.privateFiles, ['Song.mp3']);
+    assert.equal(canReadFile(saved, 'Song.mp3', { id: 'other' }), false);
+    assert.equal((await getLibrary(user.id, jobs)).entries.find((entry) => entry.id === 'individual-songs').private, true);
+    await manager.setJobPrivacy(playlist.id, false, user);
+    await manager.setJobFilePrivacy(playlist.id, 'Song.mp3', false, user);
+    await setLibraryPlaylistPrivacy(user.id, 'individual-songs', false, jobs);
+  }
+  await setPrivacySettings(database, true);
+  for (const { user, playlist, jobs } of fixtures) {
+    assert.equal((await manager.setJobPrivacy(playlist.id, true, user)).private, true);
+    assert.deepEqual((await manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user)).privateFiles, ['Song.mp3']);
+    assert.equal((await setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs))
+      .entries.find((entry) => entry.id === 'individual-songs').private, true);
+  }
+});
 
 test('privacy defaults public and permits only the owning user, never an administrator override', () => {
   const job = { id: 'job', initiatedBy: { id: 'owner' }, contributors: [{ id: 'contributor' }],

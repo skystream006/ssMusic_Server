@@ -4,6 +4,26 @@ import { countDownloadedFiles, isNoVocals, songStem } from './library.js';
 const aliases = Symbol('privacy aliases');
 const viewerId = (user) => typeof user === 'string' ? user : user?.id;
 
+export async function getPrivacySettings(database) {
+  const row = await database.prepare("SELECT value FROM job_server_state WHERE key = 'private-items-enabled'").get();
+  return { privateItemsEnabled: row?.value !== 'false' };
+}
+
+export async function setPrivacySettings(database, value) {
+  if (typeof value !== 'boolean') {
+    throw Object.assign(new Error('privateItemsEnabled must be a boolean'), { statusCode: 400 });
+  }
+  await database.prepare(`INSERT INTO job_server_state (key, value) VALUES ('private-items-enabled', $1)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(value));
+  return { privateItemsEnabled: value };
+}
+
+export async function assertPrivacyEnabled(database, value) {
+  if (value === true && !(await getPrivacySettings(database)).privateItemsEnabled) {
+    throw Object.assign(new Error('Private playlists and files are disabled by an administrator'), { statusCode: 403 });
+  }
+}
+
 export function ownsJob(job, user) {
   return Boolean(job?.initiatedBy?.id && job.initiatedBy.id === viewerId(user));
 }

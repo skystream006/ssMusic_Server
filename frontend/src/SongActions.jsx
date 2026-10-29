@@ -141,13 +141,15 @@ export function canManageJob(user, job) {
   return Boolean(user && user.role !== 'shared' && job && (user.role === 'admin' || user.id === job.initiatedBy?.id));
 }
 
-export function canChangePrivacy(user, job, readOnly = false) {
-  return Boolean(!readOnly && user?.id && user.role !== 'shared' && user.id === job?.initiatedBy?.id);
+export function canChangePrivacy(user, job, readOnly = false, file = null) {
+  const isPrivate = file ? getFilePrivacy(file, job).private : job?.private === true;
+  return Boolean(!readOnly && user?.id && user.role !== 'shared' && user.id === job?.initiatedBy?.id
+    && (user.privateItemsEnabled !== false || isPrivate));
 }
 
 export function canChangePlaylistPrivacy(user, playlist, libraryOwnerId, readOnly = false) {
   const individual = playlist?.protected && [individualSongsId, individualVideosId].includes(playlist.id);
-  return canChangePrivacy(user, individual ? { initiatedBy: { id: libraryOwnerId } } : playlist, readOnly);
+  return canChangePrivacy(user, individual ? { initiatedBy: { id: libraryOwnerId }, private: playlist.private } : playlist, readOnly);
 }
 
 export function getFilePrivacy(file, job = file?.sourceJob || file?.job) {

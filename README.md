@@ -157,6 +157,18 @@ A private file remains private when linked into another playlist; generated
 no-vocals versions cannot bypass the original file's privacy.
 Retained no-vocals files stay private when their private original is deleted.
 
+Administrators can toggle **Allow private playlists and files** under
+**Admin > Settings** (`/admin/settings`). This application-wide setting is enabled
+by default and persists across server restarts. Disabling it prevents all users,
+including administrators, from marking playlists or files private. Existing
+private items remain protected, and owners can still make them nonprivate.
+Open clients refresh the setting every five seconds; the server enforces changes
+immediately.
+
+`GET /api/settings/privacy` returns `{ "privateItemsEnabled": true }` to
+authenticated users. Administrators can update it with
+`PUT /api/admin/settings/privacy`, using a JSON boolean for `privateItemsEnabled`.
+
 Use the owner-only privacy actions in Jobs or Music Library to mark a playlist
 or file private, or make it nonprivate again. The **Individual Songs** and
 **Individual Videos** playlists have per-library privacy: hiding one hides that

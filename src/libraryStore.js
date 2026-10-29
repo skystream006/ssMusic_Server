@@ -3,7 +3,7 @@ import { readPostgresJobs, rebuildPostgresLibrary } from './postgresCatalog.js';
 import path from 'node:path';
 import { getPlaylistTracks, individualPlaylistNames, jobPlaylistId, orderFiles, reconcileLibrary, songKey, themes } from './library.js';
 import { isPlayableFile, mediaType } from './media.js';
-import { canReadAllFiles, canReadFile, canReadJob } from './privacy.js';
+import { assertPrivacyEnabled, canReadAllFiles, canReadFile, canReadJob } from './privacy.js';
 
 const removingSongs = new Set();
 
@@ -259,6 +259,7 @@ export async function setLibraryPlaylistPrivacy(userId, id, value, jobs) {
     const current = await getLibrary(userId, jobs);
     const entry = current.entries.find((item) => item.id === id && item.type === 'playlist');
     if (!entry) invalid('Playlist not found', 404);
+    await assertPrivacyEnabled(openDatabase(), value);
     entry.private = value;
     await writeLibrary(userId, current, current.version + 1);
     return getLibrary(userId, jobs);

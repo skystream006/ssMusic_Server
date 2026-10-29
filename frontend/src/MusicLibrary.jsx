@@ -578,7 +578,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     const busy = ['queued', 'running'].includes(job?.status)
       || songMutations.current.has(key) || transcription?.status === 'sent';
     return { canModify, canRate, canEditMetadata: canRate, metadataDisabled: !canRate || busy, ratingDisabled: !canRate || busy,
-      canChangePrivacy: canChangePrivacy(user, job, readOnly), privacy: getFilePrivacy(track, job),
+      canChangePrivacy: canChangePrivacy(user, job, readOnly, track), privacy: getFilePrivacy(track, job),
       transcription, deleting: Boolean(deletingFiles[key]),
       disabled: !canModify || busy };
   }

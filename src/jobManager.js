@@ -13,7 +13,7 @@ import { readSongArtwork, readSongMetadata, readSongSummary, updateSongMetadata 
 import { encodeThumbnail, readDownloadedArtwork, refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
 import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
-import { attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
+import { assertPrivacyEnabled, attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
 
 const jobs = new Map();
 const liveJobOutputs = new Map();
@@ -911,6 +911,7 @@ async function setPrivacy(id, name, value, user) {
       || (!job.files?.includes(name) && (value || !job.privateFiles?.includes(name))))) {
       throw Object.assign(new Error('Song not found'), { statusCode: 404 });
     }
+    await assertPrivacyEnabled(database, value);
     const directory = job.outputDir && (await fs.realpath(job.outputDir).catch(() => path.resolve(job.outputDir)));
     const candidates = directory ? await database.prepare(`SELECT id, status, data->>'outputDir' AS output_dir
       FROM jobs WHERE data->>'outputDir' IS NOT NULL`).all() : [job];

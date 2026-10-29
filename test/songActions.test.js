@@ -838,6 +838,30 @@ test('privacy changes require ownership, never contributor, linked or administra
   }
 });
 
+test('application privacy setting hides new private actions but preserves owner public actions', () => {
+  const job = { id: 'playlist', initiatedBy: { id: 'owner' }, privateFiles: ['Secret.mp3'] };
+  for (const role of ['user', 'admin', 'ExtServer']) {
+    const user = { id: 'owner', role, privateItemsEnabled: false };
+    assert.equal(canChangePrivacy(user, job), false);
+    assert.equal(canChangePrivacy(user, { ...job, private: true }), true);
+    assert.equal(canChangePrivacy(user, job, false, { name: 'Public.mp3' }), false);
+    assert.equal(canChangePrivacy(user, job, false, { name: 'Secret.mp3' }), true);
+    assert.equal(canChangePrivacy(user, job, false, { name: 'Other.mp3', private: true }), true);
+    assert.equal(canChangePrivacy(user, { ...job, private: true }, true), false);
+    assert.equal(canChangePrivacy({ ...user, id: 'other' }, { ...job, private: true }), false);
+    assert.equal(canChangePrivacy({ ...user, privateItemsEnabled: true }, job), true);
+    for (const id of ['individual-songs', 'individual-videos']) {
+      const playlist = { id, protected: true };
+      assert.equal(canChangePlaylistPrivacy(user, playlist, 'owner'), false);
+      assert.equal(canChangePlaylistPrivacy(user, { ...playlist, private: true }, 'owner'), true);
+    }
+  }
+  const html = renderToStaticMarkup(createElement(EditPlaylistDialog, {
+    playlist: { ...job, playlistTitle: 'Playlist' }, canChangePrivacy: false
+  }));
+  assert.match(html, /<input type="checkbox" disabled=""\/>Make private/);
+});
+
 test('file privacy distinguishes explicit restrictions from private source jobs', () => {
   const file = { name: 'Song.mp3' };
   assert.deepEqual(getFilePrivacy(file), { private: false, inherited: false });
