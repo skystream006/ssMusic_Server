@@ -1,4 +1,7 @@
-param([switch]$NoPull)
+param(
+	[switch]$NoPull,
+	[string]$cM
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -14,6 +17,15 @@ try {
 	if (-not $NoPull) {
 		git pull --ff-only
 		if ($LASTEXITCODE -ne 0) { throw 'git pull failed; no Docker services were changed.' }
+		if ($PSBoundParameters.ContainsKey('cM')) {
+			git add .
+			if ($LASTEXITCODE -ne 0) { throw 'git add failed; no Docker services were changed.' }
+			git commit -am $cM
+			if ($LASTEXITCODE -ne 0) { throw 'git commit failed; no Docker services were changed.' }
+			git push
+			if ($LASTEXITCODE -ne 0) { throw 'git push failed; no Docker services were changed.' }
+		}
+		
 	}
 	$environmentPath = Join-Path $PSScriptRoot '.env'
 	$environmentText = if (Test-Path $environmentPath) { [System.IO.File]::ReadAllText($environmentPath) } else { '' }

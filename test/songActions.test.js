@@ -39,12 +39,15 @@ let canEditSong;
 let canChangePlaylistPrivacy;
 let getFilePrivacy;
 let MusicPlayer;
+let MusicLibrary;
+let LibrarySongActions;
 let NowPlayingPanel;
 let PlaybackQueueRow;
 let mergePlaybackMetadata;
 let movePlaybackMedia;
 let createPlaybackMediaSession;
 let createContinuousPlayback;
+let getPlaybackElementType;
 let PlaybackProvider;
 let readPlaybackSession;
 let writePlaybackSession;
@@ -62,14 +65,57 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
-  ({ ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
+  ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, getPlaybackElementType, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicLibrary, ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
   ({ UsernameForm, LibraryAccessList, SharedRegistrationFields, SettingsTabs, LinkedUsers, OrganizedSharedUsers, OrganizerControl } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
 });
 
 after(async () => { await server?.close(); });
+
+test('expanded Player song actions reuse the complete library menu and read-only restrictions', () => {
+  const track = { jobId: 'job', name: 'Song.mp3', downloadUrl: '/download/song',
+    noVocalsVersion: { jobId: 'job', name: '[NoVocals]/Song.mp3' } };
+  const state = { canModify: true, canEditMetadata: true, canChangePrivacy: true, disabled: false, metadataDisabled: false };
+  const render = (readOnly = false) => renderToStaticMarkup(createElement(LibrarySongActions, {
+    track, request() {}, onPlayKaraoke() {}, className: 'expanded-song-actions',
+    libraryView: { tracks: [track], readOnly, transcriptionActive: true,
+      songState: () => readOnly ? { canModify: false, canEditMetadata: false, canChangePrivacy: false } : state }
+  }));
+  const html = render();
+  assert.match(html, /expanded-song-actions song-actions/);
+  for (const title of ['Add/Move to playlist', 'Download song', 'Edit song metadata', 'Linked Playlists', 'Make file private',
+    'Play karaoke (NoVocals)', 'Remove song from playlist', 'Replace File', 'Share Media', 'Transcribe song']) {
+    assert.ok(html.includes(`title="${title}"`), title);
+  }
+  const readOnly = render(true);
+  for (const title of ['Download song', 'View song metadata', 'Linked Playlists', 'Play karaoke (NoVocals)']) {
+    assert.ok(readOnly.includes(`title="${title}"`), title);
+  }
+  for (const title of ['Add/Move to playlist', 'Edit song metadata', 'Make file private', 'Remove song from playlist', 'Replace File', 'Share Media', 'Transcribe song']) {
+    assert.ok(!readOnly.includes(`title="${title}"`), title);
+  }
+});
+
+test('expanded Player action controller renders only its menu and disables mutations while loading', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { pathname: '/', search: '' } };
+  try {
+    const user = { id: 'owner', name: 'Owner', role: 'user' };
+    const track = { jobId: 'job', name: 'Song.mp3', sourceJob: { id: 'job', initiatedBy: user, status: 'completed' }, downloadUrl: '/download/song' };
+    const request = () => assert.fail('Server rendering must not fetch a catalog or media');
+    const html = renderToStaticMarkup(createElement(PlaybackProvider, { user, request },
+      createElement(MusicLibrary, { user, request, confirm() {}, actionTrack: track })));
+    assert.match(html, /class="player-song-action-controller"/);
+    assert.match(html, /aria-label="Actions for Song.mp3"/);
+    assert.match(html, /aria-label="Delete song Song.mp3" disabled=""/);
+    assert.doesNotMatch(html, /library-titlebar|library-layout|Search tracks|Refresh library|Import media/);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
 
 test('Linked Playlists is available for audio and video files and its dialog starts with a loading state', () => {
   const request = () => assert.fail('Server rendering must not fetch playlist links');
@@ -234,6 +280,20 @@ test('playback session persists a full queue, independently browsed page, modes 
   assert.equal(readPlaybackSession('user', browser).songs.length, 500);
   writePlaybackSession('user', songs, null, 'mix', browser);
   assert.equal(values.has('ssMusicPlaybackPosition:user'), false);
+});
+
+test('Brave Android uses the video media element for audio without changing other browsers', () => {
+  const braveAndroid = { navigator: { userAgent: 'Mozilla/5.0 (Linux; Android 17) Chrome/154.0.0.0 Mobile Safari/537.36', brave: { isBrave: async () => true } } };
+  assert.equal(getPlaybackElementType('Song.mp3', braveAndroid), 'video');
+  assert.equal(getPlaybackElementType('Song.flac', braveAndroid), 'video');
+  for (const browser of [
+    {}, { navigator: { userAgent: braveAndroid.navigator.userAgent } },
+    { navigator: { userAgent: 'Mozilla/5.0 (Windows NT 10.0) Chrome/154.0.0.0', brave: braveAndroid.navigator.brave } },
+    { navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X)', brave: braveAndroid.navigator.brave } }
+  ]) {
+    assert.equal(getPlaybackElementType('Song.mp3', browser), 'audio');
+    assert.equal(getPlaybackElementType('Movie.mp4', browser), 'video');
+  }
 });
 
 test('continuous playback switches the existing source and calls play synchronously without a render', async () => {
@@ -556,6 +616,9 @@ test('restored playback does not open or render lyrics before a viewer requests 
     assert.match(html, /Show lyrics/);
     assert.match(html, /aria-label="Expand now playing" aria-expanded="false"/);
     assert.match(html, /src="\/artwork\/song" alt="Album cover"/);
+    assert.match(html, /<div class="audio-player" aria-hidden="true"><audio\b/);
+    assert.doesNotMatch(html.match(/<audio\b[^>]*>/)[0], /\bhidden=/);
+    assert.doesNotMatch(html.match(/<section class="movie-player"[\s\S]*?<\/section>/)[0], /<audio\b/);
     assert.doesNotMatch(html, /class="music-lyrics"|class="now-playing-expanded|Loading lyrics|No SYLT lyrics embedded/);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;

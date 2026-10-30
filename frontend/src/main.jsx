@@ -50,6 +50,7 @@ import {
 import './styles.css';
 import appIcon from './assets/ic_launcher.png';
 import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
+import MusicLibrary from './MusicLibrary.jsx';
 import PublicMedia, { PublicPlaylist } from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
 import AdminJobQueue from './AdminJobQueue.jsx';
@@ -263,6 +264,13 @@ function AppShell({ children, section = 'jobs', jobsTab }) {
       {choosingTheme && <ThemeDialog onClose={() => setChoosingTheme(false)} />}
     </div>
   );
+}
+
+function PlayerSongActions({ track, request }) {
+  const { user } = useContext(AuthContext);
+  const { confirm, dialog } = useConfirmation();
+  const owner = track.libraryOwnerId && track.libraryOwnerId !== user.id ? { id: track.libraryOwnerId } : null;
+  return <><MusicLibrary user={user} request={request} confirm={confirm} owner={owner} actionTrack={track} />{dialog}</>;
 }
 
 function MusicHomePage() {
@@ -1723,7 +1731,7 @@ function App() {
   if (!user) return <LoginPage onLogin={setUser} />;
   if (preferences?.userId !== user.id) return <div className="auth-loading"><RefreshCw className="spin" size={24} />Loading account</div>;
   const currentUser = { ...user, privateItemsEnabled: privacySettings?.privateItemsEnabled === true };
-  return <AuthContext.Provider value={{ user: currentUser, setUser, logout, privacySettings, privacyError, setPrivacySettings, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} userId={user.id} user={currentUser} request={request}><Router user={currentUser} /></PlaybackProvider></AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user: currentUser, setUser, logout, privacySettings, privacyError, setPrivacySettings, theme: preferences.theme, themeMode: preferences.mode, changeTheme, themeSaving, themeError }}><PlaybackProvider key={user.id} userId={user.id} user={currentUser} request={request} SongActionView={PlayerSongActions}><Router user={currentUser} /></PlaybackProvider></AuthContext.Provider>;
 }
 
 initializeTouchControls();

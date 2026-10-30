@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ArrowRightLeft, CalendarClock, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, Lock, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Save, Search, Share2, Trash2, X } from 'lucide-react';
-import MusicPlayer, { replaceSongFile, usePlayback } from './MusicPlayer.jsx';
+import MusicPlayer, { LibrarySongActions, replaceSongFile, usePlayback } from './MusicPlayer.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
-import { getPlaylistIds, songKey } from '../../src/library.js';
+import { getPlaylistIds, jobPlaylistId, songKey } from '../../src/library.js';
 import { submitJobUrl } from './jobSubmission.js';
 import { canChangePlaylistPrivacy, canChangePrivacy, canEditSong, canManageJob, canModifyJob, getFilePrivacy, formatBytes, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
@@ -417,8 +417,8 @@ export function FolderDialog({ folder, parentId, folders, saving, onSave, onDele
   </dialog>;
 }
 
-export default function MusicLibrary({ user, request, confirm, owner = null }) {
-  const readOnly = user.role === 'shared' || Boolean(owner && owner.id !== user.id);
+export default function MusicLibrary({ user, request, confirm, owner = null, actionTrack = null }) {
+  const readOnly = user.role === 'shared' || Boolean(owner && owner.id !== user.id) || actionTrack?.readOnly === true;
   const transcriptionActive = useTranscriptionService(request, !readOnly);
   const playback = usePlayback();
   const sidebarRef = useRef(null);
@@ -494,6 +494,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
   const songSelection = (tracks || []).filter((track) => selectedSongs.has(songKey(track)));
 
   useEffect(() => {
+    if (actionTrack) return;
     const sidebar = sidebarRef.current;
     const home = sidebar.closest('.music-home');
     const resize = () => {
@@ -506,7 +507,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     window.addEventListener('resize', resize);
     resize();
     return () => { observer.disconnect(); window.removeEventListener('resize', resize); };
-  }, [sidebarOpen]);
+  }, [sidebarOpen, Boolean(actionTrack)]);
 
   useEffect(() => {
     if (trackSearch === debouncedTrackSearch) return;
@@ -531,10 +532,10 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     };
     load();
     return () => { active = false; };
-  }, [request, refresh, owner?.id]);
+  }, [request, refresh, owner?.id, playback.libraryRevision]);
 
   useEffect(() => {
-    if (!library) return;
+    if (!library || actionTrack) return;
     if (selectedId && !library.entries.some((entry) => entry.id === selectedId)) {
       setSelectedId(null);
       setTrackPage(1);
@@ -556,7 +557,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     }).catch((loadError) => { if (active) setTrackError(loadError.message); })
       .finally(() => { if (active) setTracksLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, trackPageSize, trackSort, debouncedTrackSearch, searchPending, paginated, owner?.id]);
+  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, trackPageSize, trackSort, debouncedTrackSearch, searchPending, paginated, owner?.id, Boolean(actionTrack)]);
 
   function selectEntry(id) {
     setSelectedSongs(new Set());
@@ -573,12 +574,13 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     const job = track.sourceJob || track.job || sourceJobMap.get(track.jobId);
     const key = songKey(track);
     const transcription = pendingTranscriptions[key] || track.transcription || job?.transcriptions?.[track.name];
-    const canModify = !readOnly && canModifyJob(user, job);
-    const canRate = !readOnly && canEditSong(user, job);
+    const trackReadOnly = readOnly || track.readOnly === true;
+    const canModify = !trackReadOnly && canModifyJob(user, job);
+    const canRate = !trackReadOnly && canEditSong(user, job);
     const busy = ['queued', 'running'].includes(job?.status)
       || songMutations.current.has(key) || transcription?.status === 'sent';
     return { canModify, canRate, canEditMetadata: canRate, metadataDisabled: !canRate || busy, ratingDisabled: !canRate || busy,
-      canChangePrivacy: canChangePrivacy(user, job, readOnly, track), privacy: getFilePrivacy(track, job),
+      canChangePrivacy: canChangePrivacy(user, job, trackReadOnly, track), privacy: getFilePrivacy(track, job),
       transcription, deleting: Boolean(deletingFiles[key]),
       disabled: !canModify || busy };
   }
@@ -598,6 +600,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       setTracksLoading(true);
       setLibrary(await request(owner ? `/api/library?${new URLSearchParams({ userId: owner.id })}` : '/api/library'));
       setSaved(true);
+      if (actionTrack) playback.refreshLibrary();
     } catch (saveError) {
       setActionError(`Unable to save or refresh privacy: ${saveError.message}`);
     } finally {
@@ -618,6 +621,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(file)
       ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating,
         transcriptionLocked: result.transcriptionLocked } : track) } : current);
+      if (actionTrack) playback.refreshLibrary();
   }
 
   async function transcribe(track, options) {
@@ -637,6 +641,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         method: locking ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options)
       });
       if (locking) metadataSaved(track, result);
+      else if (actionTrack) playback.refreshLibrary();
       setTranscriptionNotice(`${options.NoVocalsOnly ? 'No-vocals version created' : `Transcription ${locking ? (options.transcriptionLocked ? 'locked' : 'unlocked') : 'complete'}`}: ${track.name}`);
     } catch (requestError) {
       setActionError(`Transcription request for ${track.name}: ${requestError.message}`);
@@ -664,6 +669,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         if (result.fileDeleted) {
           setRemovedSong({ key });
           setDeletedSongNames([track.name]);
+          if (actionTrack) playback.removeSong(track.jobId, track.name);
         }
       });
     } catch (requestError) { setActionError(requestError.message); }
@@ -738,6 +744,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       });
       setLibrary((current) => ({ ...current, ...result }));
       onSaved?.(result);
+      if (actionTrack) playback.refreshLibrary();
       setSaved(true);
       setRefresh((value) => value + 1);
       return true;
@@ -813,6 +820,9 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     return persistLibrary(move ? '/api/library/songs/move' : '/api/library/songs/transfer', 'POST', {
       version: libraryVersion.current, sourcePlaylistId: track.playlistId, playlistId,
       ...(move ? { jobId: track.jobId, name: track.name } : { keys: [songKey(track)], action: 'link' })
+    }, () => {
+      if (actionTrack && move) playback.setSongs((current) => current?.map((song) => songKey(song) === songKey(track)
+        ? { ...song, playlistId, playlistTitle: jobMap.get(playlistId)?.playlistTitle } : song));
     });
   }
 
@@ -1010,7 +1020,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
     })}</ul>;
   }
 
-  const sidebar = <aside ref={sidebarRef} className="library-sidebar" aria-label="Playlists">
+  const sidebar = actionTrack ? null : <aside ref={sidebarRef} className="library-sidebar" aria-label="Playlists">
     <div className="library-sidebar-heading"><h2>Playlists <small>{jobs.length}</small></h2>
       <div className="library-sidebar-tools"><button className="music-icon-button" type="button"
         title={search ? 'Clear playlist search to collapse or expand folders' : toggleFoldersLabel} aria-label={toggleFoldersLabel}
@@ -1041,12 +1051,21 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       {!reordering && search && !entries.some(matches) && <p className="music-empty">No matching playlists.</p>}</div>
   </aside>;
 
-  return <div className={`music-home ${sidebarOpen ? 'sidebar-open' : ''}`}>
-    <header className="library-titlebar"><div><p className="eyebrow"><Music2 size={13} />{readOnly ? 'Shared library' : 'Your music, collected'}</p><h1>{owner?.name || user.name}'s Music</h1></div>
+  const songActions = { readOnly, tracks: actionTrack ? playback.songs : tracks, songState, transcriptionActive,
+    onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
+    onReplaceFile: setReplacingFile, onShareMedia: setSharingFile, onChangePrivacy: changeFilePrivacy,
+    onMetadataSaved: metadataSaved, onRatingError: setActionError,
+    saving: saving || (actionTrack ? !library : tracksLoading || searchPending), onMove: moveSong };
+  const actionJob = actionTrack && (sourceJobMap.get(actionTrack.jobId) || actionTrack.sourceJob || actionTrack.job);
+  const menuTrack = actionTrack && { ...actionTrack, sourceJob: actionJob,
+    playlistId: actionTrack.playlistId || (library && jobPlaylistId(library, actionJob || { id: actionTrack.jobId })) };
+
+  return <div className={actionTrack ? 'player-song-action-controller' : `music-home ${sidebarOpen ? 'sidebar-open' : ''}`}>
+    {!actionTrack && <header className="library-titlebar"><div><p className="eyebrow"><Music2 size={13} />{readOnly ? 'Shared library' : 'Your music, collected'}</p><h1>{owner?.name || user.name}'s Music</h1></div>
       <div className="library-header-actions"><span className="library-save-status" role="status">{saving ? 'Saving...' : saved ? 'Saved' : `${jobs.length} playlists`}</span>
         <button className="music-icon-button" type="button" title="Refresh library" aria-label="Refresh library" disabled={saving} onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={18} /></button>
         {!readOnly && <><button className="music-icon-button" type="button" title="Import media" aria-label="Import media" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setImporting(true)}><Upload size={18} /></button>
-        <button className="secondary-button compact-button library-export-button" type="button" title="Export library" aria-label="Export library" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setExportingLibrary(true)}><Download size={17} />Export library</button></>}</div></header>
+        <button className="secondary-button compact-button library-export-button" type="button" title="Export library" aria-label="Export library" aria-haspopup="dialog" disabled={!library || saving} onClick={() => setExportingLibrary(true)}><Download size={17} />Export library</button></>}</div></header>}
     {(error || trackError) && <div className="notice error library-notice" role="alert">{error || trackError}<button className="music-icon-button" type="button" title="Retry" aria-label="Retry loading library" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={16} /></button></div>}
     {actionError && <div className="notice error library-notice" role="alert">{actionError}<button className="music-icon-button" type="button" title="Dismiss error" aria-label="Dismiss song error" onClick={() => setActionError('')}><X size={16} /></button></div>}
     {transcriptionNotice && <div className="notice success library-notice" role="status">{transcriptionNotice}<button className="music-icon-button" type="button" title="Dismiss" aria-label="Dismiss transcription notice" onClick={() => setTranscriptionNotice('')}><X size={16} /></button></div>}
@@ -1054,8 +1073,9 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       <span>{deletedSongNames.length === 1 ? 'Song deleted' : 'Songs deleted'} after removing the last playlist link: {deletedSongNames.join(', ')}</span>
       <button className="music-icon-button" type="button" title="Dismiss" aria-label="Dismiss song deletion notice" onClick={() => setDeletedSongNames([])}><X size={16} /></button>
     </div>}
-    <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>
-    <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: (tracksLoading || searchPending) && !trackError,
+    {!actionTrack && <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>}
+    {actionTrack ? <LibrarySongActions track={menuTrack} libraryView={songActions} request={request} onPlayKaraoke={playback.playKaraoke} className="expanded-song-actions" />
+      : <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: (tracksLoading || searchPending) && !trackError,
       ownerId: owner?.id, playlistPrivate: Boolean(selectedPlaylist?.private),
       sort: trackSort, onSort: (value) => { setTrackSort(value); setTrackPage(1); },
       pagination, error: trackError, queueScope: JSON.stringify([owner?.id || user.id, selectedId || 'all', trackSort, paginated ? debouncedTrackSearch : '']),
@@ -1066,10 +1086,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
         toggle: () => { setSelectingSongs(!selectingSongs); setSelectedSongs(new Set()); }, change: toggleSongs, clear: () => setSelectedSongs(new Set()),
         remove: removeSelectedSongs, canRemove: songSelection.length > 0 && songSelection.every((track) => !songState(track).disabled),
         transfer: (action) => setBulkDialog({ type: 'songs', action, version: libraryVersion.current, sourcePlaylistId: selectedId, keys: songSelection.map(songKey) }) } : null,
-      songState, transcriptionActive, onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
-      onReplaceFile: setReplacingFile, onShareMedia: setSharingFile, onChangePrivacy: changeFilePrivacy,
-      onMetadataSaved: metadataSaved, onRatingError: setActionError,
-      saving: saving || tracksLoading || searchPending, onReorder: reorderSong, onSelect: selectEntry, onMove: moveSong, onAdd: () => setAddingPlaylist(true) }} />
+      ...songActions, onReorder: reorderSong, onSelect: selectEntry, onAdd: () => setAddingPlaylist(true) }} />}
     {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
     {sharingFile && <ShareMediaDialog file={{ ...sharingFile, private: songState(sharingFile).privacy.private }} jobId={sharingFile.jobId} request={request} onClose={() => setSharingFile(null)} />}
     {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} readOnly={!songState(editingMetadata).canEditMetadata} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
@@ -1080,6 +1097,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null }) {
       playback.replaceFile(replacingFile.jobId, replacingFile.name, result);
       setTrackResult((current) => current ? { ...current,
         files: replaceSongFile(current.files, replacingFile.jobId, replacingFile.name, result.file) } : current);
+      if (actionTrack) playback.refreshLibrary();
       setRefresh((value) => value + 1);
     }} />}
     {folderDialog && <FolderDialog folder={folderDialog.folder} parentId={folderDialog.parentId} folders={possibleFolders(folderDialog.folder?.id)} saving={saving} onSave={saveFolder} onDelete={removeFolder} onClose={() => setFolderDialog(null)} />}

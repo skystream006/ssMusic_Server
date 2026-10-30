@@ -544,6 +544,10 @@ rapid toggles reverse the transition, and reduced-motion preferences disable it.
 - **Player** shows videos inline, or album artwork for audio, alongside track
     details. MP3 ratings can be updated when the current user has permission to
     edit the song.
+    Its three-dot Song actions menu provides the same permitted actions as the
+    library, including metadata, privacy, sharing, transcription, file replacement,
+    playlist moves/removal, and downloads. Open dialogs retain their original song
+    when playback advances.
 - **Lyrics** provides synchronized SYLT and plain-text USLT, with seeking,
     copying, and editing under the existing song permissions. Lyrics load only
     when the Lyrics view is opened.
@@ -585,6 +589,14 @@ directly from the playback-ended or media-control event, without waiting for a
 foreground render. Media Session remains active during the handoff and loading.
 Pause and Stop cancel pending starts, and superseded playback requests cannot
 interrupt a newer track. Playback failures return the player to a paused state.
+
+Audio uses a dedicated host outside the hidden/inert video popup. Brave on Android
+uses a persistent video media element internally for audio as a compatibility
+workaround for reports of MP3 sound dropping over Bluetooth while progress keeps
+advancing. The file is not converted, and audio still displays artwork and lyrics
+rather than a video view. Other browsers continue to use the native audio element.
+This workaround requires verification on the affected device; web APIs cannot
+confirm whether the Bluetooth output is actually audible.
 
 On Android, use the HTTPS site in a browser with Media Session support, such as
 Chrome, and start playback with a tap. Notification visibility, background playback,

@@ -34,12 +34,16 @@ export function SongActions({ name, className, children, file, jobId, request })
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
   const [open, setOpen] = useState(false);
-  const [showPlaylistLinks, setShowPlaylistLinks] = useState(false);
+  const [playlistLinks, setPlaylistLinks] = useState(null);
   const actions = Children.toArray(children);
   if (file && mediaType(file.name) && request) actions.push(
     <button key="playlist-links" className="music-icon-button" type="button" title="Linked Playlists"
-      aria-label={`Linked Playlists ${file.name}`} aria-haspopup="dialog" onClick={() => setShowPlaylistLinks(true)}><ListMusic size={18} /></button>
+      aria-label={`Linked Playlists ${file.name}`} aria-haspopup="dialog" onClick={() => setPlaylistLinks({ file: { ...file }, jobId: jobId || file.jobId })}><ListMusic size={18} /></button>
   );
+
+  useEffect(() => {
+    if (menuRef.current.matches(':popover-open')) menuRef.current.hidePopover();
+  }, [name, file?.jobId, jobId]);
 
   useEffect(() => {
     const menu = menuRef.current;
@@ -48,7 +52,7 @@ export function SongActions({ name, className, children, file, jobId, request })
       if (menu.matches(':popover-open')) menu.hidePopover();
     };
     const observer = new ResizeObserver(close);
-    observer.observe(triggerRef.current.closest('li').parentElement);
+    observer.observe(triggerRef.current.closest('li')?.parentElement || triggerRef.current.parentElement);
     window.addEventListener('resize', close);
     document.addEventListener('scroll', close, true);
     return () => {
@@ -91,7 +95,7 @@ export function SongActions({ name, className, children, file, jobId, request })
       </>))}
     </div>
   </div>
-    {showPlaylistLinks && createPortal(<PlaylistLinksDialog file={file} jobId={jobId || file.jobId} request={request} onClose={() => setShowPlaylistLinks(false)} />, document.body)}
+    {playlistLinks && createPortal(<PlaylistLinksDialog file={playlistLinks.file} jobId={playlistLinks.jobId} request={request} onClose={() => setPlaylistLinks(null)} />, document.body)}
   </>;
 }
 

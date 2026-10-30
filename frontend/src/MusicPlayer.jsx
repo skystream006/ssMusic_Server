@@ -237,6 +237,31 @@ export function PlaybackQueueRow({ track, number, current, user, sourceJob, requ
   </li>;
 }
 
+export function LibrarySongActions({ track, libraryView, request, onPlayKaraoke, className = 'song-order-actions' }) {
+  const action = libraryView.songState(track);
+  const privacy = action.privacy || getFilePrivacy(track);
+  const privacyLabel = privacy.inherited ? 'Inherited privacy' : privacy.private ? 'Make file public' : 'Make file private';
+  return <SongActions name={track.name} className={className} file={track} request={request}>
+    <KaraokeButton track={track} tracks={libraryView.tracks || []} onPlay={onPlayKaraoke} showLabel />
+    {action.canChangePrivacy && !libraryView.readOnly && <button className="music-icon-button" type="button"
+      title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}
+      aria-label={`${privacyLabel}: ${track.name}`} aria-pressed={privacy.private}
+      disabled={action.disabled || libraryView.saving || privacy.inherited} onClick={() => libraryView.onChangePrivacy(track)}>
+      {libraryView.saving ? <RefreshCw className="spin" size={16} /> : privacy.private ? <Lock size={16} /> : <LockOpen size={16} />}
+    </button>}
+    {action.canModify && !libraryView.readOnly && mediaType(track.name) && <button className="music-icon-button" type="button" title={privacy.private ? 'Private files cannot be shared' : 'Share Media'} data-action-label="Share Media" aria-label={`Share Media ${track.name}`} aria-haspopup="dialog" disabled={action.disabled || libraryView.saving || privacy.private} onClick={() => libraryView.onShareMedia(track)}><Share2 size={16} /></button>}
+    {(action.canModify || action.canEditMetadata === false || libraryView.readOnly) && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button"
+      title={libraryView.readOnly || action.canEditMetadata === false ? 'View song metadata' : 'Edit song metadata'} aria-label={`${libraryView.readOnly || action.canEditMetadata === false ? 'View' : 'Edit'} metadata ${track.name}`}
+      aria-haspopup="dialog" disabled={!libraryView.readOnly && action.canEditMetadata !== false && action.disabled} onClick={() => libraryView.onEditMetadata(track)}>
+      {libraryView.readOnly || action.canEditMetadata === false ? <Info size={16} /> : <Pencil size={16} />}</button>}
+    {action.canModify && !libraryView.readOnly && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Replace File" aria-label={`Replace File ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onReplaceFile(track)}><Upload size={16} /></button>}
+    {!libraryView.readOnly && mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" data-action-label="Transcribe song" title={libraryView.transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${track.name}`} disabled={(action.metadataDisabled ?? action.disabled) || !libraryView.transcriptionActive} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
+    {action.canModify && <button className="music-icon-button" type="button" title="Remove song from playlist" aria-label={`Delete song ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
+    {!libraryView.readOnly && <button className="music-icon-button" type="button" title="Add/Move to playlist" aria-label={`Add/Move ${track.name} to playlist`} disabled={libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>}
+    <a className="music-icon-button" href={track.downloadUrl} title="Download song" aria-label={`Download ${track.name}`}><ArrowDownToLine size={15} /></a>
+  </SongActions>;
+}
+
 export function mergePlaybackMetadata(current, updates, readSnapshot = null) {
   return { ...current, ...updates,
     ...(readSnapshot && current && current.rating !== readSnapshot.rating ? { rating: current.rating } : {}) };
@@ -280,8 +305,8 @@ function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mou
   }, [song?.jobId, song?.name, song?.metadataUrl, song?.streamUrl, request, retry]);
 
   if (!song) return <div className="expanded-player"><Disc3 size={64} /><h2>Nothing playing</h2></div>;
-  const current = details || metadata || song;
-  const cover = details?.artwork === undefined ? artwork : details.artwork;
+  const current = { ...details, ...metadata, ...song };
+  const cover = metadata?.artwork === undefined ? details?.artwork === undefined ? artwork : details.artwork : metadata.artwork;
   return <div className="expanded-player" {...mediaSwipeHandlers}>
     {mediaType(song.name) === 'video' ? <div className="expanded-video" ref={mountVideo} /> : <div className="expanded-artwork">
       {cover && cover !== failedArtwork ? <img src={cover} alt={`${current.album || current.title || song.name} cover`} draggable={false}
@@ -308,6 +333,12 @@ function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mou
 }
 
 export function usePlayback() { return useContext(PlaybackContext); }
+
+export function getPlaybackElementType(name, browser = globalThis) {
+  const navigator = browser?.navigator;
+  const braveAndroid = /Android/i.test(navigator?.userAgent || '') && typeof navigator?.brave?.isBrave === 'function';
+  return mediaType(name) === 'video' || braveAndroid ? 'video' : 'audio';
+}
 
 export function createContinuousPlayback(getMedia, { onChange = () => {}, onError = () => {} } = {}) {
   let revision = 0;
@@ -498,13 +529,14 @@ export function writePlaybackSession(userId, songs, selected, scope, browser = w
   } catch {}
 }
 
-export function PlaybackProvider({ children, request, userId, user = null }) {
+export function PlaybackProvider({ children, request, userId, user = null, SongActionView = null }) {
   const [restored] = useState(() => {
     const saved = readPlaybackSession(userId);
     if (saved && window.location.pathname === '/' && !window.location.search && saved.url !== '/') replaceURL(saved.url);
     return saved;
   });
   const [songs, setSongs] = useState(restored?.songs || null);
+  const [libraryRevision, setLibraryRevision] = useState(0);
   const [selected, setSelected] = useState(restored?.selected || null);
   const restoredSelectionRef = useRef(restored);
   const selectedRef = useRef(null);
@@ -548,8 +580,9 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
   const mountVideo = useCallback((target) => {
     if (!target || !mediaContainer) return;
     const onError = () => setPlayError('Playback could not resume. Press play to retry.');
-    movePlaybackMedia(mediaContainer, target, audioRef.current, onError);
-    return () => { movePlaybackMedia(mediaContainer, floatingMediaRef.current, audioRef.current, onError); };
+    const currentVideo = () => mediaContainer.contains(audioRef.current) ? audioRef.current : null;
+    movePlaybackMedia(mediaContainer, target, currentVideo(), onError);
+    return () => { movePlaybackMedia(mediaContainer, floatingMediaRef.current, currentVideo(), onError); };
   }, [mediaContainer]);
   const autoPlayRef = useRef(!restored && new URLSearchParams(window.location.search).get('play') === '1');
   const volumeRef = useRef(1);
@@ -662,7 +695,8 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
     setSelected(key);
     if (mediaType(track.name) === 'video') setVideoOpen(true);
     const media = audioRef.current;
-    if (media?.tagName.toLowerCase() === (mediaType(track.name) === 'video' ? 'video' : 'audio')) {
+    const kind = mediaType(track.name) === 'video' ? 'video' : 'audio';
+    if (media?.tagName.toLowerCase() === getPlaybackElementType(track.name) && media.dataset.mediaType === kind) {
       return media.getAttribute('src') === track.streamUrl ? playbackTransport.play() : playbackTransport.load(track.streamUrl, true);
     }
   }
@@ -773,8 +807,9 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
 
   swipeActionsRef.current = song ? { next: () => nextSong(), previous: previousSong } : null;
 
-  const MediaElement = isVideo ? 'video' : 'audio';
-  const media = song && <MediaElement hidden={!isVideo} controls={isVideo} playsInline={isVideo} ref={audioRef} preload="metadata"
+  const MediaElement = getPlaybackElementType(song?.name);
+  const media = song && <MediaElement controls={isVideo} playsInline={MediaElement === 'video'} ref={audioRef} preload="metadata"
+    data-media-type={isVideo ? 'video' : 'audio'}
     {...(isVideo ? mediaSwipeHandlers : {})}
     aria-label={`Play ${song.name}`} tabIndex={isVideo ? 0 : -1}
     onLoadedMetadata={(event) => {
@@ -843,25 +878,27 @@ export function PlaybackProvider({ children, request, userId, user = null }) {
     setSelected((current) => current && JSON.parse(current)[0] === jobId ? null : current);
   }
 
-  return <PlaybackContext.Provider value={{ user, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
+  return <PlaybackContext.Provider value={{ user, SongActionView, libraryRevision, refreshLibrary: () => setLibraryRevision((value) => value + 1),
+    songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata, replaceFile }}>
     {children}
+    <div className="audio-player" aria-hidden="true">{!isVideo && media}</div>
     <section className="movie-player" aria-label="Movie player" hidden={!isVideo || !videoOpen}>
       <header><Film size={18} /><strong>{metadata?.title || song?.name}</strong>
         <button className="music-icon-button" type="button" title="Minimize movie" aria-label="Minimize movie" onClick={() => setVideoOpen(false)}><Minimize2 size={18} /></button>
       </header>
-      <div ref={floatingMediaRef}>{mediaContainer ? null : media}</div>
+      <div ref={floatingMediaRef}>{isVideo && !mediaContainer ? media : null}</div>
     </section>
-    {mediaContainer && createPortal(media, mediaContainer)}
+    {isVideo && mediaContainer && createPortal(media, mediaContainer)}
     <MusicPlayer request={request} dockOnly />
   </PlaybackContext.Provider>;
 }
 
 export default function MusicPlayer({ id, request, libraryView = null, dockOnly = false }) {
-  const { user, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
+  const { user, SongActionView, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
@@ -998,6 +1035,13 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     for (const { element } of content) element.inert = true;
     region?.querySelector('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
     const handleKey = (event) => {
+      if (event.defaultPrevented) return;
+      const dialog = document.querySelector('dialog[open]');
+      if (dialog) {
+        if (event.key === 'Escape' && typeof dialog.requestClose === 'function') { event.preventDefault(); dialog.requestClose(); }
+        return;
+      }
+      if (event.key === 'Escape' && region.querySelector(':popover-open')) return;
       if (event.key === 'Escape') { event.preventDefault(); setPanel(null); }
       if (event.key !== 'Tab') return;
       const controls = [...region.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
@@ -1107,7 +1151,6 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             const current = songKey(track) === selected;
             const action = libraryView.songState(track);
             const privacy = action.privacy || getFilePrivacy(track);
-            const privacyLabel = privacy.inherited ? 'Inherited privacy' : privacy.private ? 'Make file public' : 'Make file private';
             const acceptSong = (event) => allowDrop(event, canDragSongs && Boolean(libraryView.selectedId) && event.dataTransfer.types.includes('application/x-ssmusic-song'));
             return <li className={`library-song-row ${current ? 'is-current' : ''} ${selection?.active && selection.keys.has(songKey(track)) ? 'is-checked' : ''}`} key={songKey(track)}
               onDragEnter={acceptSong} onDragOver={acceptSong} onDragLeave={leaveDrop}
@@ -1142,25 +1185,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               <ListSongRating file={track} jobId={track.jobId} request={request} canModify={action.canRate ?? action.canModify}
                 disabled={(action.ratingDisabled ?? action.disabled) || libraryView.saving}
                 onSaved={(result) => libraryView.onMetadataSaved(track, result)} onError={libraryView.onRatingError} />
-              <SongActions name={track.name} className="song-order-actions" file={track} request={request}>
-                <KaraokeButton track={track} tracks={tracks} onPlay={playKaraoke} showLabel />
-                {action.canChangePrivacy && !libraryView.readOnly && <button className="music-icon-button" type="button"
-                  title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}
-                  aria-label={`${privacyLabel}: ${track.name}`} aria-pressed={privacy.private}
-                  disabled={action.disabled || libraryView.saving || privacy.inherited} onClick={() => libraryView.onChangePrivacy(track)}>
-                  {libraryView.saving ? <RefreshCw className="spin" size={16} /> : privacy.private ? <Lock size={16} /> : <LockOpen size={16} />}
-                </button>}
-                {action.canModify && !libraryView.readOnly && mediaType(track.name) && <button className="music-icon-button" type="button" title={privacy.private ? 'Private files cannot be shared' : 'Share Media'} data-action-label="Share Media" aria-label={`Share Media ${track.name}`} aria-haspopup="dialog" disabled={action.disabled || libraryView.saving || privacy.private} onClick={() => libraryView.onShareMedia(track)}><Share2 size={16} /></button>}
-                {(action.canModify || action.canEditMetadata === false || libraryView.readOnly) && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button"
-                  title={libraryView.readOnly || action.canEditMetadata === false ? 'View song metadata' : 'Edit song metadata'} aria-label={`${libraryView.readOnly || action.canEditMetadata === false ? 'View' : 'Edit'} metadata ${track.name}`}
-                  aria-haspopup="dialog" disabled={!libraryView.readOnly && action.canEditMetadata !== false && action.disabled} onClick={() => libraryView.onEditMetadata(track)}>
-                  {libraryView.readOnly || action.canEditMetadata === false ? <Info size={16} /> : <Pencil size={16} />}</button>}
-                {action.canModify && !libraryView.readOnly && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Replace File" aria-label={`Replace File ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onReplaceFile(track)}><Upload size={16} /></button>}
-                {!libraryView.readOnly && mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" data-action-label="Transcribe song" title={libraryView.transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${track.name}`} disabled={(action.metadataDisabled ?? action.disabled) || !libraryView.transcriptionActive} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
-                {action.canModify && <button className="music-icon-button" type="button" title="Remove song from playlist" aria-label={`Delete song ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
-                {!libraryView.readOnly && <button className="music-icon-button" type="button" title="Add/Move to playlist" aria-label={`Add/Move ${track.name} to playlist`} disabled={libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>}
-                <a className="music-icon-button" href={track.downloadUrl} title="Download song" aria-label={`Download ${track.name}`}><ArrowDownToLine size={15} /></a>
-              </SongActions>
+              <LibrarySongActions track={track} libraryView={libraryView} request={request} onPlayKaraoke={playKaraoke} />
             </li>;
           })}</ol>}</SongGroups>}
           {!libraryView.loading && !libraryView.error && !visibleTracks.length && <div className="library-empty"><Music2 size={32} /><h3>{trackSearch ? 'No matching songs' : 'No songs yet'}</h3>
@@ -1170,7 +1195,10 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
       </div>}
       {dockOnly && <>
         {renderedPanel && <NowPlayingPanel panel={renderedPanel} expanded={Boolean(panel)} onChange={setPanel} wide={widePlayer} isVideo={isVideo}
-          player={<NowPlayingTrack key={selected} song={song} metadata={metadata} artwork={artwork} request={request} updateMetadata={updateMetadata} mountVideo={mountVideo} mediaSwipeHandlers={mediaSwipeHandlers} />}
+          player={<>
+            <NowPlayingTrack key={selected} song={song} metadata={metadata} artwork={artwork} request={request} updateMetadata={updateMetadata} mountVideo={mountVideo} mediaSwipeHandlers={mediaSwipeHandlers} />
+            {song && SongActionView && <div className="expanded-player-tools"><SongActionView track={song} request={request} /></div>}
+          </>}
           lyrics={lyricsPanel} queue={<>
             <TrackPagination pagination={queuePagination} position="top" label="Queue" />
             <ol className="playback-queue" ref={queueListRef} start={(queuePagination.page - 1) * queuePagination.pageSize + 1}>
