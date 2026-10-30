@@ -13,6 +13,7 @@ import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
 import { readSongThumbnail } from './artworkThumbnails.js';
+import { createMediaStreamHandler } from './audioCompatibility.js';
 import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
 import { findNoVocals, individualPlaylistId, orderFiles, reconcileLibrary, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setLibraryPlaylistPrivacy, setTheme, transferLibrarySongs } from './libraryStore.js';
@@ -71,6 +72,12 @@ const artworkLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false
 });
+const mediaLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 600,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false
+});
 
 function authLimiter(windowMs, limit) {
   return rateLimit({
@@ -97,6 +104,7 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
       imgSrc: ["'self'", 'data:'],
+      mediaSrc: ["'self'", 'blob:'],
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
@@ -109,7 +117,8 @@ app.use(helmet({
 app.use(['/api/public', '/share'], mediaShareHeaders);
 app.use('/api', (req, res, next) => {
   const artwork = ['GET', 'HEAD'].includes(req.method) && /^\/jobs\/[^/]+\/artwork\/[^/]+\/?$/i.test(req.path);
-  return (artwork ? artworkLimiter : apiLimiter)(req, res, next);
+  const streaming = ['GET', 'HEAD'].includes(req.method) && /^\/jobs\/[^/]+\/stream\/[^/]+\/?$/i.test(req.path);
+  return (streaming ? mediaLimiter : artwork ? artworkLimiter : apiLimiter)(req, res, next);
 });
 app.use('/api/public', publicMediaRouter());
 app.get(['/share/:token', '/share/playlist/:token'], (_req, res) => {
@@ -630,16 +639,7 @@ app.get('/api/jobs/:id/download/:name', async (req, res) => {
   }
 });
 
-app.get('/api/jobs/:id/stream/:name', async (req, res) => {
-  try {
-    const filePath = await resolveRequestedFile(req, isPlayableFile);
-    res.set('Cache-Control', 'private, no-cache');
-    if (/\.m4v$/i.test(filePath)) res.type('video/mp4');
-    return res.sendFile(filePath);
-  } catch (error) {
-    return res.status(error.statusCode || 500).json({ error: error.message });
-  }
-});
+app.get('/api/jobs/:id/stream/:name', createMediaStreamHandler((req) => resolveRequestedFile(req, isPlayableFile)));
 
 app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
   res.set('Cache-Control', 'private, no-cache');

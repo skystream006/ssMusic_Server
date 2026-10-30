@@ -570,7 +570,7 @@ of the available width. The left side offers the Player and Lyrics tabs.
 Use the collapse button, Escape, or browser Back to close the expanded view.
 Switching tabs does not add extra browser history entries.
 
-## Browser and Android media controls
+## Browser media controls
 
 After playback starts, supported browsers register the player through the Media
 Session API. Track title, artist, album, artwork, playback state, and seek position
@@ -590,13 +590,76 @@ foreground render. Media Session remains active during the handoff and loading.
 Pause and Stop cancel pending starts, and superseded playback requests cannot
 interrupt a newer track. Playback failures return the player to a paused state.
 
-Audio uses a dedicated host outside the hidden/inert video popup. Brave on Android
-uses a persistent video media element internally for audio as a compatibility
-workaround for reports of MP3 sound dropping over Bluetooth while progress keeps
-advancing. The file is not converted, and audio still displays artwork and lyrics
-rather than a video view. Other browsers continue to use the native audio element.
-This workaround requires verification on the affected device; web APIs cannot
-confirm whether the Bluetooth output is actually audible.
+Audio uses a dedicated native audio element outside the hidden/inert video popup
+on every browser. There is no longer a Brave-specific video-element workaround.
+
+### MediaSource buffering and preload
+
+Media Session and preloading are enabled independently of AAC compatibility.
+The media element uses `preload="auto"`. For supported MP3 streams, playback
+automatically uses MediaSource and serialized SourceBuffer appends, including
+when AAC compatibility is off. AAC mode uses a separately cached fragmented MP4
+variant suitable for SourceBuffer instead of appending a regular M4A file.
+
+The next queue candidate's first 256 KiB are preloaded and reused when that track
+starts; shuffle retains the prepared candidate. Requests use authenticated byte
+ranges and check file validators between chunks. At most two preload entries
+are retained. The MSE path accepts files up to 16 MiB; larger files, unsupported
+codecs/containers, unavailable APIs, and buffer/decoding failures use native range
+playback. Fallback preserves position and does not resume a deliberately paused
+track. Native fallback still uses Media Session, `preload="auto"`, and next-track
+HEAD preparation.
+
+On supported Safari versions, ManagedMediaSource is used when standard
+MediaSource does not support the stream. Its streaming signals are respected,
+and seeks into evicted data fall back to native playback. Remote playback is
+disabled only while the managed source is attached, as required by Safari, and
+restored when it is released. These APIs cannot force support for every format
+or override mobile background/audio-focus policies.
+
+### Optional AAC compatibility
+
+Enable **User settings > Playback > AAC compatibility** in the signed-in player
+to stream audio as AAC-LC in a seekable M4A container. The option is available to
+all browser and account types, including Safari on iPhone, and is saved separately
+for each signed-in user in the current browser. It is off by default. Switching
+it on or off preserves the current position and play/pause state. Video playback,
+original downloads, metadata, lyrics, and stored source files are unchanged.
+
+The server uses FFmpeg to prepare a 192-kbps, 48-kHz stereo derivative on demand.
+The first request can take time; Player shows **Preparing AAC audio...** while the
+media loads. When possible, the next queue candidate is prepared with an
+authorized range preload, or a HEAD request for native playback, while the
+current track plays. Shuffle advances to that prepared candidate. This reduces
+conversion delays but does not promise gapless
+playback or uninterrupted output when the browser/OS suspends the page.
+
+Derivatives live in `data/playback-aac`, are shared across authorized requests,
+and are invalidated by source-file changes. The cache targets a 5-GiB limit,
+removing older idle entries as new ones are generated. At most two conversions
+run at once, with up to 16 pending preparations and a 15-minute encoder timeout.
+Partial output is never served. The normal data volume persists this cache; it
+can be removed while the server is stopped and will be regenerated when needed.
+
+`GET` and `HEAD /api/jobs/:id/stream/:name?format=aac` use the same source-file
+authorization as original playback, including `userId` library scope. Responses
+provide `audio/mp4`, byte ranges, content length, ETag/Last-Modified revalidation,
+and fast-start metadata before audio data. Streams have a separate 600-request
+per-minute limiter so range requests do not consume the general API quota.
+Adding `mse=1` to an AAC request selects fragmented MP4 output; the ordinary M4A
+variant remains available for native playback. Both variants enforce the same
+source permissions and share the cache storage/concurrency limits.
+Busy preparation returns 429 or 503 with `Retry-After`; retry Play or disable AAC
+compatibility if preparation fails. Cached media never bypasses privacy checks.
+
+This is a codec/container compatibility option, not proof that Bluetooth output
+is audible. Android/Brave and iPhone/Safari device verification is still needed.
+
+### Playback reference
+
+This player uses the standard [Media Session guidance](https://web.dev/articles/media-session),
+persistent native media, MediaSource/SourceBuffer where supported, preloading,
+prepared files, and HTTP range requests.
 
 On Android, use the HTTPS site in a browser with Media Session support, such as
 Chrome, and start playback with a tap. Notification visibility, background playback,

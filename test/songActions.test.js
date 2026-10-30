@@ -48,7 +48,10 @@ let movePlaybackMedia;
 let createPlaybackMediaSession;
 let createContinuousPlayback;
 let getPlaybackElementType;
+let getPlaybackSource;
+let createAudioPreparation;
 let PlaybackProvider;
+let PlaybackSettings;
 let readPlaybackSession;
 let writePlaybackSession;
 let writePlaybackPosition;
@@ -65,7 +68,7 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, getPlaybackElementType, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ default: MusicLibrary, ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -282,10 +285,10 @@ test('playback session persists a full queue, independently browsed page, modes 
   assert.equal(values.has('ssMusicPlaybackPosition:user'), false);
 });
 
-test('Brave Android uses the video media element for audio without changing other browsers', () => {
+test('all browsers use native audio elements and optional AAC URLs preserve source permissions', () => {
   const braveAndroid = { navigator: { userAgent: 'Mozilla/5.0 (Linux; Android 17) Chrome/154.0.0.0 Mobile Safari/537.36', brave: { isBrave: async () => true } } };
-  assert.equal(getPlaybackElementType('Song.mp3', braveAndroid), 'video');
-  assert.equal(getPlaybackElementType('Song.flac', braveAndroid), 'video');
+  assert.equal(getPlaybackElementType('Song.mp3', braveAndroid), 'audio');
+  assert.equal(getPlaybackElementType('Song.flac', braveAndroid), 'audio');
   for (const browser of [
     {}, { navigator: { userAgent: braveAndroid.navigator.userAgent } },
     { navigator: { userAgent: 'Mozilla/5.0 (Windows NT 10.0) Chrome/154.0.0.0', brave: braveAndroid.navigator.brave } },
@@ -294,6 +297,73 @@ test('Brave Android uses the video media element for audio without changing othe
     assert.equal(getPlaybackElementType('Song.mp3', browser), 'audio');
     assert.equal(getPlaybackElementType('Movie.mp4', browser), 'video');
   }
+  const track = { name: 'Song.mp3', streamUrl: '/api/jobs/job/stream/Song.mp3?v=123&userId=owner' };
+  assert.equal(getPlaybackSource(track), track.streamUrl);
+  const compatible = new URL(getPlaybackSource(track, true), 'https://music.example');
+  assert.equal(compatible.searchParams.get('format'), 'aac');
+  assert.equal(compatible.searchParams.get('userId'), 'owner');
+  assert.equal(compatible.searchParams.get('v'), '123');
+  assert.equal(getPlaybackSource({ ...track, name: 'Movie.mp4' }, true), track.streamUrl);
+  assert.equal(getPlaybackSource({ ...track, streamUrl: 'blob:https://music.example/test' }, true), 'blob:https://music.example/test');
+  assert.equal(getPlaybackSource({ ...track, streamUrl: 'https://music.example/api/jobs/job/stream/Song.mp3' }, true), 'https://music.example/api/jobs/job/stream/Song.mp3?format=aac');
+});
+
+test('AAC preparation deduplicates HEAD requests and retries failures without downloading whole files', async () => {
+  const calls = [];
+  let release;
+  const preparation = createAudioPreparation((source, options) => {
+    calls.push({ source, options });
+    return new Promise((resolve) => { release = resolve; });
+  });
+  const source = '/api/jobs/job/stream/Song.mp3?format=aac';
+  const first = preparation.prepare(source);
+  const second = preparation.prepare(source);
+  await Promise.resolve();
+  assert.equal(preparation.ready(source), false);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].options, { method: 'HEAD' });
+  release({});
+  await Promise.all([first, second]);
+  assert.equal(preparation.ready(source), true);
+  await preparation.prepare(source);
+  assert.equal(calls.length, 1);
+  let attempts = 0;
+  const retry = createAudioPreparation(async () => { if (++attempts === 1) throw new Error('Busy'); });
+  await assert.rejects(retry.prepare(source), /Busy/);
+  await retry.prepare(source);
+  assert.equal(attempts, 2);
+});
+
+test('AAC compatibility preference is opt-in and isolated by the signed-in user', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { pathname: '/', search: '', href: 'https://music.example/' },
+    localStorage: { getItem: (key) => key === 'ssMusicAudioCompatibility:enabled-user' ? 'aac' : null } };
+  try {
+    for (const userId of ['enabled-user', 'another-user']) {
+      const html = renderToStaticMarkup(createElement(PlaybackProvider, { userId, request() {} }, createElement(PlaybackSettings)));
+      assert.match(html, /AAC compatibility/);
+      const checkbox = html.match(/<input type="checkbox"[^>]*>/)[0];
+      assert.equal(checkbox.includes('checked=""'), userId === 'enabled-user');
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test('continuous playback retries an errored source without reloading healthy paused media', async () => {
+  let reloads = 0;
+  let plays = 0;
+  const media = { error: null, getAttribute() { return '/stream/song'; }, set src(value) { reloads++; this.error = null; },
+    async play() { plays++; } };
+  const transport = createContinuousPlayback(() => media);
+  await transport.play();
+  assert.equal(reloads, 0);
+  media.error = { code: 4 };
+  await transport.play();
+  assert.equal(reloads, 1);
+  assert.equal(plays, 2);
+  assert.equal(transport.pending, false);
 });
 
 test('continuous playback switches the existing source and calls play synchronously without a render', async () => {
@@ -317,6 +387,60 @@ test('continuous playback switches the existing source and calls play synchronou
   assert.equal(source, '/restored.mp3');
   assert.deepEqual(events, ['source', 'play', 'source']);
   assert.equal(transport.pending, false);
+});
+
+test('continuous playback keeps logical URLs and resumes native fallback at the current position', async () => {
+  let source = '';
+  let mediaFallback;
+  let attachments = 0;
+  let plays = 0;
+  const media = new EventTarget();
+  Object.assign(media, { paused: true, currentTime: 0, duration: 100, getAttribute() { return source; },
+    async play() { plays++; this.paused = false; } });
+  Object.defineProperty(media, 'src', { set(value) { source = value; media.currentTime = 0; } });
+  const buffering = { attach(element, url, fallback) {
+    mediaFallback = fallback;
+    if (++attachments > 1) return null;
+    element.src = 'blob:buffered-song';
+    return {};
+  } };
+  const transport = createContinuousPlayback(() => media, { buffering });
+  await transport.load('/Song.mp3', true);
+  assert.equal(transport.source, '/Song.mp3');
+  assert.equal(source, 'blob:buffered-song');
+  transport.load('/Song.mp3', true);
+  assert.equal(attachments, 1);
+  media.currentTime = 25;
+  mediaFallback({ media, source: '/Song.mp3', position: 25 });
+  media.dispatchEvent(new Event('loadedmetadata'));
+  await Promise.resolve();
+  assert.equal(source, '/Song.mp3');
+  assert.equal(media.currentTime, 25);
+  assert.equal(plays, 2);
+  assert.equal(transport.pending, false);
+});
+
+test('continuous playback does not resume a paused track when buffering falls back', async () => {
+  let source = '';
+  let mediaFallback;
+  let first = true;
+  let plays = 0;
+  const media = new EventTarget();
+  Object.assign(media, { currentTime: 0, duration: 100, getAttribute() { return source; }, async play() { plays++; } });
+  Object.defineProperty(media, 'src', { set(value) { source = value; } });
+  const buffering = { attach(element, url, fallback) {
+    mediaFallback = fallback;
+    if (!first) return null;
+    first = false; element.src = 'blob:buffered'; return {};
+  } };
+  const transport = createContinuousPlayback(() => media, { buffering });
+  await transport.load('/Song.mp3', true);
+  transport.cancel();
+  mediaFallback({ media, source: '/Song.mp3', position: 12 });
+  media.dispatchEvent(new Event('loadedmetadata'));
+  assert.equal(source, '/Song.mp3');
+  assert.equal(media.currentTime, 12);
+  assert.equal(plays, 1);
 });
 
 test('continuous playback ignores superseded play failures and respects cancellation', async () => {

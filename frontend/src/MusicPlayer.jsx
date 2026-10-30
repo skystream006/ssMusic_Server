@@ -7,6 +7,7 @@ import { navigationHistory, replaceURL } from './navigation.js';
 import { findNoVocals, isNoVocals, normalizeSearchText, songKey, songSearchText } from '../../src/library.js';
 import { mediaType } from '../../src/media.js';
 import { buildLyricsUpdate, formatSyltForEdit } from './lyricsEditing.js';
+import { createMediaSourcePlayback, getMediaSourceDescriptor } from './mediaSourcePlayback.js';
 import LyricTimeline from './LyricTimeline.jsx';
 import { Film, Minimize2 } from 'lucide-react';
 export { findNoVocals, isNoVocals } from '../../src/library.js';
@@ -334,21 +335,86 @@ function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mou
 
 export function usePlayback() { return useContext(PlaybackContext); }
 
-export function getPlaybackElementType(name, browser = globalThis) {
-  const navigator = browser?.navigator;
-  const braveAndroid = /Android/i.test(navigator?.userAgent || '') && typeof navigator?.brave?.isBrave === 'function';
-  return mediaType(name) === 'video' || braveAndroid ? 'video' : 'audio';
+export function getPlaybackElementType(name) {
+  return mediaType(name) === 'video' ? 'video' : 'audio';
 }
 
-export function createContinuousPlayback(getMedia, { onChange = () => {}, onError = () => {} } = {}) {
+export function getPlaybackSource(track, compatible = false, base = 'http://localhost/') {
+  if (!compatible || mediaType(track?.name) !== 'audio' || !track?.streamUrl) return track?.streamUrl;
+  const url = new URL(track.streamUrl, base);
+  if (!/^\/api\/jobs\/[^/]+\/stream\/[^/]+\/?$/.test(url.pathname)) return track.streamUrl;
+  url.searchParams.set('format', 'aac');
+  return /^https?:/i.test(track.streamUrl) ? url.href : `${url.pathname}${url.search}`;
+}
+
+export function createAudioPreparation(request) {
+  const entries = new Map();
+  return {
+    ready(source) { return entries.get(source)?.ready === true; },
+    prepare(source) {
+      if (entries.has(source)) return entries.get(source).promise;
+      const entry = { ready: false };
+      entry.promise = Promise.resolve().then(() => request(source, { method: 'HEAD' })).then(() => {
+        entry.ready = true;
+        if (entries.size > 16) {
+          const oldest = [...entries].find(([key, value]) => key !== source && value.ready);
+          if (oldest) entries.delete(oldest[0]);
+        }
+        return source;
+      }, (error) => { entries.delete(source); throw error; });
+      entries.set(source, entry);
+      return entry.promise;
+    }
+  };
+}
+
+export function PlaybackSettings() {
+  const { audioCompatibility, changeAudioCompatibility } = usePlayback();
+  const headingId = useId();
+  return <section className="theme-section" aria-labelledby={headingId}>
+    <div className="section-title"><div><Music2 size={19} /><h2 id={headingId}>Playback</h2></div></div>
+    <label className="playback-compatibility-setting"><input type="checkbox" checked={audioCompatibility}
+      onChange={(event) => changeAudioCompatibility(event.target.checked)} /><span>AAC compatibility</span></label>
+  </section>;
+}
+
+export function createContinuousPlayback(getMedia, { onChange = () => {}, onError = () => {}, buffering = null, shouldResume = null } = {}) {
   let revision = 0;
   let pending = null;
+  let loaded = null;
+  let wantsPlayback = false;
+
+  const currentSource = (media) => loaded?.media === media ? loaded.source : media?.getAttribute('src');
+
+  function applySource(media, source) {
+    loaded = { media, source };
+    if (!buffering?.attach(media, source, fallback)) media.src = source;
+  }
+
+  function fallback({ media, source, position }) {
+    if (getMedia() !== media || currentSource(media) !== source) return;
+    const resume = shouldResume ? shouldResume() : wantsPlayback;
+    const expectedRevision = revision + 1;
+    if (position > 0) media.addEventListener('loadedmetadata', () => {
+      if (revision !== expectedRevision || getMedia() !== media || currentSource(media) !== source) return;
+      media.currentTime = Math.min(position, Number.isFinite(media.duration) ? media.duration : position);
+    }, { once: true });
+    if (resume) start(media, source, true);
+    else {
+      revision++;
+      pending = null;
+      wantsPlayback = false;
+      applySource(media, source);
+      onChange();
+    }
+  }
 
   function start(media, source, replaceSource) {
     const attempt = { revision: ++revision, media, source };
     pending = attempt;
+    wantsPlayback = true;
     try {
-      if (replaceSource) media.src = source;
+      if (replaceSource) applySource(media, source);
       const result = media.play();
       onChange();
       return Promise.resolve(result).then(() => {
@@ -358,12 +424,14 @@ export function createContinuousPlayback(getMedia, { onChange = () => {}, onErro
       }, (error) => {
         if (revision !== attempt.revision) return;
         pending = null;
+        wantsPlayback = false;
         onError(error);
         onChange();
       });
     } catch (error) {
       if (revision === attempt.revision) {
         pending = null;
+        wantsPlayback = false;
         onError(error);
         onChange();
       }
@@ -371,24 +439,28 @@ export function createContinuousPlayback(getMedia, { onChange = () => {}, onErro
   }
 
   return {
+    get source() { return currentSource(getMedia()); },
     get pending() {
-      return Boolean(pending && pending.media === getMedia() && pending.media.getAttribute('src') === pending.source);
+      return Boolean(pending && pending.media === getMedia() && currentSource(pending.media) === pending.source);
     },
     load(source, autoplay = false) {
       const media = getMedia();
-      if (!media || !source || media.getAttribute('src') === source) return;
+      if (!media || !source || currentSource(media) === source) return;
       if (autoplay) return start(media, source, true);
       revision++;
       pending = null;
-      media.src = source;
+      wantsPlayback = false;
+      applySource(media, source);
       onChange();
     },
     play() {
       const media = getMedia();
-      const source = media?.getAttribute('src');
-      if (media && source) return start(media, source, false);
+      const source = currentSource(media);
+      if (media && source) return start(media, source, Boolean(media.error));
     },
-    cancel() { revision++; pending = null; onChange(); }
+    cancel() { revision++; pending = null; wantsPlayback = false; onChange(); },
+    unload() { revision++; pending = null; loaded = null; wantsPlayback = false; buffering?.reset(); onChange(); },
+    dispose() { revision++; pending = null; loaded = null; wantsPlayback = false; buffering?.dispose(); }
   };
 }
 
@@ -537,6 +609,14 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   });
   const [songs, setSongs] = useState(restored?.songs || null);
   const [libraryRevision, setLibraryRevision] = useState(0);
+  const [audioCompatibility, setAudioCompatibility] = useState(() => {
+    try { return Boolean(userId && window.localStorage?.getItem(`ssMusicAudioCompatibility:${userId}`) === 'aac'); }
+    catch { return false; }
+  });
+  const [preparingAudio, setPreparingAudio] = useState(false);
+  const audioPreparation = useMemo(() => createAudioPreparation(request), [request]);
+  const preparedNextRef = useRef(null);
+  const formatChangeRef = useRef(null);
   const [selected, setSelected] = useState(restored?.selected || null);
   const restoredSelectionRef = useRef(restored);
   const selectedRef = useRef(null);
@@ -570,7 +650,10 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   const audioRef = useRef(null);
   const mediaSessionRef = useRef(null);
   const mediaSessionPlaybackRef = useRef(null);
+  const [mediaSourcePlayback] = useState(() => createMediaSourcePlayback());
   const [playbackTransport] = useState(() => createContinuousPlayback(() => audioRef.current, {
+    buffering: mediaSourcePlayback,
+    shouldResume: () => autoPlayRef.current,
     onChange: () => mediaSessionRef.current?.update(),
     onError: () => { autoPlayRef.current = false; setPlaying(false); setPlayError('Playback could not start. Press play to retry.'); }
   }));
@@ -593,6 +676,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   const index = songs?.findIndex((track) => songKey(track) === selected) ?? -1;
   const song = songs?.[index];
   const isVideo = mediaType(song?.name) === 'video';
+  const playbackSource = getPlaybackSource(song, audioCompatibility, window.location.href);
   const lyricsText = formatLyricsForCopy(metadata, mode);
   const currentCopy = copyResult?.song === selected && copyResult?.mode === mode ? copyResult : null;
   const playingPage = Math.max(1, Math.floor(index / queuePageSize) + 1);
@@ -612,9 +696,34 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   }, [mediaContainer]);
 
   useLayoutEffect(() => {
-    if (song) playbackTransport.load(song.streamUrl, autoPlayRef.current);
-    else playbackTransport.cancel();
-  }, [song?.streamUrl, isVideo, playbackTransport]);
+    if (song) {
+      const change = formatChangeRef.current;
+      if (change?.selected === selected && change.media === audioRef.current) {
+        resumePositionRef.current = { selected, position: change.media?.currentTime || 0 };
+        formatChangeRef.current = null;
+      }
+      playbackTransport.load(playbackSource, autoPlayRef.current);
+    }
+    else { playbackTransport.unload(); setPreparingAudio(false); }
+  }, [playbackSource, isVideo, playbackTransport]);
+
+  useEffect(() => {
+    if (!song) { preparedNextRef.current = null; return; }
+    const next = nextPlaybackSong(songs, selected, { shuffle, repeatMode });
+    preparedNextRef.current = { songs, selected, shuffle, repeatMode, track: next };
+    const source = getPlaybackSource(next, audioCompatibility, window.location.href);
+    if (getMediaSourceDescriptor(source)) mediaSourcePlayback.preload(source).catch(() => {});
+    else if (source && !/^(?:blob|data):/i.test(source)) audioPreparation.prepare(source).catch(() => {});
+  }, [audioCompatibility, songs, selected, shuffle, repeatMode, audioPreparation, mediaSourcePlayback]);
+
+  function changeAudioCompatibility(enabled) {
+    if (enabled === audioCompatibility) return;
+    const media = audioRef.current;
+    autoPlayRef.current = Boolean(media && ((!media.paused && !media.ended) || playbackTransport.pending));
+    formatChangeRef.current = { selected: selectedRef.current, media };
+    setAudioCompatibility(enabled);
+    try { if (userId) window.localStorage.setItem(`ssMusicAudioCompatibility:${userId}`, enabled ? 'aac' : 'original'); } catch {}
+  }
 
   useEffect(() => {
     if (playingPageRef.current !== playingPage) setQueuePage(playingPage);
@@ -693,11 +802,13 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
       canNext: trackIndex < queue.length - 1 || settings.repeatMode === 'all' || (settings.shuffle && queue.length > 1) };
     setSongs(queue);
     setSelected(key);
+    preparedNextRef.current = null;
     if (mediaType(track.name) === 'video') setVideoOpen(true);
     const media = audioRef.current;
     const kind = mediaType(track.name) === 'video' ? 'video' : 'audio';
+    const source = getPlaybackSource(track, audioCompatibility, window.location.href);
     if (media?.tagName.toLowerCase() === getPlaybackElementType(track.name) && media.dataset.mediaType === kind) {
-      return media.getAttribute('src') === track.streamUrl ? playbackTransport.play() : playbackTransport.load(track.streamUrl, true);
+      return playbackTransport.source === source ? playbackTransport.play() : playbackTransport.load(source, true);
     }
   }
 
@@ -739,7 +850,10 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
 
   function nextSong(ended = false) {
     const current = queueStateRef.current;
-    const next = nextPlaybackSong(current.songs, current.selected, { shuffle: current.shuffle, repeatMode: current.repeatMode, ended });
+    const prepared = preparedNextRef.current;
+    const next = prepared && prepared.songs === current.songs && prepared.selected === current.selected
+      && prepared.shuffle === current.shuffle && prepared.repeatMode === current.repeatMode && !(ended && current.repeatMode === 'one')
+      ? prepared.track : nextPlaybackSong(current.songs, current.selected, { shuffle: current.shuffle, repeatMode: current.repeatMode, ended });
     if (next) {
       if (songKey(next) === current.selected && audioRef.current) {
         audioRef.current.currentTime = 0;
@@ -772,11 +886,17 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     return Boolean(autoPlayRef.current && (queueStateRef.current.repeatMode === 'one' || mediaSessionPlaybackRef.current?.canNext));
   }
 
+  function playMedia() {
+    autoPlayRef.current = true;
+    const media = audioRef.current;
+    if (media?.error) resumePositionRef.current = { selected: selectedRef.current, position: media.currentTime || 0 };
+    return playbackTransport.play();
+  }
+
   function togglePlayback() {
     if (!audioRef.current) return;
     if (audioRef.current.paused && !playbackTransport.pending && !(audioRef.current.ended && continuesAtEnd())) {
-      autoPlayRef.current = true;
-      return playbackTransport.play();
+      return playMedia();
     }
     autoPlayRef.current = false;
     playbackTransport.cancel();
@@ -789,7 +909,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     song, canPrevious: Boolean(song),
     canNext: Boolean(song && (index < songs.length - 1 || repeatMode === 'all' || (shuffle && songs.length > 1))),
     next: () => nextSong(), previous: previousSong,
-    play() { autoPlayRef.current = true; return playbackTransport.play(); },
+    play: playMedia,
     onPauseIntent() { autoPlayRef.current = false; playbackTransport.cancel(); setPlaying(false); },
     onSeek(time) { setPosition(time); writePlaybackPosition(userId, selectedRef.current, time); },
     onError() { setPlayError('Playback could not start. Press play to retry.'); }
@@ -800,7 +920,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
       media: audioRef.current, transitioning: playbackTransport.pending, continueAtEnd: continuesAtEnd() }));
     mediaSessionRef.current = controller;
     controller.update();
-    return () => { controller.dispose(); mediaSessionRef.current = null; playbackTransport.cancel(); };
+    return () => { controller.dispose(); mediaSessionRef.current = null; playbackTransport.dispose(); };
   }, []);
 
   useEffect(() => { mediaSessionRef.current?.update(); });
@@ -808,11 +928,13 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   swipeActionsRef.current = song ? { next: () => nextSong(), previous: previousSong } : null;
 
   const MediaElement = getPlaybackElementType(song?.name);
-  const media = song && <MediaElement controls={isVideo} playsInline={MediaElement === 'video'} ref={audioRef} preload="metadata"
+  const media = song && <MediaElement controls={isVideo} playsInline={MediaElement === 'video'} ref={audioRef} preload="auto"
     data-media-type={isVideo ? 'video' : 'audio'}
     {...(isVideo ? mediaSwipeHandlers : {})}
     aria-label={`Play ${song.name}`} tabIndex={isVideo ? 0 : -1}
+    onLoadStart={() => setPreparingAudio(audioCompatibility && !isVideo && playbackSource !== song.streamUrl)}
     onLoadedMetadata={(event) => {
+      setPreparingAudio(false);
       event.currentTarget.volume = volumeRef.current;
       event.currentTarget.muted = mutedRef.current;
       const resume = resumePositionRef.current;
@@ -842,12 +964,15 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     onPlay={() => { autoPlayRef.current = true; setPlaying(true); setPlayError(''); mediaSessionRef.current?.update(); }} onPause={(event) => {
       if (playbackTransport.pending || !event.currentTarget.paused || (event.currentTarget.ended && continuesAtEnd())) return;
       autoPlayRef.current = false;
+      playbackTransport.cancel();
       setPlaying(false);
       writePlaybackPosition(userId, selectedRef.current, event.currentTarget.currentTime);
       mediaSessionRef.current?.update();
     }}
-    onEnded={() => nextSong(true)} onError={() => {
+    onEnded={() => nextSong(true)} onError={(event) => {
+      if (!event.currentTarget.error) return;
       playbackTransport.cancel();
+      setPreparingAudio(false);
       setPlaying(false);
       setPlayError('This file could not be played. It may be unavailable, or its video/audio codec may be unsupported by this browser.');
       mediaSessionRef.current?.update();
@@ -878,7 +1003,8 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     setSelected((current) => current && JSON.parse(current)[0] === jobId ? null : current);
   }
 
-  return <PlaybackContext.Provider value={{ user, SongActionView, libraryRevision, refreshLibrary: () => setLibraryRevision((value) => value + 1),
+  return <PlaybackContext.Provider value={{ user, SongActionView, audioCompatibility, changeAudioCompatibility, preparingAudio,
+    libraryRevision, refreshLibrary: () => setLibraryRevision((value) => value + 1),
     songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
@@ -898,7 +1024,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
 }
 
 export default function MusicPlayer({ id, request, libraryView = null, dockOnly = false }) {
-  const { user, SongActionView, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
+  const { user, SongActionView, preparingAudio, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
@@ -1235,7 +1361,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <button className="music-icon-button volume-button" type="button" title={muted ? 'Unmute' : 'Mute'} aria-label={muted ? 'Unmute' : 'Mute'} disabled={!song} onClick={() => { audioRef.current.muted = !muted; }}>{muted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}</button>
           <input className="volume-slider" type="range" aria-label="Volume" min="0" max="1" step="0.01" value={muted ? 0 : volume} disabled={!song} onChange={(event) => { audioRef.current.volume = Number(event.target.value); audioRef.current.muted = false; }} />
         </div>
-        {queueLoading && <div className="notice playback-error" role="status"><RefreshCw className="spin" size={16} />Loading queue...</div>}
+        {(queueLoading || preparingAudio) && <div className="notice playback-error" role="status"><RefreshCw className="spin" size={16} />{preparingAudio ? 'Preparing AAC audio...' : 'Loading queue...'}</div>}
         {playError && <div className="notice error playback-error" role="alert">{playError}<button className="music-icon-button" type="button" aria-label="Dismiss playback error" title="Dismiss" onClick={() => setPlayError('')}><X size={16} /></button></div>}
       </footer>
       </>}

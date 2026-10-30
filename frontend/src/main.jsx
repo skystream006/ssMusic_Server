@@ -49,7 +49,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import appIcon from './assets/ic_launcher.png';
-import MusicPlayer, { PlaybackProvider, usePlayback } from './MusicPlayer.jsx';
+import MusicPlayer, { PlaybackProvider, PlaybackSettings, usePlayback } from './MusicPlayer.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
 import PublicMedia, { PublicPlaylist } from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
@@ -1441,6 +1441,7 @@ function UserSettingsPage({ userId }) {
         <div className="section-title"><div><Palette size={19} /><h2 id="appearance-heading">Appearance</h2></div></div>
         <ThemeChoices />
       </section>}
+      {!userId && <PlaybackSettings />}
       <section className="pat-section" aria-labelledby="pat-heading">
         <div className="section-title"><div><KeyRound size={19} /><h2 id="pat-heading">Private Access Tokens</h2></div><strong>{tokens.length}</strong></div>
         {!userId && <form className="pat-form" onSubmit={generate}>
@@ -1652,6 +1653,7 @@ function SharedSettingsPage() {
       <div className="section-title"><div><Palette size={19} /><h2 id="appearance-heading">Appearance</h2></div></div>
       <ThemeChoices />
     </section>
+    <PlaybackSettings />
   </AppShell>;
 }
 

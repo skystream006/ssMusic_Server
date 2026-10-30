@@ -13,6 +13,7 @@ import NodeID3 from 'node-id3';
 import { fileTypeFromBuffer } from 'file-type';
 import { writeJob } from '../src/database.js';
 import { linkLibraryJob } from '../src/libraryStore.js';
+import { readPostgresJobs } from '../src/postgresCatalog.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
 test('privacy and search keys enforce owner-only access through HTTP', { timeout: 120_000 }, async (context) => {
@@ -112,6 +113,52 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
   await fs.mkdir(path.join(directory, 'public'), { recursive: true });
   await fs.writeFile(path.join(directory, 'public', 'index.html'), '<!doctype html><title>Privacy settings route</title>');
   await start();
+
+  await context.test('AAC streams support repeated ranges and preserve source privacy for cached audio', async (subcontext) => {
+    if (!canGenerateVideo) { subcontext.skip('FFmpeg is not installed'); return; }
+    const outputDir = path.join(outputRoot, 'aac-fixture');
+    await fs.mkdir(outputDir);
+    const sourcePath = path.join(outputDir, 'Song.mp3');
+    execFileSync(ffmpegPath, ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-c:a', 'libmp3lame', sourcePath]);
+    const original = await fs.readFile(sourcePath);
+    const now = new Date().toISOString();
+    const job = { id: 'aac-fixture', url: 'import:aac-fixture', status: 'completed', isPlaylist: true, files: ['Song.mp3'],
+      outputDir, initiatedBy: { id: users.Owner.id }, createdAt: now, updatedAt: now, output: '' };
+    await writeJob(database, job);
+    await linkLibraryJob(users.Owner.id, job, await readPostgresJobs(database, users.Owner.id));
+    subcontext.after(() => call('/api/jobs/aac-fixture', headers.Owner, 'DELETE'));
+    const route = '/api/jobs/aac-fixture/stream/Song.mp3?format=aac';
+    assert.equal((await call(route, {})).status, 401);
+    const head = await call(route, headers.Owner, 'HEAD');
+    assert.equal(head.status, 200, head.text);
+    assert.equal(head.headers['content-type'], 'audio/mp4');
+    assert.equal(head.headers['accept-ranges'], 'bytes');
+    assert.equal(head.buffer.length, 0);
+    assert.match(head.headers['content-security-policy'], /media-src 'self' blob:/);
+    const fragmented = await call(`${route}&mse=1`, headers.Owner, 'HEAD');
+    assert.equal(fragmented.status, 200, fragmented.text);
+    assert.equal(fragmented.headers['content-type'], 'audio/mp4');
+    const fragmentRange = await call(`${route}&mse=1`, { ...headers.Owner, Range: 'bytes=0-31' });
+    assert.equal(fragmentRange.status, 206);
+    assert.equal(fragmentRange.buffer.length, 32);
+    for (let requestIndex = 0; requestIndex < 185; requestIndex++) {
+      const partial = await call(route, { ...headers.Owner, Range: 'bytes=0-1' });
+      assert.equal(partial.status, 206, partial.text);
+      assert.equal(partial.buffer.length, 2);
+      assert.equal(partial.headers.etag, head.headers.etag);
+    }
+    assert.equal((await call('/api/settings/privacy', headers.Owner)).status, 200);
+    assert.equal((await call(route, headers.Reader, 'HEAD')).status, 200);
+    assert.equal((await call('/api/jobs/aac-fixture/files/Song.mp3/privacy', headers.Owner, 'PATCH', { private: true })).status, 200);
+    for (const auth of [headers.Admin, headers.Contributor, headers.Reader, keyHeaders]) {
+      const denied = await call(route, auth, 'HEAD');
+      assert.ok([403, 404].includes(denied.status), `Cached audio must remain private: ${denied.status}`);
+      const fragmentedDenied = await call(`${route}&mse=1`, auth, 'HEAD');
+      assert.ok([403, 404].includes(fragmentedDenied.status), `Fragmented audio must remain private: ${fragmentedDenied.status}`);
+    }
+    assert.equal((await call(route, headers.Owner, 'HEAD')).status, 200);
+    assert.deepEqual(await fs.readFile(sourcePath), original);
+  });
 
   await context.test('application privacy settings are admin-only, persistent and enforced across privacy routes', async (subcontext) => {
     const settingsRoute = '/api/settings/privacy';
