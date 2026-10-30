@@ -44,6 +44,7 @@ let PlaybackQueueRow;
 let mergePlaybackMetadata;
 let movePlaybackMedia;
 let createPlaybackMediaSession;
+let createContinuousPlayback;
 let PlaybackProvider;
 let readPlaybackSession;
 let writePlaybackSession;
@@ -61,7 +62,7 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, PlaybackProvider, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -235,6 +236,57 @@ test('playback session persists a full queue, independently browsed page, modes 
   assert.equal(values.has('ssMusicPlaybackPosition:user'), false);
 });
 
+test('continuous playback switches the existing source and calls play synchronously without a render', async () => {
+  const events = [];
+  let source = '/first.mp3';
+  let finish;
+  const media = { getAttribute() { return source; }, set src(value) { source = value; events.push('source'); },
+    play() { events.push('play'); return new Promise((resolve) => { finish = resolve; }); },
+    pause() { assert.fail('A track change must not pause the media element'); },
+    load() { assert.fail('Setting src is sufficient; do not reset playback again'); } };
+  const transport = createContinuousPlayback(() => media);
+  const transition = transport.load('/second.mp3', true);
+  assert.deepEqual(events, ['source', 'play']);
+  assert.equal(transport.pending, true);
+  transport.load('/second.mp3', true);
+  assert.deepEqual(events, ['source', 'play']);
+  finish();
+  await transition;
+  assert.equal(transport.pending, false);
+  transport.load('/restored.mp3', false);
+  assert.equal(source, '/restored.mp3');
+  assert.deepEqual(events, ['source', 'play', 'source']);
+  assert.equal(transport.pending, false);
+});
+
+test('continuous playback ignores superseded play failures and respects cancellation', async () => {
+  let source = '/first.mp3';
+  const attempts = [];
+  const errors = [];
+  const media = { getAttribute() { return source; }, set src(value) { source = value; },
+    play() { return new Promise((resolve, reject) => attempts.push({ resolve, reject })); } };
+  const transport = createContinuousPlayback(() => media, { onError: (error) => errors.push(error.message) });
+  const first = transport.load('/second.mp3', true);
+  const second = transport.load('/third.mp3', true);
+  attempts[0].reject(new Error('Aborted old source'));
+  await first;
+  assert.deepEqual(errors, []);
+  assert.equal(transport.pending, true);
+  attempts[1].resolve();
+  await second;
+  const paused = transport.play();
+  transport.cancel();
+  attempts[2].reject(new Error('Paused by user'));
+  await paused;
+  assert.equal(transport.pending, false);
+  assert.deepEqual(errors, []);
+  const blocked = transport.play();
+  attempts[3].reject(new Error('Playback blocked'));
+  await blocked;
+  assert.deepEqual(errors, ['Playback blocked']);
+  assert.equal(transport.pending, false);
+});
+
 test('browser Media Session publishes track metadata and dispatches native transport and seek controls', async () => {
   const handlers = new Map();
   const session = { setActionHandler(name, handler) { handlers.set(name, handler); }, setPositionState(value) { this.position = value; } };
@@ -289,6 +341,37 @@ test('browser Media Session publishes track metadata and dispatches native trans
   assert.equal(session.metadata, null);
   assert.equal(session.playbackState, 'none');
   assert.ok([...handlers.values()].every((handler) => handler === null));
+  controller.dispose();
+});
+
+test('browser Media Session retains playing state through track loading but honors pause and stop', async () => {
+  const handlers = new Map();
+  const states = [];
+  const session = { setActionHandler(name, handler) { handlers.set(name, handler); },
+    set playbackState(value) { states.push(value); }, setPositionState(value) { this.position = value; } };
+  const media = { paused: true, ended: false, duration: NaN, currentTime: 0, pause() { this.paused = true; } };
+  const playback = { song: { name: 'Next.mp3' }, media, transitioning: true, canNext: true,
+    onPauseIntent() { this.transitioning = false; this.continueAtEnd = false; } };
+  const controller = createPlaybackMediaSession({ navigator: { mediaSession: session } }, () => playback);
+  controller.update();
+  assert.equal(states.at(-1), 'playing');
+  assert.equal(session.position, undefined);
+  assert.equal(handlers.get('seekto'), null);
+  playback.transitioning = false;
+  playback.continueAtEnd = true;
+  media.ended = true;
+  controller.update();
+  assert.equal(states.at(-1), 'playing');
+  await handlers.get('pause')();
+  assert.equal(states.at(-1), 'paused');
+  playback.transitioning = true;
+  controller.update();
+  await handlers.get('stop')();
+  assert.equal(states.at(-1), 'paused');
+  playback.transitioning = true;
+  media.error = { code: 4 };
+  controller.update();
+  assert.equal(states.at(-1), 'paused');
   controller.dispose();
 });
 

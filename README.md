@@ -580,6 +580,12 @@ controls to display; shuffle and repeat remain available in the website itself.
 Session information is cleared when the queue has no selected track or the user
 logs out. Lyrics do not need to be opened or downloaded for media controls.
 
+Consecutive audio tracks reuse the same media element. The next source starts
+directly from the playback-ended or media-control event, without waiting for a
+foreground render. Media Session remains active during the handoff and loading.
+Pause and Stop cancel pending starts, and superseded playback requests cannot
+interrupt a newer track. Playback failures return the player to a paused state.
+
 On Android, use the HTTPS site in a browser with Media Session support, such as
 Chrome, and start playback with a tap. Notification visibility, background playback,
 and available buttons depend on the browser, Android notification settings, and
