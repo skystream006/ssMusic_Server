@@ -171,6 +171,96 @@ test('a failed future track leaves current audio intact and drops partially appe
   playback.dispose();
 });
 
+test('a transient fetch failure after several songs retries the same range without ending the queue', async () => {
+  const { browser, media, instances, calls } = fixture();
+  const fetch = browser.fetch;
+  const retries = [];
+  let failed = false;
+  browser.fetch = (url, options) => {
+    if (url.includes('/Fourth.mp3') && options.headers.Range === 'bytes=4-7') retries.push(options);
+    if (!failed && url.includes('/Fourth.mp3') && options.headers.Range === 'bytes=4-7') {
+      failed = true;
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
+    return fetch(url, options);
+  };
+  const playback = createMediaSourcePlayback({ browser, chunkBytes: 4 });
+  const advanced = [];
+  playback.attach(media, '/First.mp3', () => assert.fail('A brief network failure must not abandon buffered playback'));
+  for (const [index, name] of ['Second', 'Third', 'Fourth'].entries()) {
+    assert.equal(await playback.queueNext(`/${name}.mp3`, () => advanced.push(name)), true);
+    media.currentTime = (index + 1) * 10 + 0.25;
+    media.dispatchEvent(new Event('timeupdate'));
+  }
+  assert.equal(failed, true);
+  assert.deepEqual(advanced, ['Second', 'Third', 'Fourth']);
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].readyState, 'open');
+  assert.deepEqual(calls.filter(({ url }) => url.includes('/Fourth.mp3')).map(({ options }) => options.headers.Range),
+    ['bytes=0-3', 'bytes=4-7', 'bytes=8-11']);
+  assert.equal(retries.length, 2);
+  assert.deepEqual(retries[1].headers, retries[0].headers);
+  assert.equal(retries[1].credentials, 'same-origin');
+  assert.deepEqual(playback.timing(media), { position: 0.25, duration: 10, offset: 30 });
+  playback.dispose();
+});
+
+test('a interrupted response body retries the range without appending duplicate audio', async () => {
+  const { browser, media, instances } = fixture();
+  const fetch = browser.fetch;
+  let attempts = 0;
+  browser.fetch = (url, options) => {
+    if (++attempts === 1) {
+      return Promise.resolve(new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new Uint8Array([1, 2])); },
+        pull(controller) { controller.error(new TypeError('Failed to fetch')); }
+      }), { status: 206, headers: { 'content-range': 'bytes 0-3/10', 'content-length': '4', etag: '"fixture"' } }));
+    }
+    return fetch(url, options);
+  };
+  const playback = createMediaSourcePlayback({ browser, chunkBytes: 4 });
+  const stream = playback.attach(media, '/Song.mp3', () => assert.fail('A partial download should be retried'));
+  await stream.completion;
+  assert.equal(attempts, 4);
+  assert.deepEqual(instances[0].buffer.parts, [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10]]);
+  playback.dispose();
+});
+
+test('persistent network failure is bounded and authorization failures are not retried', async () => {
+  const { browser, media } = fixture();
+  let attempts = 0;
+  browser.fetch = async () => { attempts++; throw new TypeError('Failed to fetch'); };
+  const playback = createMediaSourcePlayback({ browser });
+  const fallbacks = [];
+  const stream = playback.attach(media, '/Unavailable.mp3', (failure) => fallbacks.push(failure));
+  await stream.completion;
+  assert.equal(attempts, 3);
+  assert.equal(fallbacks.length, 1);
+  assert.equal(fallbacks[0].source, '/Unavailable.mp3');
+  playback.dispose();
+  for (const status of [401, 403, 404]) {
+    let requests = 0;
+    browser.fetch = async () => { requests++; return new Response(null, { status }); };
+    const denied = createMediaSourcePlayback({ browser });
+    await assert.rejects(denied.preload('/Denied.mp3'), new RegExp(`Media request failed \\(${status}\\)`));
+    assert.equal(requests, 1);
+    denied.dispose();
+  }
+});
+
+test('disposing playback cancels retry backoff without another request', async () => {
+  const { browser } = fixture();
+  let attempts = 0;
+  browser.fetch = async () => { attempts++; throw new TypeError('Failed to fetch'); };
+  const playback = createMediaSourcePlayback({ browser });
+  const pending = playback.preload('/Song.mp3');
+  const rejected = assert.rejects(pending, { name: 'AbortError' });
+  await new Promise((resolve) => setImmediate(resolve));
+  playback.dispose();
+  await rejected;
+  assert.equal(attempts, 1);
+});
+
 test('fallback after a buffered handoff preserves the current source and relative position', async () => {
   const { browser, media, instances } = fixture();
   const playback = createMediaSourcePlayback({ browser });

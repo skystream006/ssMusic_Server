@@ -24,7 +24,34 @@ export function createMediaSourcePlayback({ browser = globalThis, chunkBytes = 2
   const failed = new Set();
   let active = null;
 
+  function waitForRetry(signal, milliseconds) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', abort);
+        resolve();
+      }, milliseconds);
+      const abort = () => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', abort);
+        reject(new DOMException('Playback changed', 'AbortError'));
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+    });
+  }
+
   async function readPart(url, offset, signal, previous = null) {
+    for (let attempt = 0; ; attempt++) {
+      signal.throwIfAborted();
+      try { return await readPartAttempt(url, offset, signal, previous); }
+      catch (error) {
+        if (signal.aborted || error.name !== 'TypeError' || attempt >= 2) throw error;
+        await waitForRetry(signal, 250 * (attempt + 1));
+      }
+    }
+  }
+
+  async function readPartAttempt(url, offset, signal, previous) {
     const headers = { Range: `bytes=${offset}-${offset + chunkBytes - 1}` };
     if (previous?.modified) headers['If-Range'] = previous.modified;
     const response = await browser.fetch(url, { headers, signal, credentials: 'same-origin' });
