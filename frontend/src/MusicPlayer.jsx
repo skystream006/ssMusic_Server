@@ -335,6 +335,11 @@ function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mou
 
 export function usePlayback() { return useContext(PlaybackContext); }
 
+export function publishPlaybackPosition(media, publish, session, page = document) {
+  session?.update();
+  if (!page.hidden && media && Number.isFinite(media.currentTime)) publish(media.currentTime);
+}
+
 export function getPlaybackElementType(name) {
   return mediaType(name) === 'video' ? 'video' : 'audio';
 }
@@ -739,9 +744,12 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   }, [userId, songs, selected, shuffle, repeatMode, queuePage, queuePageSize]);
 
   useEffect(() => {
-    const persist = () => writePlaybackPosition(userId, selected, audioRef.current?.currentTime);
+    const persist = () => writePlaybackPosition(userId, selectedRef.current, audioRef.current?.currentTime);
     window.addEventListener('pagehide', persist);
-    const onVisibilityChange = () => { if (document.visibilityState === 'hidden') persist(); };
+    const onVisibilityChange = () => {
+      if (document.hidden) persist();
+      else publishPlaybackPosition(audioRef.current, setPosition, mediaSessionRef.current);
+    };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       window.removeEventListener('pagehide', persist);
@@ -955,9 +963,9 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
       setMuted(event.currentTarget.muted);
     }}
     onTimeUpdate={(event) => {
-      setPosition(event.currentTarget.currentTime);
+      publishPlaybackPosition(event.currentTarget, setPosition, mediaSessionRef.current);
       if (Date.now() - progressSavedAtRef.current >= 5000) {
-        writePlaybackPosition(userId, selected, event.currentTarget.currentTime);
+        writePlaybackPosition(userId, selectedRef.current, event.currentTarget.currentTime);
         progressSavedAtRef.current = Date.now();
       }
     }}

@@ -590,6 +590,13 @@ foreground render. Media Session remains active during the handoff and loading.
 Pause and Stop cancel pending starts, and superseded playback requests cannot
 interrupt a newer track. Playback failures return the player to a paused state.
 
+While the page is hidden, playback time ticks update Media Session and saved
+position without redrawing the Music library. Nonessential UI polling pauses
+and never overlaps requests; it refreshes when the page becomes visible again.
+Completed library/catalog responses are deferred while hidden so they cannot
+trigger background track-list reloads during a media handoff. Returning to the
+page applies current data and catches the displayed position up to the media.
+
 Audio uses a dedicated native audio element outside the hidden/inert video popup
 on every browser. There is no longer a Brave-specific video-element workaround.
 

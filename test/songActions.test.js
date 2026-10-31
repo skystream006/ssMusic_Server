@@ -47,6 +47,7 @@ let mergePlaybackMetadata;
 let movePlaybackMedia;
 let createPlaybackMediaSession;
 let createContinuousPlayback;
+let publishPlaybackPosition;
 let getPlaybackElementType;
 let getPlaybackSource;
 let createAudioPreparation;
@@ -68,7 +69,7 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, publishPlaybackPosition, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ default: MusicLibrary, ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -349,6 +350,20 @@ test('AAC compatibility preference is opt-in and isolated by the signed-in user'
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+});
+
+test('hidden playback updates the native session without publishing progress renders', () => {
+  const positions = [];
+  let sessionUpdates = 0;
+  const session = { update() { sessionUpdates++; } };
+  for (let currentTime = 1; currentTime <= 50; currentTime++) {
+    publishPlaybackPosition({ currentTime }, (position) => positions.push(position), session, { hidden: true });
+  }
+  assert.deepEqual(positions, []);
+  assert.equal(sessionUpdates, 50);
+  publishPlaybackPosition({ currentTime: 51 }, (position) => positions.push(position), session, { hidden: false });
+  assert.deepEqual(positions, [51]);
+  assert.equal(sessionUpdates, 51);
 });
 
 test('continuous playback retries an errored source without reloading healthy paused media', async () => {

@@ -64,6 +64,7 @@ import { submitJobUrl } from './jobSubmission.js';
 import { jobSortColumns, sortJobs } from './jobSorting.js';
 import { sortSelectOptions } from './selectOptions.js';
 import { navigate, useNavigation } from './navigation.js';
+import { startVisiblePolling } from './polling.js';
 import { initializeTouchControls } from './touchControls.js';
 import { countDownloadedFiles, themes } from '../../src/library.js';
 import { isPlayableFile } from '../../src/media.js';
@@ -157,20 +158,19 @@ function usePolling(loader, interval = POLL_INTERVAL, pollingKey = 'default') {
     const load = async () => {
       try {
         const result = await loader();
-        if (active) {
+        if (active && !document.hidden) {
           setData(result);
           setError('');
         }
       } catch (loadError) {
-        if (active) setError(loadError.message);
+        if (active && !document.hidden) setError(loadError.message);
       }
     };
 
-    load();
-    const timer = window.setInterval(load, interval);
+    const stop = startVisiblePolling(load, interval);
     return () => {
       active = false;
-      window.clearInterval(timer);
+      stop();
     };
   }, [interval, pollingKey]);
 

@@ -8,6 +8,7 @@ import { submitJobUrl } from './jobSubmission.js';
 import { canChangePlaylistPrivacy, canChangePrivacy, canEditSong, canManageJob, canModifyJob, getFilePrivacy, formatBytes, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { replaceURL } from './navigation.js';
+import { runWhenVisible } from './polling.js';
 import { sortSelectOptions } from './selectOptions.js';
 
 const backupWeekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -520,18 +521,21 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
 
   useEffect(() => {
     let active = true;
+    let cancelCommit = () => {};
     const load = async () => {
       const mutation = mutationRef.current;
       try {
         const result = await request(owner ? `/api/library?${new URLSearchParams({ userId: owner.id })}` : '/api/library');
-        if (active && !savingRef.current && mutation === mutationRef.current) {
-          setLibrary((current) => current && current.version > result.version ? current : result);
-          setError('');
-        }
-      } catch (loadError) { if (active) setError(loadError.message); }
+        if (active) cancelCommit = runWhenVisible(() => {
+          if (active && !savingRef.current && mutation === mutationRef.current) {
+            setLibrary((current) => current && current.version > result.version ? current : result);
+            setError('');
+          }
+        });
+      } catch (loadError) { if (active) cancelCommit = runWhenVisible(() => { if (active) setError(loadError.message); }); }
     };
     load();
-    return () => { active = false; };
+    return () => { active = false; cancelCommit(); };
   }, [request, refresh, owner?.id, playback.libraryRevision]);
 
   useEffect(() => {
@@ -543,20 +547,26 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
     }
     if (searchPending) return;
     let active = true;
+    let cancelCommit = () => {};
     const controller = new AbortController();
     setTracksLoading(true);
     setTrackError('');
     const query = new URLSearchParams({ sort: trackSort, ...(owner ? { userId: owner.id } : {}), ...(selectedId ? { entryId: selectedId } : {}),
       ...(paginated ? { page: trackPage, pageSize: trackPageSize, search: debouncedTrackSearch } : {}) });
     request(`/api/library/tracks?${query}`, { signal: controller.signal }).then((result) => {
-      if (active) {
+      if (active) cancelCommit = runWhenVisible(() => {
+        if (!active) return;
         const files = trackSort === 'order' ? songReorders.current.reduce(reorderPlaylistTracks, result.files) : result.files;
         setTrackResult({ ...result, files, selectedId, sort: trackSort, search: debouncedTrackSearch });
         if (paginated && result.page !== trackPage) setTrackPage(result.page);
-      }
-    }).catch((loadError) => { if (active) setTrackError(loadError.message); })
-      .finally(() => { if (active) setTracksLoading(false); });
-    return () => { active = false; controller.abort(); };
+        setTracksLoading(false);
+      });
+    }).catch((loadError) => {
+      if (active) cancelCommit = runWhenVisible(() => {
+        if (active) { setTrackError(loadError.message); setTracksLoading(false); }
+      });
+    });
+    return () => { active = false; controller.abort(); cancelCommit(); };
   }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, trackPageSize, trackSort, debouncedTrackSearch, searchPending, paginated, owner?.id, Boolean(actionTrack)]);
 
   function selectEntry(id) {
