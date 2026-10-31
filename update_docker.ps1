@@ -1,6 +1,6 @@
 param(
 	[switch]$NoPull,
-	[string]$cM
+	[string]$cm
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,10 +17,10 @@ try {
 	if (-not $NoPull) {
 		git pull --ff-only
 		if ($LASTEXITCODE -ne 0) { throw 'git pull failed; no Docker services were changed.' }
-		if ($PSBoundParameters.ContainsKey('cM')) {
+		if ($PSBoundParameters.ContainsKey('cm')) {
 			git add .
 			if ($LASTEXITCODE -ne 0) { throw 'git add failed; no Docker services were changed.' }
-			git commit -am $cM
+			git commit -am $cm
 			if ($LASTEXITCODE -ne 0) { throw 'git commit failed; no Docker services were changed.' }
 			git push
 			if ($LASTEXITCODE -ne 0) { throw 'git push failed; no Docker services were changed.' }

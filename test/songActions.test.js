@@ -1449,6 +1449,7 @@ test('music file privacy controls reflect ownership, inherited privacy, read-onl
     for (const user of [{ id: 'admin', role: 'admin' }, { id: 'contributor', role: 'user' }, { id: 'linked', role: 'user' }, { id: 'owner', role: 'shared' }]) {
       assert.equal(privacyButton(render({ user })), undefined);
     }
+    assert.equal(privacyButton(render({ user: { id: 'owner', role: 'user', privateItemsEnabled: false } })), undefined);
     assert.equal(privacyButton(render({ readOnly: true })), undefined);
     assert.match(render({ name: 'Movie.mp4' }), /aria-label="Make file private: Movie.mp4"/);
   } finally {

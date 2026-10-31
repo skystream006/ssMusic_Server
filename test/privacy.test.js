@@ -65,9 +65,10 @@ test('application privacy setting gates user mutations but always allows admins 
       assert.equal((await setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs, user))
         .entries.find((entry) => entry.id === 'individual-songs').private, true);
     } else {
-      await assert.rejects(manager.setJobPrivacy(playlist.id, true, user), { statusCode: 403 });
-      await assert.rejects(manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user), { statusCode: 403 });
-      await assert.rejects(setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs, user), { statusCode: 403 });
+      const disabledFeatureError = { statusCode: 403, message: 'Private playlists and files are disabled by an administrator' };
+      await assert.rejects(manager.setJobPrivacy(playlist.id, true, user), disabledFeatureError);
+      await assert.rejects(manager.setJobFilePrivacy(playlist.id, 'Song.mp3', true, user), disabledFeatureError);
+      await assert.rejects(setLibraryPlaylistPrivacy(user.id, 'individual-songs', true, jobs, user), disabledFeatureError);
     }
     const saved = await manager.getJob(playlist.id);
     assert.equal(saved.private, true);

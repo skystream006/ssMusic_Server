@@ -193,8 +193,11 @@ users from marking playlists or files private. Administrators can always make
 their own playlists and files private, including their built-in playlists.
 This does not grant access to another owner's private content. Existing private
 items remain protected, and owners can still make them nonprivate.
-Open clients refresh the setting every five seconds; the server enforces changes
-immediately.
+Clients load the setting once on sign-in or page reload; they do not poll it.
+The server enforces changes immediately. If an open client still offers a
+disabled privacy action, the request returns HTTP 403 with
+`Private playlists and files are disabled by an administrator`. Reloading hides
+unavailable privacy actions for non-admin users.
 
 `GET /api/settings/privacy` returns `{ "privateItemsEnabled": true }` to
 authenticated users. Administrators can update it with

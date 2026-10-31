@@ -1678,13 +1678,12 @@ function PageRoutes({ user }) {
 function App() {
   const [user, setUser] = useState(undefined);
   const [preferences, setPreferences] = useState(null);
+  const [privacySettings, setPrivacySettings] = useState(null);
+  const [privacyError, setPrivacyError] = useState('');
   const [themeSaving, setThemeSaving] = useState(false);
   const [themeError, setThemeError] = useState('');
   const accountRef = useRef(null);
   const themeSaveRef = useRef(false);
-  const { data: privacySettings, error: privacyError, setData: setPrivacySettings } = usePolling(
-    () => user ? request('/api/settings/privacy') : Promise.resolve(null), POLL_INTERVAL, user?.id || 'anonymous'
-  );
 
   useEffect(() => {
     request('/api/auth/me').then((result) => setUser(result.user)).catch(() => setUser(null));
@@ -1694,7 +1693,11 @@ function App() {
     let active = true;
     accountRef.current = user?.id || null;
     setThemeError('');
+    setPrivacySettings(null);
+    setPrivacyError('');
     if (user) {
+      request('/api/settings/privacy').then((settings) => { if (active) setPrivacySettings(settings); })
+        .catch((error) => { if (active) setPrivacyError(error.message); });
       request('/api/preferences').then((result) => { if (active) setPreferences({ ...result, userId: user.id }); })
         .catch((error) => {
           if (active) { setPreferences({ theme: 'midnight', mode: 'light', userId: user.id }); setThemeError(error.message); }
