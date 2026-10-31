@@ -587,7 +587,8 @@ controls to display; shuffle and repeat remain available in the website itself.
 Session information is cleared when the queue has no selected track or the user
 logs out. Lyrics do not need to be opened or downloaded for media controls.
 
-Consecutive audio tracks reuse the same media element. The next source starts
+Consecutive audio tracks reuse the same media element. Compatible buffered audio
+advances on a continuous media timeline. Native fallback starts the next source
 directly from the playback-ended or media-control event, without waiting for a
 foreground render. Media Session remains active during the handoff and loading.
 Pause and Stop cancel pending starts, and superseded playback requests cannot
@@ -616,10 +617,18 @@ automatically uses MediaSource and serialized SourceBuffer appends, including
 when AAC compatibility is off. AAC mode uses a separately cached fragmented MP4
 variant suitable for SourceBuffer instead of appending a regular M4A file.
 
-The next queue candidate's first 256 KiB are preloaded and reused when that track
-starts; shuffle retains the prepared candidate. Requests use authenticated byte
-ranges and check file validators between chunks. At most two preload entries
-are retained. The MSE path accepts files up to 16 MiB; larger files, unsupported
+The current song and one compatible successor share a SourceBuffer in sequence
+mode. The successor is buffered while the current song plays, so automatic
+transitions do not end playback, replace the blob URL, or require another
+`play()` call while the screen is locked. Native playback events advance the
+queue and prepare its next track without waiting for React. Repeat and shuffle
+use the same path. Consumed tracks are removed before another is buffered;
+controls, lyrics, Media Session, and saved positions remain track-relative.
+
+The next candidate's first 256 KiB are preloaded and reused during buffering;
+shuffle retains the prepared candidate. Requests use authenticated byte ranges
+and check file validators between chunks. At most two prefix preload entries
+are retained. The MSE path accepts files up to 16 MiB each; larger files, unsupported
 codecs/containers, unavailable APIs, and buffer/decoding failures use native range
 playback. Fallback preserves position and does not resume a deliberately paused
 track. Native fallback still uses Media Session, `preload="auto"`, and next-track

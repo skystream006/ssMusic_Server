@@ -66,7 +66,7 @@ export function createMediaSourcePlayback({ browser = globalThis, chunkBytes = 2
 
   function preload(source) {
     const descriptor = getMediaSourceDescriptor(source, browser);
-    if (!descriptor || failed.has(source) || active?.source === source) return Promise.resolve(false);
+    if (!descriptor || failed.has(source) || active?.source === source || active?.next?.source === source) return Promise.resolve(false);
     if (warm.has(source)) return warm.get(source).promise;
     const controller = new AbortController();
     const entry = { controller, promise: null };
@@ -87,9 +87,14 @@ export function createMediaSourcePlayback({ browser = globalThis, chunkBytes = 2
     if (!state || state.closed) return;
     state.closed = true;
     state.controller.abort();
+    state.current.controller?.abort();
+    state.next?.controller.abort();
+    state.current.prefetched?.controller.abort();
+    state.next?.prefetched?.controller.abort();
     state.prefetched?.controller.abort();
     state.media.removeEventListener('error', state.mediaError, true);
     state.media.removeEventListener('seeking', state.checkBuffered);
+    state.media.removeEventListener('timeupdate', state.advance, true);
     state.buffer?.removeEventListener('bufferedchange', state.evicted);
     state.mediaSource.removeEventListener('sourceopen', state.open);
     state.media.disableRemotePlayback = state.remotePlaybackDisabled;
@@ -98,7 +103,7 @@ export function createMediaSourcePlayback({ browser = globalThis, chunkBytes = 2
     if (active === state) active = null;
   }
 
-  function append(state, bytes) {
+  function updateBuffer(state, update) {
     return new Promise((resolve, reject) => {
       const buffer = state.buffer;
       const cleanup = () => {
@@ -112,23 +117,112 @@ export function createMediaSourcePlayback({ browser = globalThis, chunkBytes = 2
       buffer.addEventListener('updateend', complete, { once: true });
       buffer.addEventListener('error', error, { once: true });
       state.controller.signal.addEventListener('abort', aborted, { once: true });
-      try { buffer.appendBuffer(bytes); } catch (failure) { cleanup(); reject(failure); }
+      try { update(buffer); } catch (failure) { cleanup(); reject(failure); }
     });
   }
 
-  function waitForStreaming(state) {
+  function waitForStreaming(state, signal = state.controller.signal) {
     if (!state.managed || state.mediaSource.streaming !== false) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const cleanup = () => {
         state.mediaSource.removeEventListener('startstreaming', start);
-        state.controller.signal.removeEventListener('abort', abort);
+        signal.removeEventListener('abort', abort);
       };
       const start = () => { cleanup(); resolve(); };
       const abort = () => { cleanup(); reject(new DOMException('Playback changed', 'AbortError')); };
       state.mediaSource.addEventListener('startstreaming', start, { once: true });
-      state.controller.signal.addEventListener('abort', abort, { once: true });
-      if (state.controller.signal.aborted) abort();
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
     });
+  }
+
+  function timing(media) {
+    if (!active || active.closed || active.media !== media) return null;
+    const { start, end } = active.current;
+    const duration = Number.isFinite(end) ? end - start : Number.isFinite(media.duration) ? media.duration - start : 0;
+    return { position: Math.max(0, (Number.isFinite(media.currentTime) ? media.currentTime : 0) - start),
+      duration: Math.max(0, duration), offset: start };
+  }
+
+  async function readSegment(state, segment) {
+    await waitForStreaming(state, segment.controller.signal);
+    let part = segment.prefetched ? await segment.prefetched.promise
+      : await readPart(segment.descriptor.url, 0, segment.controller.signal);
+    while (!state.closed && !segment.controller.signal.aborted) {
+      await updateBuffer(state, (buffer) => buffer.appendBuffer(part.bytes));
+      const ranges = state.buffer.buffered;
+      if (ranges?.length) segment.bufferedEnd = ranges.end(ranges.length - 1);
+      if (part.next === part.total) { segment.end = segment.bufferedEnd; break; }
+      await waitForStreaming(state, segment.controller.signal);
+      part = await readPart(segment.descriptor.url, part.next, segment.controller.signal, part);
+    }
+    if (!state.closed) state.media.dispatchEvent(new (browser.Event || Event)('durationchange'));
+  }
+
+  async function removeQueued(state) {
+    if (!state.queued) return;
+    const start = state.queued.start;
+    const ranges = state.buffer.buffered;
+    if (ranges?.length && ranges.end(ranges.length - 1) > start) {
+      await updateBuffer(state, (buffer) => buffer.remove(start, Infinity));
+    }
+    state.queued = null;
+  }
+
+  function queueNext(source, onAdvance = () => {}) {
+    const state = active;
+    if (!state || state.closed) return Promise.resolve(false);
+    const descriptor = getMediaSourceDescriptor(source, browser);
+    const supported = descriptor && !failed.has(source) && descriptor.mime === state.descriptor.mime
+      && descriptor.Constructor === state.descriptor.Constructor;
+    const target = supported ? source : null;
+    if (state.next?.source === target) {
+      state.next.onAdvance = onAdvance;
+      return state.next.promise;
+    }
+    if (state.next && state.next !== state.current) {
+      state.next.controller.abort();
+      state.next.prefetched?.controller.abort();
+    }
+    const next = { source: target, descriptor, onAdvance, controller: new AbortController(), end: null };
+    state.next = next;
+    next.promise = state.work.then(async () => {
+      if (state.closed || state.next !== next) return false;
+      await removeQueued(state);
+      if (state.closed || state.next !== next) return false;
+      const ranges = state.buffer.buffered;
+      if (ranges?.length && state.current.start > ranges.start(0)) {
+        await updateBuffer(state, (buffer) => buffer.remove(0, state.current.start));
+      }
+      if (state.closed || state.next !== next) return false;
+      if (!target) {
+        if (state.mediaSource.readyState === 'open') state.mediaSource.endOfStream();
+        return false;
+      }
+      if (!Number.isFinite(state.current.end)) throw new Error('Media timeline is unavailable');
+      next.start = state.current.end;
+      state.queued = next;
+      if (state.mediaSource.readyState === 'ended') state.buffer.timestampOffset = next.start;
+      state.buffer.abort();
+      state.buffer.mode = 'sequence';
+      state.buffer.timestampOffset = next.start;
+      next.prefetched = warm.get(source);
+      warm.delete(source);
+      await readSegment(state, next);
+      return !state.closed && !next.controller.signal.aborted;
+    }).catch(async () => {
+      if (state.closed || next.controller.signal.aborted) return false;
+      if (state.current === next) { state.fallback(); return false; }
+      failed.add(source);
+      if (failed.size > 32) failed.delete(failed.values().next().value);
+      try {
+        if (state.queued === next) await removeQueued(state);
+        if (state.mediaSource.readyState === 'open') state.mediaSource.endOfStream();
+      } catch { state.fallback(); }
+      return false;
+    });
+    state.work = next.promise;
+    return next.promise;
   }
 
   function attach(media, source, onFallback) {
@@ -139,17 +233,30 @@ export function createMediaSourcePlayback({ browser = globalThis, chunkBytes = 2
     let objectUrl;
     try { mediaSource = new descriptor.Constructor(); objectUrl = browser.URL.createObjectURL(mediaSource); }
     catch { return null; }
-    const state = { media, source, mediaSource, objectUrl, controller: new AbortController(), closed: false, managed: descriptor.managed,
+    const state = { media, source, descriptor, mediaSource, objectUrl, controller: new AbortController(), closed: false, managed: descriptor.managed,
       remotePlaybackDisabled: media.disableRemotePlayback, prefetched: warm.get(source) };
+    state.current = { source, descriptor, start: 0, end: null, controller: state.controller, prefetched: state.prefetched };
     warm.delete(source);
     const completion = new Promise((resolve) => { state.finish = resolve; });
+    state.work = completion;
     const fallback = () => {
       if (state.closed) return;
-      const position = Number.isFinite(media.currentTime) ? media.currentTime : 0;
-      failed.add(source);
+      const position = timing(media)?.position || 0;
+      const currentSource = state.current.source;
+      failed.add(currentSource);
       if (failed.size > 32) failed.delete(failed.values().next().value);
       release(state);
-      onFallback({ media, source, position });
+      onFallback({ media, source: currentSource, position });
+    };
+    state.fallback = fallback;
+    state.advance = () => {
+      const next = state.queued;
+      if (state.closed || !next || next.controller.signal.aborted || !Number.isFinite(next.bufferedEnd) || media.currentTime < next.start) return;
+      state.current = next;
+      state.source = next.source;
+      state.queued = null;
+      if (state.next === next) state.next = null;
+      next.onAdvance();
     };
     state.mediaError = (event) => { if (!state.closed) { event.stopImmediatePropagation(); fallback(); } };
     state.checkBuffered = () => {
@@ -167,29 +274,28 @@ export function createMediaSourcePlayback({ browser = globalThis, chunkBytes = 2
       if (state.closed) return;
       try {
         state.buffer = mediaSource.addSourceBuffer(descriptor.mime);
+        state.buffer.mode = 'sequence';
         state.buffer.addEventListener('bufferedchange', state.evicted);
-        await waitForStreaming(state);
-        let part = state.prefetched ? await state.prefetched.promise : await readPart(descriptor.url, 0, state.controller.signal);
-        while (!state.closed) {
-          await append(state, part.bytes);
-          if (part.next === part.total) break;
-          await waitForStreaming(state);
-          part = await readPart(descriptor.url, part.next, state.controller.signal, part);
+        await readSegment(state, state.current);
+        if (!state.closed && mediaSource.readyState === 'open') {
+          state.complete = true;
+          if (!state.next?.source) mediaSource.endOfStream();
+          state.finish();
         }
-        if (!state.closed && mediaSource.readyState === 'open') { state.complete = true; mediaSource.endOfStream(); state.finish(); }
       } catch { if (!state.closed) fallback(); }
     };
     active = state;
     if (descriptor.managed) media.disableRemotePlayback = true;
     media.addEventListener('error', state.mediaError, true);
     media.addEventListener('seeking', state.checkBuffered);
+    media.addEventListener('timeupdate', state.advance, true);
     mediaSource.addEventListener('sourceopen', state.open, { once: true });
     media.setAttribute?.('data-playback-engine', descriptor.managed ? 'managed-mediasource' : 'mediasource');
     media.src = objectUrl;
     return { completion };
   }
 
-  return { preload, attach, reset() { release(active); }, dispose() {
+  return { preload, attach, queueNext, timing, reset() { release(active); }, dispose() {
     release(active);
     for (const entry of warm.values()) entry.controller.abort();
     warm.clear();

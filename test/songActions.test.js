@@ -435,6 +435,48 @@ test('continuous playback keeps logical URLs and resumes native fallback at the 
   assert.equal(transport.pending, false);
 });
 
+test('continuous playback adopts buffered tracks without play calls and maps seeks to the current song', async () => {
+  let offset = 0;
+  let advance;
+  let plays = 0;
+  const media = { src: '', currentTime: 0, duration: 180, getAttribute() { return this.src; }, async play() { plays++; } };
+  const buffering = {
+    attach(element) { element.src = 'blob:continuous'; return {}; },
+    timing() { return { position: media.currentTime - offset, duration: offset ? 60 : 120, offset }; },
+    queueNext(source, callback) { advance = callback; return Promise.resolve(true); }
+  };
+  const transport = createContinuousPlayback(() => media, { buffering });
+  await transport.load('/First.mp3', true);
+  let selected;
+  await transport.queueNext('/Second.mp3', () => { selected = transport.source; });
+  offset = 120;
+  media.currentTime = 125;
+  advance();
+  assert.equal(selected, '/Second.mp3');
+  assert.equal(transport.source, '/Second.mp3');
+  assert.equal(media.src, 'blob:continuous');
+  assert.equal(plays, 1);
+  assert.equal(transport.currentTime, 5);
+  assert.equal(transport.duration, 60);
+  transport.seek(7);
+  assert.equal(media.currentTime, 127);
+  transport.seek(-1);
+  assert.equal(media.currentTime, 120);
+  transport.seek(999);
+  assert.equal(media.currentTime, 180);
+});
+
+test('continuous playback restarts an exhausted queue at the last track offset', async () => {
+  let playedAt;
+  const media = { currentTime: 180, duration: 180, ended: true, getAttribute() { return 'blob:continuous'; },
+    async play() { playedAt = this.currentTime; } };
+  const transport = createContinuousPlayback(() => media, {
+    buffering: { timing() { return { position: 60, duration: 60, offset: 120 }; } }
+  });
+  await transport.play();
+  assert.equal(playedAt, 120);
+});
+
 test('continuous playback does not resume a paused track when buffering falls back', async () => {
   let source = '';
   let mediaFallback;
@@ -540,6 +582,29 @@ test('browser Media Session publishes track metadata and dispatches native trans
   assert.equal(session.metadata, null);
   assert.equal(session.playbackState, 'none');
   assert.ok([...handlers.values()].every((handler) => handler === null));
+  controller.dispose();
+});
+
+test('browser Media Session uses track-relative position, seeking and stop on a continuous timeline', async () => {
+  const handlers = new Map();
+  const session = { setActionHandler(name, handler) { handlers.set(name, handler); }, setPositionState(value) { this.position = value; } };
+  const media = { duration: 180, currentTime: 125, playbackRate: 1, paused: false, ended: false, pause() { this.paused = true; } };
+  const playback = { song: { name: 'Second.mp3' }, media, duration: 60,
+    get currentTime() { return media.currentTime - 120; }, seek(time) { media.currentTime = 120 + time; } };
+  const controller = createPlaybackMediaSession({ navigator: { mediaSession: session } }, () => playback);
+  controller.update();
+  assert.deepEqual(session.position, { duration: 60, position: 5, playbackRate: 1 });
+  await handlers.get('seekforward')();
+  assert.equal(media.currentTime, 135);
+  assert.equal(session.position.position, 15);
+  await handlers.get('seekbackward')({ seekOffset: 20 });
+  assert.equal(media.currentTime, 120);
+  await handlers.get('seekto')({ seekTime: 12 });
+  assert.equal(media.currentTime, 132);
+  await handlers.get('stop')();
+  assert.equal(media.currentTime, 120);
+  assert.equal(media.paused, true);
+  assert.equal(session.playbackState, 'paused');
   controller.dispose();
 });
 

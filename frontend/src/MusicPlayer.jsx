@@ -390,6 +390,8 @@ export function createContinuousPlayback(getMedia, { onChange = () => {}, onErro
   let wantsPlayback = false;
 
   const currentSource = (media) => loaded?.media === media ? loaded.source : media?.getAttribute('src');
+  const timing = (media) => buffering?.timing?.(media)
+    || { position: media?.currentTime ?? 0, duration: media?.duration ?? 0, offset: 0 };
 
   function applySource(media, source) {
     loaded = { media, source };
@@ -445,8 +447,30 @@ export function createContinuousPlayback(getMedia, { onChange = () => {}, onErro
 
   return {
     get source() { return currentSource(getMedia()); },
+    get currentTime() { return timing(getMedia()).position; },
+    get duration() { return timing(getMedia()).duration; },
     get pending() {
       return Boolean(pending && pending.media === getMedia() && currentSource(pending.media) === pending.source);
+    },
+    seek(time, fast = false) {
+      const media = getMedia();
+      if (!media || !Number.isFinite(time)) return;
+      const clock = timing(media);
+      const position = Math.max(0, Math.min(time, Number.isFinite(clock.duration) && clock.duration > 0 ? clock.duration : time));
+      if (fast && typeof media.fastSeek === 'function') media.fastSeek(clock.offset + position);
+      else media.currentTime = clock.offset + position;
+    },
+    queueNext(source, onAdvance) {
+      const current = loaded;
+      if (!current || current.media !== getMedia()) return Promise.resolve(false);
+      return buffering?.queueNext?.(source, () => {
+        if (loaded !== current || getMedia() !== current.media) return;
+        revision++;
+        pending = null;
+        loaded = { media: current.media, source };
+        onAdvance?.();
+        onChange();
+      }) || Promise.resolve(false);
     },
     load(source, autoplay = false) {
       const media = getMedia();
@@ -461,7 +485,10 @@ export function createContinuousPlayback(getMedia, { onChange = () => {}, onErro
     play() {
       const media = getMedia();
       const source = currentSource(media);
-      if (media && source) return start(media, source, Boolean(media.error));
+      if (media && source) {
+        if (media.ended && !media.error) media.currentTime = timing(media).offset;
+        return start(media, source, Boolean(media.error));
+      }
     },
     cancel() { revision++; pending = null; wantsPlayback = false; onChange(); },
     unload() { revision++; pending = null; loaded = null; wantsPlayback = false; buffering?.reset(); onChange(); },
@@ -484,9 +511,11 @@ export function createPlaybackMediaSession(browser, getPlayback) {
 
   function seek(playback, time, fast = false) {
     const media = playback.media;
-    if (!Number.isFinite(time) || !Number.isFinite(media.duration) || media.duration <= 0) return;
-    const position = Math.max(0, Math.min(time, media.duration));
-    if (fast && typeof media.fastSeek === 'function') media.fastSeek(position);
+    const duration = playback.duration ?? media.duration;
+    if (!Number.isFinite(time) || !Number.isFinite(duration) || duration <= 0) return;
+    const position = Math.max(0, Math.min(time, duration));
+    if (playback.seek) playback.seek(position, fast);
+    else if (fast && typeof media.fastSeek === 'function') media.fastSeek(position);
     else media.currentTime = position;
     playback.onSeek?.(position);
   }
@@ -511,8 +540,8 @@ export function createPlaybackMediaSession(browser, getPlayback) {
     stop: () => run((playback) => { playback.onPauseIntent?.(); playback.media.pause(); seek(playback, 0); }),
     previoustrack: () => run((playback) => { if (playback.canPrevious) playback.previous(); }),
     nexttrack: () => run((playback) => { if (playback.canNext) playback.next(); }),
-    seekbackward: (details) => run((playback) => seek(playback, playback.media.currentTime - offset(details))),
-    seekforward: (details) => run((playback) => seek(playback, playback.media.currentTime + offset(details))),
+    seekbackward: (details) => run((playback) => seek(playback, (playback.currentTime ?? playback.media.currentTime) - offset(details))),
+    seekforward: (details) => run((playback) => seek(playback, (playback.currentTime ?? playback.media.currentTime) + offset(details))),
     seekto: (details) => run((playback) => seek(playback, details?.seekTime, details?.fastSeek))
   };
 
@@ -544,11 +573,13 @@ export function createPlaybackMediaSession(browser, getPlayback) {
     }
     const transitioning = (playback.transitioning || (playback.continueAtEnd && media.ended)) && !media.error;
     try { session.playbackState = transitioning || (!media.paused && !media.ended && !media.error) ? 'playing' : 'paused'; } catch {}
-    const seekable = !transitioning && Number.isFinite(media.duration) && media.duration > 0;
+    const duration = playback.duration ?? media.duration;
+    const currentTime = playback.currentTime ?? media.currentTime;
+    const seekable = !transitioning && Number.isFinite(duration) && duration > 0;
     try {
-      session.setPositionState?.(seekable ? { duration: media.duration,
+      session.setPositionState?.(seekable ? { duration,
         playbackRate: Number.isFinite(media.playbackRate) && media.playbackRate > 0 ? media.playbackRate : 1,
-        position: Math.max(0, Math.min(Number.isFinite(media.currentTime) ? media.currentTime : 0, media.duration)) } : undefined);
+        position: Math.max(0, Math.min(Number.isFinite(currentTime) ? currentTime : 0, duration)) } : undefined);
     } catch {}
     for (const [name, handler] of Object.entries(actions)) {
       const enabled = name === 'nexttrack' ? playback.canNext : name === 'previoustrack' ? playback.canPrevious
@@ -704,22 +735,36 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     if (song) {
       const change = formatChangeRef.current;
       if (change?.selected === selected && change.media === audioRef.current) {
-        resumePositionRef.current = { selected, position: change.media?.currentTime || 0 };
+        resumePositionRef.current = { selected, position: playbackTransport.currentTime };
         formatChangeRef.current = null;
       }
       playbackTransport.load(playbackSource, autoPlayRef.current);
+      prepareNextTrack();
     }
     else { playbackTransport.unload(); setPreparingAudio(false); }
   }, [playbackSource, isVideo, playbackTransport]);
 
   useEffect(() => {
-    if (!song) { preparedNextRef.current = null; return; }
-    const next = nextPlaybackSong(songs, selected, { shuffle, repeatMode });
-    preparedNextRef.current = { songs, selected, shuffle, repeatMode, track: next };
-    const source = getPlaybackSource(next, audioCompatibility, window.location.href);
+    prepareNextTrack();
+  }, [audioCompatibility, songs, selected, shuffle, repeatMode, audioPreparation, mediaSourcePlayback]);
+
+  function prepareNextTrack() {
+    const current = queueStateRef.current;
+    const track = current.songs?.find((item) => songKey(item) === current.selected);
+    if (!track) { preparedNextRef.current = null; return; }
+    const prepared = preparedNextRef.current;
+    const next = prepared && prepared.songs === current.songs && prepared.selected === current.selected
+      && prepared.shuffle === current.shuffle && prepared.repeatMode === current.repeatMode ? prepared.track
+      : nextPlaybackSong(current.songs, current.selected, current);
+    preparedNextRef.current = { ...current, track: next };
+    const automatic = current.repeatMode === 'one' ? track : next;
+    const source = getPlaybackSource(automatic, audioCompatibility, window.location.href);
     if (getMediaSourceDescriptor(source)) mediaSourcePlayback.preload(source).catch(() => {});
     else if (source && !/^(?:blob|data):/i.test(source)) audioPreparation.prepare(source).catch(() => {});
-  }, [audioCompatibility, songs, selected, shuffle, repeatMode, audioPreparation, mediaSourcePlayback]);
+    if (playbackTransport.source === getPlaybackSource(track, audioCompatibility, window.location.href)) {
+      playbackTransport.queueNext(source, () => selectSong(automatic, queueStateRef.current.songs, queueScopeRef.current, true)).catch(() => {});
+    }
+  }
 
   function changeAudioCompatibility(enabled) {
     if (enabled === audioCompatibility) return;
@@ -744,11 +789,11 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   }, [userId, songs, selected, shuffle, repeatMode, queuePage, queuePageSize]);
 
   useEffect(() => {
-    const persist = () => writePlaybackPosition(userId, selectedRef.current, audioRef.current?.currentTime);
+    const persist = () => writePlaybackPosition(userId, selectedRef.current, playbackTransport.currentTime);
     window.addEventListener('pagehide', persist);
     const onVisibilityChange = () => {
       if (document.hidden) persist();
-      else publishPlaybackPosition(audioRef.current, setPosition, mediaSessionRef.current);
+      else publishPlaybackPosition(playbackTransport, setPosition, mediaSessionRef.current);
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
@@ -777,8 +822,8 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     setLyricsLoaded(false);
     setLyricError('');
     setPlayError('');
-    setPosition(Number.isFinite(audioRef.current?.currentTime) ? audioRef.current.currentTime : 0);
-    setDuration(Number.isFinite(audioRef.current?.duration) ? audioRef.current.duration : 0);
+    setPosition(playbackTransport.currentTime);
+    setDuration(Number.isFinite(playbackTransport.duration) ? playbackTransport.duration : 0);
     setPlaying(playbackTransport.pending || Boolean(audioRef.current && !audioRef.current.paused));
     if (song && isVideo) {
       setVideoOpen(true);
@@ -796,10 +841,11 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     return () => { active = false; };
   }, [Boolean(lyricsViewers), song?.jobId, song?.name, song?.streamUrl, song?.lyricsUrl, request]);
 
-  function selectSong(track, queue = queueStateRef.current.songs, scope = queueScopeRef.current) {
+  function selectSong(track, queue = queueStateRef.current.songs, scope = queueScopeRef.current, buffered = false) {
     queueLoadRef.current++;
     setQueueLoading(false);
-    autoPlayRef.current = true;
+    const media = audioRef.current;
+    autoPlayRef.current = buffered ? Boolean(media && !media.paused) : true;
     queueScopeRef.current = scope;
     const key = songKey(track);
     selectedRef.current = key;
@@ -812,12 +858,19 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     setSelected(key);
     preparedNextRef.current = null;
     if (mediaType(track.name) === 'video') setVideoOpen(true);
-    const media = audioRef.current;
     const kind = mediaType(track.name) === 'video' ? 'video' : 'audio';
     const source = getPlaybackSource(track, audioCompatibility, window.location.href);
-    if (media?.tagName.toLowerCase() === getPlaybackElementType(track.name) && media.dataset.mediaType === kind) {
-      return playbackTransport.source === source ? playbackTransport.play() : playbackTransport.load(source, true);
+    let result;
+    if (buffered) {
+      setPosition(playbackTransport.currentTime);
+      setDuration(playbackTransport.duration);
+      setPlaying(!media.paused);
+      setPlayError('');
+    } else if (media?.tagName.toLowerCase() === getPlaybackElementType(track.name) && media.dataset.mediaType === kind) {
+      result = playbackTransport.source === source ? playbackTransport.play() : playbackTransport.load(source, true);
     }
+    prepareNextTrack();
+    return result;
   }
 
   async function playLibrary(view, track = null, autoplay = true) {
@@ -864,7 +917,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
       ? prepared.track : nextPlaybackSong(current.songs, current.selected, { shuffle: current.shuffle, repeatMode: current.repeatMode, ended });
     if (next) {
       if (songKey(next) === current.selected && audioRef.current) {
-        audioRef.current.currentTime = 0;
+        playbackTransport.seek(0);
         setPosition(0);
       }
       return selectSong(next);
@@ -876,15 +929,15 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   }
 
   function playKaraoke(track) {
-    if (selected === songKey(track) && audioRef.current) audioRef.current.currentTime = 0;
+    if (selected === songKey(track)) playbackTransport.seek(0);
     selectSong(track, queueSongNext(songs, selected, track), Symbol('karaoke'));
   }
 
   function previousSong() {
     const current = queueStateRef.current;
     const currentIndex = current.songs?.findIndex((track) => songKey(track) === current.selected) ?? -1;
-    if (audioRef.current?.currentTime > 3 || currentIndex === 0) {
-      audioRef.current.currentTime = 0;
+    if (playbackTransport.currentTime > 3 || currentIndex === 0) {
+      playbackTransport.seek(0);
       setPosition(0);
       mediaSessionRef.current?.update();
     } else if (currentIndex > 0) return selectSong(current.songs[currentIndex - 1]);
@@ -897,8 +950,15 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   function playMedia() {
     autoPlayRef.current = true;
     const media = audioRef.current;
-    if (media?.error) resumePositionRef.current = { selected: selectedRef.current, position: media.currentTime || 0 };
+    if (media?.error) resumePositionRef.current = { selected: selectedRef.current, position: playbackTransport.currentTime };
     return playbackTransport.play();
+  }
+
+  function seekPlayback(time) {
+    playbackTransport.seek(time);
+    setPosition(playbackTransport.currentTime);
+    writePlaybackPosition(userId, selectedRef.current, playbackTransport.currentTime);
+    mediaSessionRef.current?.update();
   }
 
   function togglePlayback() {
@@ -925,6 +985,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
 
   useEffect(() => {
     const controller = createPlaybackMediaSession(window, () => ({ ...mediaSessionPlaybackRef.current,
+      currentTime: playbackTransport.currentTime, duration: playbackTransport.duration, seek: playbackTransport.seek,
       media: audioRef.current, transitioning: playbackTransport.pending, continueAtEnd: continuesAtEnd() }));
     mediaSessionRef.current = controller;
     controller.update();
@@ -946,14 +1007,14 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
       event.currentTarget.volume = volumeRef.current;
       event.currentTarget.muted = mutedRef.current;
       const resume = resumePositionRef.current;
-      if (resume?.selected === selected && Number.isFinite(resume.position)) {
-        event.currentTarget.currentTime = Math.min(resume.position, Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : resume.position);
-        setPosition(event.currentTarget.currentTime);
+      if (resume?.selected === selectedRef.current && Number.isFinite(resume.position)) {
+        playbackTransport.seek(resume.position);
+        setPosition(playbackTransport.currentTime);
       }
       resumePositionRef.current = null;
-      setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0);
+      setDuration(Number.isFinite(playbackTransport.duration) ? playbackTransport.duration : 0);
     }}
-    onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+    onDurationChange={() => setDuration(Number.isFinite(playbackTransport.duration) ? playbackTransport.duration : 0)}
     onRateChange={() => mediaSessionRef.current?.update()}
     onSeeked={() => mediaSessionRef.current?.update()}
     onVolumeChange={(event) => {
@@ -963,9 +1024,9 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
       setMuted(event.currentTarget.muted);
     }}
     onTimeUpdate={(event) => {
-      publishPlaybackPosition(event.currentTarget, setPosition, mediaSessionRef.current);
+      publishPlaybackPosition(playbackTransport, setPosition, mediaSessionRef.current);
       if (Date.now() - progressSavedAtRef.current >= 5000) {
-        writePlaybackPosition(userId, selectedRef.current, event.currentTarget.currentTime);
+        writePlaybackPosition(userId, selectedRef.current, playbackTransport.currentTime);
         progressSavedAtRef.current = Date.now();
       }
     }}
@@ -974,7 +1035,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
       autoPlayRef.current = false;
       playbackTransport.cancel();
       setPlaying(false);
-      writePlaybackPosition(userId, selectedRef.current, event.currentTarget.currentTime);
+      writePlaybackPosition(userId, selectedRef.current, playbackTransport.currentTime);
       mediaSessionRef.current?.update();
     }}
     onEnded={() => nextSong(true)} onError={(event) => {
@@ -1014,7 +1075,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   return <PlaybackContext.Provider value={{ user, SongActionView, audioCompatibility, changeAudioCompatibility, preparingAudio,
     libraryRevision, refreshLibrary: () => setLibraryRevision((value) => value + 1),
     songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
-    mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
+    mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, seek: seekPlayback, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata, replaceFile }}>
@@ -1033,7 +1094,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
 
 export default function MusicPlayer({ id, request, libraryView = null, dockOnly = false }) {
   const { user, SongActionView, preparingAudio, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
-    mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, duration, volume, muted, playing,
+    mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, seek, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, updateMetadata } = usePlayback();
@@ -1226,7 +1287,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         });
         updateMetadata(target.jobId, target.name, result);
       }} /> : <LyricTimeline lines={lines} position={position} mode={mode} uslt={lyricsLoaded ? metadata?.uslt : ''}
-        onSeek={(time) => { if (audioRef.current) audioRef.current.currentTime = time; }}>
+        onSeek={seek}>
         {lyricError ? <p className="notice error" role="alert">{lyricError}</p>
           : !lyricsLoaded ? <p className="music-empty" role="status">{song ? 'Loading lyrics...' : 'No song selected.'}</p> : null}
       </LyricTimeline>}
@@ -1361,7 +1422,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <button className="music-icon-button" type="button" title="Next song" aria-label="Next song" disabled={!canPlayNext} onClick={() => nextSong()}><SkipForward size={20} /></button>
           <button className="music-icon-button" type="button" title={repeatLabel} aria-label={repeatLabel} aria-pressed={repeatMode !== 'off'} onClick={() => setRepeatMode(nextRepeatMode)}><RepeatIcon size={17} /></button>
         </div><div className="dock-timeline"><time>{timeLabel(position)}</time><input type="range" aria-label="Seek" min="0" max={duration || 0} step="0.1" value={Math.min(position, duration)} disabled={!duration}
-          onChange={(event) => { audioRef.current.currentTime = Number(event.target.value); setPosition(Number(event.target.value)); }} /><time>{timeLabel(duration)}</time></div></div>
+          onChange={(event) => seek(Number(event.target.value))} /><time>{timeLabel(duration)}</time></div></div>
         <div className="dock-tools" inert={Boolean(panel)} aria-hidden={Boolean(panel)}>
           {isVideo && <button className="music-icon-button" type="button" title={videoOpen ? 'Hide movie' : 'Show movie'} aria-label={videoOpen ? 'Hide movie' : 'Show movie'} aria-pressed={videoOpen} onClick={() => { setPanel(null); setVideoOpen(!videoOpen); }}><Film size={18} /></button>}
           <button className="music-icon-button" type="button" title="Lyrics" aria-label="Show lyrics" disabled={isVideo} aria-pressed={panel === 'lyrics'} onClick={() => setPanel(panel === 'lyrics' ? null : 'lyrics')}><Mic2 size={18} /></button>
