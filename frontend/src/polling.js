@@ -9,7 +9,7 @@ export function runWhenVisible(callback, page = document) {
   return () => page.removeEventListener('visibilitychange', visible);
 }
 
-export function startVisiblePolling(load, interval, browser = window) {
+export function startVisiblePolling(load, interval, browser = window, immediate = true) {
   let active = true;
   let pending = false;
   let refreshRequested = false;
@@ -23,13 +23,18 @@ export function startVisiblePolling(load, interval, browser = window) {
     clear();
     pending = true;
     refreshRequested = false;
-    try { await load(); }
+    let nextInterval = interval;
+    try {
+      const result = await load();
+      if (result === false) { stop(); return; }
+      if (typeof result === 'number') nextInterval = result;
+    }
     catch {}
     finally {
       pending = false;
       if (active && visible()) {
         if (refreshRequested) run();
-        else timer = browser.setTimeout(run, interval);
+        else timer = browser.setTimeout(run, nextInterval);
       }
     }
   }
@@ -39,11 +44,14 @@ export function startVisiblePolling(load, interval, browser = window) {
     if (visible()) run();
   }
 
-  browser.document.addEventListener('visibilitychange', visibilityChanged);
-  run();
-  return () => {
+  function stop() {
     active = false;
     clear();
     browser.document.removeEventListener('visibilitychange', visibilityChanged);
-  };
+  }
+
+  browser.document.addEventListener('visibilitychange', visibilityChanged);
+  if (immediate) run();
+  else if (visible()) timer = browser.setTimeout(run, interval);
+  return stop;
 }

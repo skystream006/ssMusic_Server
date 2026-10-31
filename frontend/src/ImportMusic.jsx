@@ -3,6 +3,7 @@ import { Check, FileAudio, FileArchive, FileCode, HardDrive, RefreshCw, Upload, 
 import { formatBytes } from './SongActions.jsx';
 import { mediaAccept } from '../../src/media.js';
 import { sortSelectOptions } from './selectOptions.js';
+import { startVisiblePolling } from './polling.js';
 
 export default function ImportMusic({ user, request, onClose, onImported, initialPlaylistId = '' }) {
   const dialogRef = useRef(null);
@@ -92,12 +93,12 @@ export default function ImportMusic({ user, request, onClose, onImported, initia
   useEffect(() => {
     if (!importId) return;
     let active = true;
-    let timer;
     let missingCount = 0;
     async function refreshLog() {
       try {
         const progress = await request(`/api/jobs/import/logs/${encodeURIComponent(importId)}`, { signal: AbortSignal.timeout(15000) });
-        if (!active) return;
+        if (!active) return false;
+        if (document.hidden) return;
         missingCount = 0;
         setImportLogs(progress.entries);
         setLogError('');
@@ -108,26 +109,27 @@ export default function ImportMusic({ user, request, onClose, onImported, initia
             setResult(progress.result);
             onImported();
           } else setError(progress.error || 'Unable to import music');
-          return;
+          return false;
         }
       } catch (failure) {
-        if (!active) return;
+        if (!active) return false;
+        if (document.hidden) return;
         if (failure.status === 404) missingCount += 1;
         else missingCount = 0;
         if (monitoring && (missingCount >= 3 || [401, 403].includes(failure.status))) {
           setMonitoring(false);
           setSubmitting(false);
           setError('Cannot retrieve this import\'s status. Check your library and server logs before retrying.');
-          return;
+          return false;
         }
         if (failure.status !== 404 || !submitting) {
           setLogError(submitting ? 'Import status temporarily unavailable. Retrying...' : 'Import log unavailable.');
         }
       }
-      if (active && submitting) timer = setTimeout(refreshLog, 2000);
+      return submitting ? 2000 : false;
     }
-    void refreshLog();
-    return () => { active = false; clearTimeout(timer); };
+    const stop = startVisiblePolling(refreshLog, 2000);
+    return () => { active = false; stop(); };
   }, [importId, submitting, monitoring]);
 
   useEffect(() => {

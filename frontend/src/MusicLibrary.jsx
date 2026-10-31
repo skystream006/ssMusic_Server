@@ -8,7 +8,7 @@ import { submitJobUrl } from './jobSubmission.js';
 import { canChangePlaylistPrivacy, canChangePrivacy, canEditSong, canManageJob, canModifyJob, getFilePrivacy, formatBytes, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { replaceURL } from './navigation.js';
-import { runWhenVisible } from './polling.js';
+import { runWhenVisible, startVisiblePolling } from './polling.js';
 import { sortSelectOptions } from './selectOptions.js';
 
 const backupWeekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -79,14 +79,13 @@ export function ExportLibraryDialog({ request, onClose }) {
 
   useEffect(() => {
     let active = true;
-    let timer;
     let initialized = false;
     mounted.current = true;
     async function load() {
       const revision = operation.current;
       try {
         const result = await request('/api/library/backup');
-        if (!active || revision !== operation.current) return;
+        if (!active || document.hidden || revision !== operation.current) return;
         setStatus(result);
         setLoadError('');
         if (!initialized) {
@@ -104,11 +103,10 @@ export function ExportLibraryDialog({ request, onClose }) {
           pendingExport.current = false;
           if (!result.error && result.latest) { setSource('latest'); setNotice('Export ready.'); }
         }
-      } catch (requestError) { if (active) setLoadError(requestError.message); }
-      finally { if (active) timer = setTimeout(load, 3000); }
+      } catch (requestError) { if (active && !document.hidden) setLoadError(requestError.message); }
     }
-    void load();
-    return () => { active = false; mounted.current = false; clearTimeout(timer); };
+    const stop = startVisiblePolling(load, 3000);
+    return () => { active = false; mounted.current = false; stop(); };
   }, [request]);
 
   async function mutate(endpoint, body, exporting = false) {

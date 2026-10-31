@@ -88,3 +88,56 @@ test('slow UI polls never overlap and a hidden completion cannot restart polling
   assert.equal(browser.timers.size, 0);
   stop();
 });
+
+test('UI polling preserves retry intervals and terminal results stop foreground refreshes', async () => {
+  const browser = environment();
+  const results = [2000, undefined, false];
+  let calls = 0;
+  const stop = startVisiblePolling(async () => { calls++; return results.shift(); }, 1000, browser);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  assert.equal([...browser.timers.values()][0].interval, 2000);
+  await browser.tick();
+  assert.equal(calls, 2);
+  assert.equal([...browser.timers.values()][0].interval, 1000);
+  await browser.tick();
+  assert.equal(calls, 3);
+  assert.equal(browser.timers.size, 0);
+  browser.visibility(true);
+  browser.visibility(false);
+  assert.equal(calls, 3);
+  stop();
+});
+
+test('stopping UI polling discards a queued foreground refresh while a request is pending', async () => {
+  const browser = environment();
+  let release;
+  let calls = 0;
+  const stop = startVisiblePolling(() => { calls++; return new Promise((resolve) => { release = resolve; }); }, 2000, browser);
+  browser.visibility(true);
+  browser.visibility(false);
+  assert.equal(calls, 1);
+  stop();
+  release();
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  assert.equal(browser.timers.size, 0);
+  browser.visibility(true);
+  browser.visibility(false);
+  assert.equal(calls, 1);
+});
+
+test('delayed UI polling preserves its initial delay but refreshes immediately on foreground', async () => {
+  const browser = environment();
+  let calls = 0;
+  const stop = startVisiblePolling(async () => { calls++; }, 2000, browser, false);
+  assert.equal(calls, 0);
+  assert.equal([...browser.timers.values()][0].interval, 2000);
+  browser.visibility(true);
+  assert.equal(browser.timers.size, 0);
+  browser.visibility(false);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  assert.equal([...browser.timers.values()][0].interval, 2000);
+  stop();
+});

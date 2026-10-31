@@ -519,17 +519,22 @@ test('admin artwork thumbnails expose progress, completion, failures and escaped
   assert.doesNotMatch(failed, /<script\b/i);
 });
 
-function thumbnailWatcher(context) {
+function thumbnailWatcher(context, hidden = false) {
   context.mock.timers.enable({ apis: ['setTimeout'] });
+  const browserDocument = new EventTarget();
+  browserDocument.hidden = hidden;
+  const browser = { document: browserDocument, setTimeout, clearTimeout };
   const calls = [];
   const updates = [];
   const watcher = watchArtworkThumbnails((url, options) => {
     const deferred = Promise.withResolvers();
     calls.push({ url, options, ...deferred });
     return deferred.promise;
-  }, (state) => updates.push(state));
+  }, (state) => updates.push(state), browser);
   context.after(() => watcher.stop());
-  return { watcher, calls, updates, latest: () => updates.at(-1) };
+  return { watcher, calls, updates, latest: () => updates.at(-1),
+    visibility(value) { browserDocument.hidden = value; browserDocument.dispatchEvent(new Event('visibilitychange')); }
+  };
 }
 
 test('thumbnail polling remains active while idle and running, and prevents stale polls or duplicate starts', async (context) => {
@@ -539,7 +544,7 @@ test('thumbnail polling remains active while idle and running, and prevents stal
   await watcher.start();
   assert.equal(calls.length, 1, 'starting is blocked until status is available');
   calls[0].resolve(thumbnailStatus);
-  await Promise.resolve();
+  await new Promise(setImmediate);
   context.mock.timers.tick(1999);
   assert.equal(calls.length, 1);
   context.mock.timers.tick(1);
@@ -559,7 +564,7 @@ test('thumbnail polling remains active while idle and running, and prevents stal
   calls[2].resolve({ ...thumbnailStatus, running: true });
   await started;
   calls[1].resolve(thumbnailStatus);
-  await Promise.resolve();
+  await new Promise(setImmediate);
   assert.equal(latest().status.running, true, 'a late pre-start poll cannot reset running status');
   assert.equal(latest().starting, false);
   await watcher.start();
@@ -567,7 +572,7 @@ test('thumbnail polling remains active while idle and running, and prevents stal
   context.mock.timers.tick(2000);
   assert.equal(calls.length, 4);
   calls[3].resolve({ ...thumbnailStatus, processed: 2, generated: 1, failed: 1, completedAt: '2026-10-04T20:02:00.000Z' });
-  await Promise.resolve();
+  await new Promise(setImmediate);
   assert.equal(latest().status.processed, 2);
   assert.equal(latest().status.failed, 1);
   assert.equal(latest().status.running, false);
@@ -576,14 +581,14 @@ test('thumbnail polling remains active while idle and running, and prevents stal
 test('thumbnail conflicts reload authoritative progress and failed requests recover without hiding start errors', async (context) => {
   const { watcher, calls, latest } = thumbnailWatcher(context);
   calls[0].reject(new Error('Status unavailable'));
-  await Promise.resolve();
+  await new Promise(setImmediate);
   assert.equal(latest().status, null);
   assert.equal(latest().error, 'Status unavailable');
   await watcher.start();
   assert.equal(calls.length, 1);
   context.mock.timers.tick(2000);
   calls[1].resolve(thumbnailStatus);
-  await Promise.resolve();
+  await new Promise(setImmediate);
   assert.equal(latest().error, '');
   const conflict = watcher.start();
   calls[2].reject(Object.assign(new Error('Already running'), { status: 409 }));
@@ -593,18 +598,18 @@ test('thumbnail conflicts reload authoritative progress and failed requests reco
   await watcher.start();
   assert.equal(calls.length, 4);
   calls[3].resolve({ ...thumbnailStatus, running: true });
-  await Promise.resolve();
+  await new Promise(setImmediate);
   assert.equal(latest().status.running, true);
   assert.equal(latest().error, '');
   context.mock.timers.tick(2000);
   calls[4].resolve(thumbnailStatus);
-  await Promise.resolve();
+  await new Promise(setImmediate);
   const failure = watcher.start();
   calls[5].reject(new Error('Unable to start regeneration'));
   await failure;
   assert.equal(latest().error, 'Unable to start regeneration');
   calls[6].resolve(thumbnailStatus);
-  await Promise.resolve();
+  await new Promise(setImmediate);
   assert.equal(latest().error, 'Unable to start regeneration', 'successful polling must not hide a POST failure');
   assert.equal(latest().starting, false);
 });
@@ -615,7 +620,7 @@ test('stopping thumbnail polling aborts requests and ignores late responses', as
   assert.equal(calls[0].options.signal.aborted, true);
   const count = updates.length;
   calls[0].resolve(thumbnailStatus);
-  await Promise.resolve();
+  await new Promise(setImmediate);
   context.mock.timers.tick(10000);
   await watcher.start();
   assert.equal(calls.length, 1);
@@ -625,7 +630,7 @@ test('stopping thumbnail polling aborts requests and ignores late responses', as
 test('stopping thumbnail regeneration monitoring cancels scheduled polls and ignores an in-flight POST', async (context) => {
   const { watcher, calls, updates } = thumbnailWatcher(context);
   calls[0].resolve(thumbnailStatus);
-  await Promise.resolve();
+  await new Promise(setImmediate);
   const started = watcher.start();
   watcher.stop();
   assert.equal(calls[1].options.signal.aborted, true);
@@ -635,4 +640,59 @@ test('stopping thumbnail regeneration monitoring cancels scheduled polls and ign
   context.mock.timers.tick(10000);
   assert.equal(calls.length, 2);
   assert.equal(updates.length, count);
+});
+
+test('thumbnail polling starts only when visible and stops again after hiding', async (context) => {
+  const { calls, latest, visibility } = thumbnailWatcher(context, true);
+  context.mock.timers.tick(20000);
+  assert.equal(calls.length, 0);
+  visibility(false);
+  assert.equal(calls.length, 1);
+  calls[0].resolve(thumbnailStatus);
+  await new Promise(setImmediate);
+  assert.deepEqual(latest().status, thumbnailStatus);
+  visibility(true);
+  context.mock.timers.tick(20000);
+  assert.equal(calls.length, 1);
+});
+
+test('thumbnail polling ignores hidden responses and refreshes on return without overlapping', async (context) => {
+  const { watcher, calls, latest, visibility } = thumbnailWatcher(context);
+  calls[0].resolve(thumbnailStatus);
+  await new Promise(setImmediate);
+  context.mock.timers.tick(2000);
+  assert.equal(calls.length, 2);
+  visibility(true);
+  calls[1].resolve({ ...thumbnailStatus, processed: 12 });
+  await new Promise(setImmediate);
+  assert.deepEqual(latest().status, thumbnailStatus);
+  context.mock.timers.tick(20000);
+  assert.equal(calls.length, 2);
+  visibility(false);
+  assert.equal(calls.length, 3);
+  context.mock.timers.tick(2000);
+  assert.equal(calls.length, 3);
+  calls[2].resolve({ ...thumbnailStatus, processed: 7 });
+  await new Promise(setImmediate);
+  assert.equal(latest().status.processed, 7);
+  watcher.stop();
+  visibility(true);
+  visibility(false);
+  context.mock.timers.tick(20000);
+  assert.equal(calls.length, 3);
+});
+
+test('thumbnail regeneration can finish starting while hidden without restarting polls', async (context) => {
+  const { watcher, calls, latest, visibility } = thumbnailWatcher(context);
+  calls[0].resolve(thumbnailStatus);
+  await new Promise(setImmediate);
+  const started = watcher.start();
+  visibility(true);
+  calls[1].resolve({ ...thumbnailStatus, running: true });
+  await started;
+  context.mock.timers.tick(20000);
+  assert.equal(calls.length, 2);
+  assert.equal(latest().starting, false);
+  visibility(false);
+  assert.equal(calls.length, 3);
 });

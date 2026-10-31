@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CircleAlert, RefreshCw, Terminal, X } from 'lucide-react';
 import StatusBadge from './StatusBadge.jsx';
+import { startVisiblePolling } from './polling.js';
 
 export function LiveOutputDialog({ job, request, onClose }) {
   const dialogRef = useRef(null);
@@ -26,28 +27,29 @@ export function LiveOutputDialog({ job, request, onClose }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    let timer;
     async function load() {
       try {
         const result = await request(`/api/jobs/${encodeURIComponent(job.id)}/live-output`, {
           signal: controller.signal, cache: 'no-store'
         });
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted) return false;
+        if (document.hidden) return;
         setData(result);
         setError('');
-        if (result.status === 'queued' || result.status === 'running') timer = window.setTimeout(load, 1000);
+        return result.status === 'queued' || result.status === 'running' ? 1000 : false;
       } catch (loadError) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted) return false;
+        if (document.hidden) return;
         setError(loadError.message);
         if ([401, 403, 404].includes(loadError.status)) {
           setData(null);
-          return;
+          return false;
         }
-        timer = window.setTimeout(load, 2000);
+        return 2000;
       }
     }
-    load();
-    return () => { controller.abort(); window.clearTimeout(timer); };
+    const stop = startVisiblePolling(load, 1000);
+    return () => { controller.abort(); stop(); };
   }, [job.id, request]);
 
   useEffect(() => {

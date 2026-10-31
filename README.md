@@ -600,6 +600,11 @@ Completed library/catalog responses are deferred while hidden so they cannot
 trigger background track-list reloads during a media handoff. Returning to the
 page applies current data and catches the displayed position up to the media.
 
+The same hidden-page pause applies to thumbnail status, linked-user and
+library-access lists, live job output, import logs, and the export/backup dialog.
+Active polls refresh on return without restarting completed operations. Pausing
+UI polls does not pause server jobs or change media playback.
+
 Audio uses a dedicated native audio element outside the hidden/inert video popup
 on every browser. There is no longer a Brave-specific video-element workaround.
 

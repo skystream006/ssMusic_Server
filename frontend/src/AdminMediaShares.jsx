@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, CircleAlert, ExternalLink, RefreshCw, Share2, Trash2 } from 'lucide-react';
+import { startVisiblePolling } from './polling.js';
 
 export function AdminMediaSharesView({ data, loading, error, deleting, onRefresh, onPage, onDelete }) {
   const busy = loading || Boolean(deleting);
@@ -110,38 +111,35 @@ export function AdminArtworkThumbnailsView({ status, starting = false, error = '
   </section>;
 }
 
-export function watchArtworkThumbnails(request, onChange) {
+export function watchArtworkThumbnails(request, onChange, browser = window) {
   const endpoint = '/api/admin/artwork-thumbnails';
   let active = true;
   let revision = 0;
-  let timer;
+  let stopPolling;
   let pendingRequest;
   let startError = '';
   let state = { status: null, starting: false, error: '' };
   const update = (changes) => { state = { ...state, ...changes }; onChange(state); };
-  const schedule = () => { timer = setTimeout(poll, 2000); };
 
   async function poll() {
     const version = revision;
     pendingRequest = new AbortController();
     try {
       const status = await request(endpoint, { signal: pendingRequest.signal });
-      if (active && version === revision) update({ status, error: startError });
+      if (active && !browser.document.hidden && version === revision) update({ status, error: startError });
     } catch (error) {
-      if (active && version === revision) update({ status: null, error: error.message || 'Unable to load thumbnail status.' });
-    } finally {
-      if (active && version === revision) schedule();
+      if (active && !browser.document.hidden && version === revision) update({ status: null, error: error.message || 'Unable to load thumbnail status.' });
     }
   }
 
   update({});
-  void poll();
+  stopPolling = startVisiblePolling(poll, 2000, browser);
   return {
     async start() {
       if (!active || state.starting || !state.status || state.status.running) return;
       // Ignore a pre-start poll even if its response arrives after the POST.
       revision++;
-      clearTimeout(timer);
+      stopPolling();
       pendingRequest?.abort();
       pendingRequest = new AbortController();
       startError = '';
@@ -157,14 +155,13 @@ export function watchArtworkThumbnails(request, onChange) {
       } finally {
         if (active) {
           update({ starting: false });
-          if (state.status) schedule();
-          else void poll();
+          stopPolling = startVisiblePolling(poll, 2000, browser, !state.status);
         }
       }
     },
     stop() {
       active = false;
-      clearTimeout(timer);
+      stopPolling();
       pendingRequest?.abort();
     }
   };

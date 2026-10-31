@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { Link2, RefreshCw, Save, Settings, Unlink, UserCheck, UserPlus, Users, X } from 'lucide-react';
 import { SharedLibraryAccess } from './SharedLibraries.jsx';
 import { sortSelectOptions } from './selectOptions.js';
+import { startVisiblePolling } from './polling.js';
 
 export function OrganizerControl({ user, users, onChange, confirm, disabled = false }) {
   if (user.role !== 'shared') return null;
@@ -124,11 +125,10 @@ export function LinkedUsers({ request, confirm }) {
   useEffect(() => {
     let active = true;
     const load = () => request('/api/auth/links').then((result) => {
-      if (active) { setData(result); setError(''); }
-    }).catch((loadError) => { if (active) setError(loadError.message); });
-    load();
-    const timer = window.setInterval(load, 10000);
-    return () => { active = false; window.clearInterval(timer); };
+      if (active && !document.hidden) { setData(result); setError(''); }
+    }).catch((loadError) => { if (active && !document.hidden) setError(loadError.message); });
+    const stop = startVisiblePolling(load, 10000);
+    return () => { active = false; stop(); };
   }, [request, refresh]);
   const available = data?.users.filter((user) => !data.links.some((link) => link.id === user.id)) || [];
 
@@ -259,11 +259,10 @@ export function LibraryAccessList({ request }) {
   useEffect(() => {
     let active = true;
     const load = () => request('/api/library/shared-users').then((result) => {
-      if (active) { setUsers(result.users); setError(''); }
-    }).catch((loadError) => { if (active) { setUsers(null); setError(loadError.message); } });
-    load();
-    const timer = window.setInterval(load, 10000);
-    return () => { active = false; window.clearInterval(timer); };
+      if (active && !document.hidden) { setUsers(result.users); setError(''); }
+    }).catch((loadError) => { if (active && !document.hidden) { setUsers(null); setError(loadError.message); } });
+    const stop = startVisiblePolling(load, 10000);
+    return () => { active = false; stop(); };
   }, [request, refresh]);
   return <section className="users-section" aria-labelledby="library-access-heading">
     <div className="section-title"><h2 id="library-access-heading">Library access</h2>
