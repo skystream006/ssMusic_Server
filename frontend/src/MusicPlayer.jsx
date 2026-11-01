@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Disc3, Folder, GripVertical, Info, Link, ListChecks, ListMusic, Lock, LockOpen, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Repeat1, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, Upload, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowRightLeft, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Disc3, Folder, GripVertical, Info, Link, ListChecks, ListMusic, Lock, LockOpen, Mic, Mic2, MicVocal, Music2, Pause, Pencil, Play, Plus, RefreshCw, Repeat, Repeat1, Save, Search, Share2, Shuffle, SkipBack, SkipForward, Trash2, TextQuote, Upload, Volume2, VolumeX, X } from 'lucide-react';
 import { canEditSong, getFilePrivacy, ListSongRating, SongActions, transcriptionInactiveMessage, TranscriptionStatus } from './SongActions.jsx';
 import { allowDrop, createMediaSwipeHandlers, leaveDrop } from './touchControls.js';
 import { navigationHistory, replaceURL } from './navigation.js';
@@ -1563,7 +1563,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           onChange={(event) => seek(Number(event.target.value))} /><time>{timeLabel(duration)}</time></div></div>
         <div className="dock-tools" inert={Boolean(panel)} aria-hidden={Boolean(panel)}>
           {isVideo && <button className="music-icon-button" type="button" title={videoOpen ? 'Hide movie' : 'Show movie'} aria-label={videoOpen ? 'Hide movie' : 'Show movie'} aria-pressed={videoOpen} onClick={() => { setPanel(null); setVideoOpen(!videoOpen); }}><Film size={18} /></button>}
-          <button className="music-icon-button" type="button" title="Lyrics" aria-label="Show lyrics" disabled={isVideo} aria-pressed={panel === 'lyrics'} onClick={() => setPanel(panel === 'lyrics' ? null : 'lyrics')}><Mic2 size={18} /></button>
+          <button className="music-icon-button" type="button" title="Lyrics" aria-label="Show lyrics" disabled={isVideo} aria-pressed={panel === 'lyrics'} onClick={() => setPanel(panel === 'lyrics' ? null : 'lyrics')}><TextQuote size={18} /></button>
           <button className="music-icon-button" type="button" title="Playback queue" aria-label="Show playback queue" aria-pressed={Boolean(panel && (widePlayer || panel === 'queue'))} onClick={() => setPanel(panel === 'queue' ? null : 'queue')}><ListMusic size={19} /></button>
           <button className="music-icon-button volume-button" type="button" title={muted ? 'Unmute' : 'Mute'} aria-label={muted ? 'Unmute' : 'Mute'} disabled={!song} onClick={() => { audioRef.current.muted = !muted; }}>{muted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}</button>
           <input className="volume-slider" type="range" aria-label="Volume" min="0" max="1" step="0.01" value={muted ? 0 : volume} disabled={!song} onChange={(event) => { audioRef.current.volume = Number(event.target.value); audioRef.current.muted = false; }} />

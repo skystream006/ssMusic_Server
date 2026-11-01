@@ -920,6 +920,9 @@ test('restored playback does not open or render lyrics before a viewer requests 
       userId: 'viewer', request() { assert.fail('Rendering does not request lyrics'); }
     }, createElement(MusicPlayer, { id: 'job' })));
     assert.match(html, /Show lyrics/);
+    const lyricsButton = html.match(/<button\b[^>]*aria-label="Show lyrics"[^>]*>[\s\S]*?<\/button>/)?.[0];
+    assert.match(lyricsButton, /lucide-text-quote/);
+    assert.doesNotMatch(lyricsButton, /lucide-mic/);
     assert.match(html, /aria-label="Expand now playing" aria-expanded="false"/);
     assert.match(html, /src="\/artwork\/song" alt="Album cover"/);
     assert.match(html, /<div class="audio-player" aria-hidden="true"><audio\b/);
