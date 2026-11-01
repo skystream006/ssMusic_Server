@@ -360,8 +360,13 @@ code { font: 400 11px 'DM Mono', monospace; }
 .download-all:hover { background: color-mix(in srgb, var(--royal) 88%, var(--ink)); }
 .empty-files { display: flex; align-items: center; gap: 12px; padding: 25px; color: var(--muted); border: 1px dashed var(--line); }
 .empty-files p { margin: 0; font-size: 12px; }
+.files-panel { container-type: inline-size; --song-rating-width: 120px; --file-columns: 40px minmax(0, 1fr) 132px var(--song-rating-width) 44px; }
+.file-list-heading { display: grid; grid-template-columns: var(--file-columns); align-items: center; gap: 10px; padding: 10px 0; color: var(--muted); font-size: 10px; font-weight: 700; }
+.file-list-heading > :first-child { grid-column: span 2; }
+.file-date { min-width: 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.file-added-label { display: none; }
 .file-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--ink); }
-.file-list li { display: grid; grid-template-columns: 40px minmax(0, 1fr) var(--song-rating-width) 44px; align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.file-list li { display: grid; grid-template-columns: var(--file-columns); align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid var(--line); }
 .file-icon { width: 36px; height: 36px; display: grid; place-items: center; background: var(--surface-raised); }
 .file-list strong, .file-list small { display: block; }
 .file-list strong { font-size: 11px; overflow-wrap: anywhere; }
@@ -1046,7 +1051,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .music-columns { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 22px; }
 }
 @media (max-width: 560px) {
-  .file-list li { grid-template-columns: 36px minmax(0, 1fr) var(--song-rating-width) 44px; }
+  .file-list li { grid-template-columns: var(--file-columns); }
   .file-list .song-file-link { grid-template-columns: 36px minmax(0, 1fr); }
   .file-row-actions { grid-column: 4; justify-content: flex-end; }
   .music-heading h1 { font-size: 30px; }
@@ -1088,7 +1093,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .dock-tools :is(.volume-button, .volume-slider) { display: none; }
   .lyrics-overlay-content .lyric-timeline button { min-height: 48px; }
   .metadata-dialog input, .transcription-dialog :is(select, textarea), .folder-dialog input { font-size: 16px; }
-  .file-list li { grid-template-columns: 40px minmax(0, 1fr) var(--song-rating-width) 44px; }
+  .file-list li { grid-template-columns: var(--file-columns); }
   .file-row-actions { flex-wrap: wrap; }
 }
 
@@ -1234,14 +1239,18 @@ code { font: 400 11px 'DM Mono', monospace; }
   .library-song-row { grid-template-columns: 24px minmax(0, 1fr) 44px; }
   .library-song-row .song-playlist { display: none; }
   .song-order-actions { grid-column: 3; grid-row: 1; }
+  .file-list-heading { display: none; }
   .file-list li { grid-template-columns: 36px minmax(0, 1fr) 44px; }
+  .file-list .file-date { grid-column: 2 / -1; grid-row: 2; }
+  .file-added-label { display: inline; }
   .file-row-actions { grid-column: 3; grid-row: 1; }
   .song-rating-cell { grid-column: 2 / -1; grid-row: 2; }
+  .file-list .song-rating-cell { grid-row: 3; }
   .song-rating-cell:empty { display: none; }
 }
 
 @media (any-pointer: coarse) {
-  .library-song-list, .file-list { --song-rating-width: 220px; }
+  .library-song-list, .file-list, .files-panel { --song-rating-width: 220px; }
   .song-rating-inline button { height: 44px; }
   @container (max-width: 640px) {
     .library-song-row { grid-template-columns: 44px minmax(0, 1fr) 44px; }

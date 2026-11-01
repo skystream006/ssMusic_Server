@@ -103,8 +103,10 @@ export function queueSongNext(songs, selected, track) {
   return queue;
 }
 
-export async function loadPlaybackQueue(request, query, tracks, pagination) {
-  if (!pagination || tracks.length === pagination.total) return tracks;
+export async function loadPlaybackQueue(request, query, tracks, pagination, includeNoVocals = false) {
+  if (!pagination || tracks.length === pagination.total) {
+    return !includeNoVocals && tracks.some(isNoVocals) ? tracks.filter((track) => !isNoVocals(track)) : tracks;
+  }
   const parameters = new URLSearchParams(query);
   parameters.set('pageSize', '1000');
   const queue = [];
@@ -120,7 +122,7 @@ export async function loadPlaybackQueue(request, query, tracks, pagination) {
     total = result.total;
     page++;
   }
-  return queue;
+  return includeNoVocals ? queue : queue.filter((track) => !isNoVocals(track));
 }
 
 export function replaceSongFile(tracks, jobId, name, file) {
@@ -789,6 +791,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   const volumeRef = useRef(1);
   const mutedRef = useRef(false);
   const queueScopeRef = useRef(restored ? restored.scope ?? Symbol('restored') : undefined);
+  const queueNoVocalsRef = useRef(Boolean(songs?.some(isNoVocals)));
   const queueStateRef = useRef(null);
   queueStateRef.current = { songs, selected, shuffle, repeatMode };
   const index = songs?.findIndex((track) => songKey(track) === selected) ?? -1;
@@ -994,22 +997,24 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
 
   async function playLibrary(view, track = null, autoplay = true) {
     const scope = view.queueScope ?? view.selectedId;
+    const includeNoVocals = Boolean(track && isNoVocals(track));
     const intent = ++queueLoadRef.current;
     setPlayError('');
     try {
       let queue = songs;
-      if (queueScopeRef.current !== scope || !queue?.length) {
+      if (queueScopeRef.current !== scope || !queue?.length || queueNoVocalsRef.current !== includeNoVocals) {
         setQueueLoading(true);
-        const cacheKey = JSON.stringify([scope, view.queueRevision]);
+        const cacheKey = JSON.stringify([scope, view.queueRevision, includeNoVocals]);
         if (queueRequestRef.current?.key !== cacheKey) {
           queueRequestRef.current = { key: cacheKey,
-            promise: loadPlaybackQueue(request, view.queueQuery, view.tracks, view.pagination) };
+            promise: loadPlaybackQueue(request, view.queueQuery, view.tracks, view.pagination, includeNoVocals) };
         }
         queue = await queueRequestRef.current.promise;
       }
       if (intent !== queueLoadRef.current) return;
       const target = track ? queue.find((item) => songKey(item) === songKey(track)) : queue[0];
       if (!target) throw new Error('This song is no longer in the playlist. Please refresh and try again.');
+      queueNoVocalsRef.current = includeNoVocals;
       const pageSize = view.pagination?.pageSize || queuePageSize;
       setQueuePageSize(pageSize);
       setQueuePage(Math.floor(queue.indexOf(target) / pageSize) + 1);
@@ -1297,7 +1302,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         if (!active) return;
         setJob(loadedJob);
         const sourceJob = { id: loadedJob.id, initiatedBy: loadedJob.initiatedBy, status: loadedJob.status };
-        const tracks = result.files.filter((file) => file.isPlayable).map((file) => ({ ...file, jobId: id, playlistTitle: loadedJob.playlistTitle, sourceJob }));
+        const includeNoVocals = Boolean(requestedSong && isNoVocals({ name: requestedSong }));
+        const tracks = result.files.filter((file) => file.isPlayable && (includeNoVocals || !isNoVocals(file)))
+          .map((file) => ({ ...file, jobId: id, playlistTitle: loadedJob.playlistTitle, sourceJob }));
         const saved = restoredSelectionRef.current;
         const restoredTrack = saved?.scope === `job:${id}` && saved.url === `${window.location.pathname}${window.location.search}`
           ? tracks.find((file) => songKey(file) === saved.selected) : null;

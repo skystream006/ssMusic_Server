@@ -66,7 +66,7 @@ import { sortSelectOptions } from './selectOptions.js';
 import { navigate, useNavigation } from './navigation.js';
 import { startVisiblePolling } from './polling.js';
 import { initializeTouchControls } from './touchControls.js';
-import { countDownloadedFiles, themes } from '../../src/library.js';
+import { countDownloadedFiles, isNoVocals, themes } from '../../src/library.js';
 import { isPlayableFile } from '../../src/media.js';
 import { canChangePrivacy, canEditSong, canManageJob, canModifyJob, canRunJobAction, getFilePrivacy, isContributor, formatBytes, formatDate, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, SongActions, TranscriptionDialog, transcriptionInactiveMessage, TranscriptionStatus, useTranscriptionService } from './SongActions.jsx';
 
@@ -752,7 +752,7 @@ function JobPage({ id }) {
   const job = data?.[0];
   const outputSizeBytes = new Blob([job?.output || '']).size;
   const files = sortJobs(data?.[1]?.files || [], 'created', 'desc');
-  const firstSong = files.find((file) => file.isPlayable);
+  const firstSong = files.find((file) => file.isPlayable && !isNoVocals(file));
   const isActive = job?.status === 'queued' || job?.status === 'running';
   const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
   const canModify = canModifyJob(user, job);
@@ -995,6 +995,7 @@ function JobPage({ id }) {
                 {files.length > 0 && <a className="download-all" href={`/api/jobs/${id}/download-all`}><ArrowDownToLine size={16} />Download all</a>}
               </div>
             </div>
+            {files.length > 0 && <div className="file-list-heading"><span>File</span><span>Date added</span><span>Rating</span><span>Actions</span></div>}
             {files.length === 0 ? <div className="empty-files"><FileAudio size={29} /><p>No downloadable files yet.</p></div> : (
               <ul className="file-list">{files.map((file) => {
                 const privacy = getFilePrivacy(file, job);
@@ -1013,6 +1014,9 @@ function JobPage({ id }) {
                     <span className="file-icon"><FileAudio size={19} /></span>
                     <div><strong>{file.name}</strong><small>{formatBytes(file.sizeBytes)}</small>{privacy.private && <small>{privacy.inherited ? 'Inherited privacy — owner only' : 'Private file — owner only'}</small>}</div>
                   </>}
+                  <div className="file-date"><span className="file-added-label">Date added: </span>
+                    {Number.isFinite(Date.parse(file.createdAt)) ? <time dateTime={file.createdAt} title="Date added to server">{formatDate(file.createdAt)}</time> : <span>Unknown</span>}
+                  </div>
                   <ListSongRating file={file} jobId={id} request={request} canModify={canEditSong(user, job)}
                     disabled={!canEditSong(user, job) || songMutationDisabled(file.name) || editingMetadata?.name === file.name} onError={setActionError}
                     onSaved={(result) => {

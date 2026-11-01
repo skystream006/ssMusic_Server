@@ -260,6 +260,37 @@ test('playback queue batches larger collections and reuses an already complete p
   assert.deepEqual(await loadPlaybackQueue(unexpectedRequest, '', [], { total: 0 }), []);
 });
 
+test('playback queue excludes NoVocals files from complete playlists without changing their inventory', async () => {
+  const tracks = Object.freeze(['First.mp3', '[NoVocals]/First.mp3', 'Movie.mp4', '[novocals]/Other.mp3', 'Last.mp3']
+    .map((name) => Object.freeze({ jobId: 'job', name })));
+  const request = () => assert.fail('A complete playlist needs no requests');
+  for (const pagination of [null, { total: tracks.length }]) {
+    assert.deepEqual(await loadPlaybackQueue(request, '', tracks, pagination), [tracks[0], tracks[2], tracks[4]]);
+  }
+  assert.equal(tracks.length, 5);
+  assert.deepEqual(await loadPlaybackQueue(request, '', [tracks[1], tracks[3]], { total: 2 }), []);
+  assert.equal(await loadPlaybackQueue(request, '', tracks, { total: tracks.length }, true), tracks);
+  assert.deepEqual(await loadPlaybackQueue(request, '', [tracks[1], tracks[3]], null, true), [tracks[1], tracks[3]]);
+});
+
+test('playback queue filters NoVocals files only after loading every playlist page', async () => {
+  const tracks = Array.from({ length: 2100 }, (_, index) => ({ jobId: 'job',
+    name: index >= 2000 ? `${index}.mp3` : `[NoVocals]/${index}.mp3` }));
+  const pages = [];
+  const queue = await loadPlaybackQueue(async (url) => {
+    const page = Number(new URL(url, 'http://localhost').searchParams.get('page'));
+    pages.push(page);
+    return { files: tracks.slice((page - 1) * 1000, page * 1000), total: tracks.length, page };
+  }, 'entryId=mix', tracks.slice(0, 1000), { total: tracks.length, page: 1, pageSize: 1000 });
+  assert.deepEqual(pages, [2, 3]);
+  assert.deepEqual(queue, tracks.slice(2000));
+  const fullQueue = await loadPlaybackQueue(async (url) => {
+    const page = Number(new URL(url, 'http://localhost').searchParams.get('page'));
+    return { files: tracks.slice((page - 1) * 1000, page * 1000), total: tracks.length, page };
+  }, 'entryId=mix', tracks.slice(0, 1000), { total: tracks.length, page: 1, pageSize: 1000 }, true);
+  assert.deepEqual(fullQueue, tracks);
+});
+
 test('playback queue rejects failed or changed pagination instead of accepting a truncated queue', async () => {
   await assert.rejects(loadPlaybackQueue(async () => { throw new Error('Offline'); }, '', [], { total: 500 }), /Offline/);
   await assert.rejects(loadPlaybackQueue(async () => ({ files: [], total: 500, page: 1 }), '', [], { total: 500 }), /playlist changed/);
