@@ -36,6 +36,7 @@ function fixture({ managed = false, rejectAppend = false, large = false } = {}) 
     static isTypeSupported(mime) { return ['audio/mpeg', 'audio/mp4; codecs="mp4a.40.2"'].includes(mime); }
     constructor() { super(); this.readyState = 'closed'; instances.push(this); }
     addSourceBuffer(mime) { this.mime = mime; return this.buffer = new Buffer(); }
+    setLiveSeekableRange(start, end) { this.seekableRange = [start, end]; }
     endOfStream() { this.readyState = 'ended'; }
   }
   const browser = { location: { href: 'https://music.example/' },
@@ -83,6 +84,32 @@ test('SourceBuffer reuses preloaded bytes and serializes bounded range appends',
   assert.equal(calls[1].options.headers['If-Range'], 'Fri, 30 Oct 2026 00:00:00 GMT');
   playback.dispose();
   assert.deepEqual(revoked, ['blob:source-1']);
+});
+
+test('large streams retain MediaSource and download only a rolling playback window', async () => {
+  const { browser, media, instances } = fixture();
+  const ranges = [];
+  media.currentTime = 0;
+  browser.fetch = async (url, options) => {
+    ranges.push(options.headers.Range);
+    const offset = Number(options.headers.Range.match(/bytes=(\d+)-/)[1]);
+    return new Response(new Uint8Array([1, 2, 3, 4]), { status: 206,
+      headers: { 'content-range': `bytes ${offset}-${offset + 3}/33554432`, 'content-length': '4', etag: '"large"', 'x-media-duration': '600' } });
+  };
+  const playback = createMediaSourcePlayback({ browser, chunkBytes: 4, bufferAheadSeconds: 8, bufferBehindSeconds: 2 });
+  const stream = playback.attach(media, '/Long.mp3', () => assert.fail('Large audio must retain continuous buffering'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(ranges, ['bytes=0-3', 'bytes=4-7']);
+  assert.equal(instances[0].readyState, 'open');
+  assert.equal(playback.timing(media).duration, 600);
+  assert.deepEqual(instances[0].seekableRange, [0, 600]);
+  media.currentTime = 8;
+  media.dispatchEvent(new Event('timeupdate'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(ranges, ['bytes=0-3', 'bytes=4-7', 'bytes=8-11', 'bytes=12-15']);
+  assert.ok(instances[0].buffer.buffered.start(0) >= 6);
+  playback.dispose();
+  await stream.completion;
 });
 
 test('queued audio crosses track boundaries without ending or replacing the active MediaSource', async () => {
@@ -226,17 +253,25 @@ test('a interrupted response body retries the range without appending duplicate 
   playback.dispose();
 });
 
-test('persistent network failure is bounded and authorization failures are not retried', async () => {
+test('exhausted network retries preserve the buffer until explicit recovery and authorization is not retried', async () => {
   const { browser, media } = fixture();
+  const fetch = browser.fetch;
   let attempts = 0;
   browser.fetch = async () => { attempts++; throw new TypeError('Failed to fetch'); };
-  const playback = createMediaSourcePlayback({ browser });
+  let parked;
+  const waiting = new Promise((resolve) => { parked = resolve; });
+  const playback = createMediaSourcePlayback({ browser, retryDelays: [1, 1], recoveryDelays: [],
+    onEvent(event) { if (event === 'recovery-wait') parked(); } });
   const fallbacks = [];
   const stream = playback.attach(media, '/Unavailable.mp3', (failure) => fallbacks.push(failure));
-  await stream.completion;
+  await waiting;
   assert.equal(attempts, 3);
-  assert.equal(fallbacks.length, 1);
-  assert.equal(fallbacks[0].source, '/Unavailable.mp3');
+  assert.equal(fallbacks.length, 0);
+  assert.equal(playback.blocked, true);
+  browser.fetch = fetch;
+  playback.recover();
+  await stream.completion;
+  assert.equal(playback.blocked, false);
   playback.dispose();
   for (const status of [401, 403, 404]) {
     let requests = 0;
@@ -246,6 +281,105 @@ test('persistent network failure is bounded and authorization failures are not r
     assert.equal(requests, 1);
     denied.dispose();
   }
+});
+
+test('a failed error-body cancellation cannot turn authorization rejection into a retry', async () => {
+  const { browser } = fixture();
+  let attempts = 0;
+  browser.fetch = async () => {
+    attempts++;
+    return { ok: false, status: 403, headers: new Headers(), body: { async cancel() { throw new TypeError('Connection closed'); } } };
+  };
+  const playback = createMediaSourcePlayback({ browser, retryDelays: [1] });
+  await assert.rejects(playback.preload('/Denied.mp3'), /Media request failed \(403\)/);
+  assert.equal(attempts, 1);
+  playback.dispose();
+});
+
+test('hung media requests time out and transient HTTP failures retry without replacing the source', async () => {
+  for (const kind of ['timeout', 'server']) {
+    const { browser, media, instances } = fixture();
+    const fetch = browser.fetch;
+    let attempts = 0;
+    browser.fetch = (url, options) => {
+      if (++attempts !== 1) return fetch(url, options);
+      if (kind === 'timeout') return new Promise(() => {});
+      return Promise.resolve(new Response(null, { status: 503, headers: { 'Retry-After': '0' } }));
+    };
+    const playback = createMediaSourcePlayback({ browser, requestTimeoutMs: 5, retryDelays: [1] });
+    await playback.attach(media, '/Song.mp3', () => assert.fail('A transient request must recover')).completion;
+    assert.equal(attempts, 2);
+    assert.equal(instances.length, 1);
+    assert.deepEqual(instances[0].buffer.parts, [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]);
+    playback.dispose();
+  }
+});
+
+test('online recovery resumes a queued range without discarding or duplicating buffered audio', async () => {
+  const { browser, media, instances } = fixture();
+  const network = new EventTarget();
+  browser.addEventListener = network.addEventListener.bind(network);
+  browser.removeEventListener = network.removeEventListener.bind(network);
+  const fetch = browser.fetch;
+  let offline = true;
+  browser.fetch = (url, options) => offline && url.includes('/Next.mp3') && options.headers.Range === 'bytes=4-7'
+    ? Promise.reject(new TypeError('Offline')) : fetch(url, options);
+  let parked;
+  const waiting = new Promise((resolve) => { parked = resolve; });
+  const playback = createMediaSourcePlayback({ browser, chunkBytes: 4, retryDelays: [1], recoveryDelays: [],
+    onEvent(event) { if (event === 'recovery-wait') parked(); } });
+  playback.attach(media, '/First.mp3', () => assert.fail('Buffered audio must remain attached'));
+  const source = media.src;
+  const next = playback.queueNext('/Next.mp3');
+  await waiting;
+  assert.equal(instances[0].readyState, 'open');
+  assert.equal(instances[0].buffer.parts.length, 4);
+  offline = false;
+  network.dispatchEvent(new Event('online'));
+  assert.equal(await next, true);
+  assert.equal(media.src, source);
+  assert.equal(instances[0].buffer.parts.length, 6);
+  assert.equal(playback.blocked, false);
+  playback.dispose();
+});
+
+test('disposing a parked recovery removes its online wake-up without retrying', async () => {
+  const { browser, media } = fixture();
+  const network = new EventTarget();
+  browser.addEventListener = network.addEventListener.bind(network);
+  browser.removeEventListener = network.removeEventListener.bind(network);
+  let attempts = 0;
+  browser.fetch = async () => { attempts++; throw new TypeError('Offline'); };
+  let parked;
+  const waiting = new Promise((resolve) => { parked = resolve; });
+  const playback = createMediaSourcePlayback({ browser, retryDelays: [], recoveryDelays: [],
+    onEvent(event) { if (event === 'recovery-wait') parked(); } });
+  const stream = playback.attach(media, '/Song.mp3', () => assert.fail('Disposed playback must not fall back'));
+  await waiting;
+  playback.dispose();
+  await stream.completion;
+  network.dispatchEvent(new Event('online'));
+  assert.equal(attempts, 1);
+});
+
+test('quota recovery trims consumed audio and retries the same append once', async () => {
+  const { browser, media, instances } = fixture();
+  const add = browser.MediaSource.prototype.addSourceBuffer;
+  browser.MediaSource.prototype.addSourceBuffer = function(mime) {
+    const buffer = add.call(this, mime);
+    const append = buffer.appendBuffer.bind(buffer);
+    let attempts = 0;
+    buffer.appendBuffer = (part) => {
+      if (++attempts === 3) { media.currentTime = 6; throw new DOMException('Quota', 'QuotaExceededError'); }
+      append(part);
+    };
+    return buffer;
+  };
+  const playback = createMediaSourcePlayback({ browser, chunkBytes: 4 });
+  await playback.attach(media, '/Song.mp3', () => assert.fail('Consumed audio can be evicted')).completion;
+  assert.equal(instances[0].buffer.parts.length, 3);
+  assert.equal(instances[0].buffer.buffered.start(0), 5);
+  playback.dispose();
 });
 
 test('disposing playback cancels retry backoff without another request', async () => {
@@ -371,7 +505,7 @@ test('changing resources and aborted managed waits cannot leave stale appends ru
   changed.dispose();
 });
 
-test('SourceBuffer quota and oversized responses fall back once without losing position', async () => {
+test('SourceBuffer quota and malformed ranges fall back once without losing position', async () => {
   for (const options of [{ rejectAppend: true }, { large: true }]) {
     const { browser, media, revoked } = fixture(options);
     const playback = createMediaSourcePlayback({ browser });

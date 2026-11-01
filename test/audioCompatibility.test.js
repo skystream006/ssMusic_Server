@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import express from 'express';
-import { createCompatibilityAudioCache, createMediaStreamHandler, encodeCompatibilityAudio } from '../src/audioCompatibility.js';
+import { createCompatibilityAudioCache, createMediaStreamHandler, createPlaybackDurationReader, encodeCompatibilityAudio } from '../src/audioCompatibility.js';
 
 async function fixture(context) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-aac-'));
@@ -14,6 +14,50 @@ async function fixture(context) {
   await fs.writeFile(source, 'original media');
   return { directory, source, root: path.join(directory, 'cache') };
 }
+
+test('duration lookup is cached by file revision and limits concurrent probes', async (context) => {
+  const { source, directory } = await fixture(context);
+  const other = path.join(directory, 'Other.mp3');
+  const extra = path.join(directory, 'Extra.mp3');
+  await Promise.all([fs.writeFile(other, 'other'), fs.writeFile(extra, 'extra')]);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  context.after(() => release());
+  let started = 0;
+  let ready;
+  const both = new Promise((resolve) => { ready = resolve; });
+  const duration = createPlaybackDurationReader(async () => { if (++started === 2) ready(); await gate; return 120; });
+  const first = duration(source);
+  const duplicate = duration(source);
+  const second = duration(other);
+  await both;
+  assert.equal(await duration(extra), 0);
+  assert.equal(started, 2);
+  release();
+  assert.deepEqual(await Promise.all([first, duplicate, second]), [120, 120, 120]);
+  assert.equal(await duration(source), 120);
+  assert.equal(started, 2);
+  await fs.writeFile(source, 'changed media revision');
+  assert.equal(await duration(source), 120);
+  assert.equal(started, 3);
+});
+
+test('duration lookup cannot publish metadata after original media authorization is revoked', async (context) => {
+  const { source } = await fixture(context);
+  let allowed = true;
+  const app = express();
+  app.get('/stream', createMediaStreamHandler(async () => {
+    if (!allowed) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
+    return source;
+  }, undefined, async () => { allowed = false; return 123; }));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/stream`);
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get('x-media-duration'), null);
+  assert.doesNotMatch(await response.text(), /original media/);
+});
 
 test('AAC cache shares conversions, survives restart, and keeps stable file validators', async (context) => {
   const { source, root } = await fixture(context);
@@ -115,7 +159,7 @@ test('media serving preserves byte ranges, HEAD, conditional requests, and autho
   app.get('/stream', createMediaStreamHandler(async (req) => {
     if (!allowed || req.get('x-viewer') !== 'owner') throw Object.assign(new Error('Song not found'), { statusCode: 404 });
     return source;
-  }, cache));
+  }, cache, async () => 120));
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve) => server.once('listening', resolve));
   context.after(() => new Promise((resolve) => server.close(resolve)));
@@ -130,6 +174,7 @@ test('media serving preserves byte ranges, HEAD, conditional requests, and autho
   assert.equal(prepared.status, 200);
   assert.equal(prepared.headers.get('content-type'), 'audio/mp4');
   assert.equal(prepared.headers.get('accept-ranges'), 'bytes');
+  assert.equal(prepared.headers.get('x-media-duration'), '120');
   assert.equal(Number(prepared.headers.get('content-length')), output.length);
   const etag = prepared.headers.get('etag');
   const first = await fetch(`${url}?format=aac`, { headers: { ...headers, Range: 'bytes=0-1' } });

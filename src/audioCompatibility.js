@@ -9,6 +9,39 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 const signature = (stat, fragmented = false) => hash(`${version}${fragmented ? ':fragmented-v1' : ''}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`);
 const failure = (message, statusCode) => Object.assign(new Error(message), { statusCode });
 
+async function probePlaybackDuration(source) {
+  const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
+  const directory = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
+  const executable = path.join(directory, process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+  return new Promise((resolve, reject) => {
+    execFile(executable, ['-v', 'error', '-max_alloc', '33554432', '-protocol_whitelist', 'file,pipe',
+      '-format_whitelist', 'mp3,wav,flac,mov,aac,ogg,asf', '-probesize', '1048576', '-analyzeduration', '1000000',
+      '-show_entries', 'format=duration', '-of', 'json', source],
+    { timeout: 5000, maxBuffer: 64 * 1024, windowsHide: true }, (error, output) => {
+      if (error) { reject(error); return; }
+      try { resolve(Number(JSON.parse(output).format?.duration)); } catch (parseError) { reject(parseError); }
+    });
+  });
+}
+
+export function createPlaybackDurationReader(probe = probePlaybackDuration) {
+  const entries = new Map();
+  let running = 0;
+  return async (source) => {
+    const stat = await fs.stat(source);
+    const key = `${source}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    if (entries.has(key)) return entries.get(key);
+    if (running >= 2) return 0;
+    running++;
+    const operation = Promise.resolve().then(() => probe(source))
+      .then((duration) => Number.isFinite(duration) && duration > 0 ? duration : 0)
+      .catch(() => 0).finally(() => { running--; });
+    entries.set(key, operation);
+    if (entries.size > 128) entries.delete(entries.keys().next().value);
+    return operation;
+  };
+}
+
 export async function encodeCompatibilityAudio(source, target, { fragmented = false } = {}) {
   const formats = { '.mp3': 'mp3', '.mp2': 'mp3', '.wav': 'wav', '.flac': 'flac', '.m4a': 'mov', '.aac': 'aac', '.ogg': 'ogg', '.opus': 'ogg', '.wma': 'asf' };
   const format = formats[path.extname(source).toLowerCase()];
@@ -104,8 +137,9 @@ export function createCompatibilityAudioCache({ root = path.resolve('data', 'pla
 }
 
 const compatibilityAudio = createCompatibilityAudioCache();
+const playbackDuration = createPlaybackDurationReader();
 
-export function createMediaStreamHandler(resolveFile, cache = compatibilityAudio) {
+export function createMediaStreamHandler(resolveFile, cache = compatibilityAudio, readDuration = playbackDuration) {
   return async (req, res) => {
     try {
       const format = req.query.format;
@@ -115,9 +149,13 @@ export function createMediaStreamHandler(resolveFile, cache = compatibilityAudio
       let target = source;
       if (format === 'aac') {
         target = await cache.prepare(source, { fragmented: req.query.mse === '1' });
-        if (await resolveFile(req) !== source) throw failure('Song changed during AAC preparation; retry playback', 409);
         res.type('audio/mp4');
       } else if (/\.m4v$/i.test(source)) res.type('video/mp4');
+      if (mediaType(source) === 'audio') {
+        const duration = await readDuration(source).catch(() => 0);
+        if (await resolveFile(req) !== source) throw failure('Song changed during playback preparation; retry playback', 409);
+        if (duration > 0) res.set('X-Media-Duration', String(duration));
+      }
       res.set('Cache-Control', 'private, no-cache');
       res.set('X-Content-Type-Options', 'nosniff');
       res.sendFile(target, { acceptRanges: true, cacheControl: false }, (error) => {

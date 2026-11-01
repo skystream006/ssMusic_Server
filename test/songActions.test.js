@@ -47,6 +47,7 @@ let mergePlaybackMetadata;
 let movePlaybackMedia;
 let createPlaybackMediaSession;
 let createContinuousPlayback;
+let createPlaybackDiagnostics;
 let publishPlaybackPosition;
 let getPlaybackElementType;
 let getPlaybackSource;
@@ -69,7 +70,7 @@ let OrganizerControl;
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, publishPlaybackPosition, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
+  ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, createPlaybackDiagnostics, publishPlaybackPosition, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ default: MusicLibrary, ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -364,6 +365,76 @@ test('hidden playback updates the native session without publishing progress ren
   publishPlaybackPosition({ currentTime: 51 }, (position) => positions.push(position), session, { hidden: false });
   assert.deepEqual(positions, [51]);
   assert.equal(sessionUpdates, 51);
+});
+
+test('playback diagnostics are bounded snapshots without track names, URLs, lyrics or credentials', () => {
+  const diagnostics = createPlaybackDiagnostics(2, () => 1000);
+  for (let attempt = 0; attempt < 3; attempt++) diagnostics.record('request-retry', {
+    attempt, position: 12, hidden: true, reason: 'TypeError',
+    source: '/private/secret-song.mp3', title: 'Secret song', lyrics: 'Private words', token: 'secret-token'
+  });
+  const snapshot = diagnostics.snapshot();
+  assert.equal(snapshot.events.length, 2);
+  assert.deepEqual(snapshot.events.map((event) => event.attempt), [1, 2]);
+  assert.doesNotMatch(JSON.stringify(snapshot), /secret|Private|lyrics|token|source|title/);
+  snapshot.events[0].position = 999;
+  assert.equal(diagnostics.snapshot().events[0].position, 12);
+  diagnostics.clear();
+  assert.equal(diagnostics.snapshot().events.length, 0);
+});
+
+test('continuous playback bounds stall recovery and keeps interruption intent separate from explicit pause', async () => {
+  let timer;
+  let recoveries = 0;
+  let plays = 0;
+  const media = { src: '', paused: true, currentTime: 0, duration: 120, getAttribute() { return this.src; },
+    async play() { plays++; this.paused = false; } };
+  const transport = createContinuousPlayback(() => media, {
+    browser: { setTimeout(callback) { timer = callback; return 1; }, clearTimeout() { timer = null; } },
+    buffering: { attach() { return null; }, recover() { recoveries++; return true; } }
+  });
+  await transport.load('/Song.mp3', true);
+  transport.waiting();
+  for (let attempt = 0; attempt < 3; attempt++) { const next = timer; timer = null; next(); }
+  assert.equal(recoveries, 3);
+  assert.equal(plays, 4);
+  assert.equal(timer, null);
+  media.paused = true;
+  transport.interrupt();
+  assert.equal(transport.intent, true);
+  assert.equal(transport.interrupted, true);
+  transport.waiting();
+  assert.equal(timer, null);
+  await transport.play();
+  assert.equal(transport.interrupted, false);
+  transport.waiting();
+  assert.equal(typeof timer, 'function');
+  transport.cancel();
+  media.paused = true;
+  assert.equal(transport.intent, false);
+  assert.equal(timer, null);
+});
+
+test('continuous playback clears stall recovery on progress and ignores callbacks from an old source', async () => {
+  let timer;
+  let recoveries = 0;
+  const media = { src: '', paused: false, currentTime: 0, duration: 30, getAttribute() { return this.src; }, async play() {} };
+  const transport = createContinuousPlayback(() => media, {
+    browser: { setTimeout(callback) { timer = callback; return 1; }, clearTimeout() { timer = null; } },
+    buffering: { attach() { return null; }, recover() { recoveries++; return true; } }
+  });
+  await transport.load('/First.mp3', true);
+  transport.progress();
+  transport.waiting();
+  media.currentTime = 1;
+  transport.progress();
+  assert.equal(timer, null);
+  transport.waiting();
+  const stale = timer;
+  await transport.load('/Second.mp3', true);
+  stale();
+  assert.equal(recoveries, 0);
+  transport.cancel();
 });
 
 test('continuous playback retries an errored source without reloading healthy paused media', async () => {

@@ -124,7 +124,7 @@ app.use('/api/public', publicMediaRouter());
 app.get(['/share/:token', '/share/playlist/:token'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'), { cacheControl: false });
 });
-app.use('/api/jobs/:id/files/:name/metadata', express.json({ limit: '3mb' }));
+app.use('/api/jobs/:id/files/:name/metadata', express.json({ limit: '5mb' }));
 app.use(['/api/library/playlists/move', '/api/library/songs/transfer'], express.json({ limit: '3mb' }));
 app.use(express.json({ limit: '128kb' }));
 app.use(express.static(path.resolve(process.cwd(), 'public')));

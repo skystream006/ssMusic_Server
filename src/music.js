@@ -107,7 +107,7 @@ export async function readSongArtwork(filePath) {
   const { image } = await readBoundedId3Tags(filePath, { include: ['APIC', 'PIC'] });
   if (!image || !['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(image.mime)
     || !Buffer.isBuffer(image.imageBuffer) || !image.imageBuffer.length
-    || image.imageBuffer.length > 2 * 1024 * 1024) return null;
+    || image.imageBuffer.length > 3 * 1024 * 1024) return null;
   const type = await fileTypeFromBuffer(image.imageBuffer).catch(() => null);
   return type?.mime === image.mime ? image : null;
 }
@@ -137,11 +137,11 @@ export async function updateSongMetadata(filePath, value, { includeLyrics = true
   if (Object.hasOwn(value, 'artwork')) {
     if (value.artwork === null) updates.image = null;
     else {
-      if (typeof value.artwork !== 'string' || value.artwork.length > 2800000) invalid('Artwork must be at most 2 MB');
+      if (typeof value.artwork !== 'string' || value.artwork.length > 4200000) invalid('Artwork must be at most 3 MB');
       const match = value.artwork.match(/^data:(image\/(?:jpeg|png|webp|avif));base64,([A-Za-z0-9+/]+={0,2})$/);
       if (!match) invalid('Artwork must be a JPEG, PNG, WebP or AVIF image');
       const imageBuffer = Buffer.from(match[2], 'base64');
-      if (!imageBuffer.length || imageBuffer.length > 2 * 1024 * 1024 || imageBuffer.toString('base64') !== match[2]) invalid('Invalid artwork data or size');
+      if (!imageBuffer.length || imageBuffer.length > 3 * 1024 * 1024 || imageBuffer.toString('base64') !== match[2]) invalid('Invalid artwork data or size');
       const type = await fileTypeFromBuffer(imageBuffer).catch(() => null);
       if (type?.mime !== match[1]) invalid('Artwork content does not match its image type');
       updates.image = { mime: type.mime, type: { id: 3, name: 'front cover' }, description: 'Cover', imageBuffer };
@@ -201,7 +201,7 @@ export async function readSongMetadata(filePath, { bounded = false, includeLyric
   }
   const image = tags.image;
   const artwork = image && ['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(image.mime)
-    && image.imageBuffer?.length <= 2 * 1024 * 1024
+    && image.imageBuffer?.length <= 3 * 1024 * 1024
     ? `data:${image.mime};base64,${image.imageBuffer.toString('base64')}` : null;
   return {
     title: tags.title || path.basename(filePath, path.extname(filePath)),

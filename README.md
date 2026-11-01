@@ -628,11 +628,20 @@ controls, lyrics, Media Session, and saved positions remain track-relative.
 The next candidate's first 256 KiB are preloaded and reused during buffering;
 shuffle retains the prepared candidate. Requests use authenticated byte ranges
 and check file validators between chunks. At most two prefix preload entries
-are retained. The MSE path accepts files up to 16 MiB each; larger files, unsupported
-codecs/containers, unavailable APIs, and buffer/decoding failures use native range
-playback. Fallback preserves position and does not resume a deliberately paused
-track. Native fallback still uses Media Session, `preload="auto"`, and next-track
-HEAD preparation.
+are retained. Large files no longer have a 16 MiB cutoff: downloads pause around
+90 seconds ahead of playback, and audio older than 30 seconds behind playback
+is evicted. A single range can extend the window slightly. Quota failures first
+try trimming consumed audio before falling back. Unsupported codecs/containers,
+unavailable APIs, decoding failures, and seeks into evicted history still use
+native range playback. Fallback preserves position and does not resume paused
+or interrupted playback. Native fallback still uses Media Session,
+`preload="auto"`, and next-track HEAD preparation.
+
+Authorized audio responses provide `X-Media-Duration` when FFprobe can determine
+it. A revision-keyed 128-entry cache and at most two five-second probes keep this
+bounded; unavailable duration metadata does not block playback. Authorization
+is rechecked after preparation. The duration drives track-relative controls and
+the MSE seekable range without requiring the entire file to be downloaded.
 
 On supported Safari versions, ManagedMediaSource is used when standard
 MediaSource does not support the stream. Its streaming signals are respected,
@@ -640,6 +649,34 @@ and seeks into evicted data fall back to native playback. Remote playback is
 disabled only while the managed source is attached, as required by Safari, and
 restored when it is released. These APIs cannot force support for every format
 or override mobile background/audio-focus policies.
+
+### Playback recovery and diagnostics
+
+Media range requests have a 15-second deadline. Network failures, timeouts, and
+transient HTTP responses retry with bounded backoff. Authorization failures,
+changed validators, and invalid ranges are not retried. After the automatic
+recovery budget is exhausted, the existing SourceBuffer and downloaded audio
+remain attached; a browser `online` event or **Retry playback** can resume the
+failed range without duplicating audio or restarting the song. Waiting does not
+create an unbounded background polling loop.
+
+An event-driven stall watchdog makes at most three recovery attempts, eight
+seconds apart, only while playback is still requested and the media is not
+paused. Progress, source changes, explicit Pause/Stop, and logout cancel it.
+Unexpected native pauses retain playback intent separately from actual playback
+state, but are not automatically overridden: they may represent a call or an
+audio-focus interruption. A normal system or user Play action resumes playback.
+
+**User settings > Playback > Download playback diagnostics** exports up to 200
+recent structured events plus browser information. The log records buffering,
+retries, pauses, visibility, and native media state, but excludes song names,
+stream URLs, credentials, and lyrics. It stays in the signed-in player's memory
+until explicitly downloaded or the player is disposed; it is not uploaded.
+
+These mechanisms cannot grant Brave's native YouTube/Spotify allowlist exemption,
+prevent OS process suspension, or force unsupported codecs to work. AAC remains
+opt-in, and physical Android/iPhone lock-screen and Bluetooth output still need
+device verification.
 
 ### Optional AAC compatibility
 
@@ -1831,7 +1868,7 @@ Authenticated library APIs (sessions and PATs):
 
 The pencil beside an MP3 song opens **Edit song metadata** in the library or job
 details. Edit title, artist, album, album artist, genre, year, track number, and disc
-number. Choose or remove artwork; uploads must be JPEG, PNG, WebP, or AVIF, at most 2 MB.
+number. Choose or remove artwork; uploads must be JPEG, PNG, WebP, or AVIF, at most 3 MB.
 Artwork retains its uploaded format in the MP3; AVIF previews require browser AVIF
 support. Cached thumbnails are generated as 192 by 192 AVIF images with FFmpeg.
 MP3 ratings appear as zero to five stars in playlist songs and job files. Choose

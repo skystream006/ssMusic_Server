@@ -422,8 +422,8 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
     if (!image) return;
     setError('');
     const type = image.type || (/\.avif$/i.test(image.name) ? 'image/avif' : '');
-    if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(type) || image.size > 2 * 1024 * 1024) {
-      setError('Choose a JPEG, PNG, WebP or AVIF image no larger than 2 MB.'); return;
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(type) || image.size > 3 * 1024 * 1024) {
+      setError('Choose a JPEG, PNG, WebP or AVIF image no larger than 3 MB.'); return;
     }
     setReadingImage(true);
     try {

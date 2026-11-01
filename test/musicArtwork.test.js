@@ -31,6 +31,31 @@ test('song artwork reads embedded covers without adding image data to song summa
   assert.equal(summary.artwork, undefined);
 });
 
+test('artwork accepts exactly 3 MB through uploads and readers and rejects one byte over', async (context) => {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-artwork-limit-')));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'Song.mp3');
+  const imageBuffer = Buffer.alloc(3 * 1024 * 1024);
+  png.copy(imageBuffer);
+  const artwork = `data:image/png;base64,${imageBuffer.toString('base64')}`;
+  await fs.writeFile(filePath, NodeID3.write({ title: 'Song' }, Buffer.from('audio')));
+  assert.ok((await updateSongMetadata(filePath, { artwork })).artwork === artwork);
+  assert.ok((await readSongArtwork(filePath)).imageBuffer.equals(imageBuffer));
+  assert.ok((await readSongMetadata(filePath, { bounded: true })).artwork === artwork);
+  const artworkDirectory = path.join(directory, '.thumbnails');
+  await fs.mkdir(artworkDirectory);
+  await fs.writeFile(path.join(artworkDirectory, 'Song.png'), imageBuffer);
+  assert.ok((await readDownloadedArtwork(filePath)).imageBuffer.equals(imageBuffer));
+  const oversized = Buffer.concat([imageBuffer, Buffer.alloc(1)]);
+  await assert.rejects(updateSongMetadata(filePath, { artwork: `data:image/png;base64,${oversized.toString('base64')}` }), { statusCode: 400 });
+  assert.ok((await readSongArtwork(filePath)).imageBuffer.equals(imageBuffer));
+  await fs.writeFile(filePath, NodeID3.write({ image: { mime: 'image/png', type: { id: 3 }, imageBuffer: oversized } }, Buffer.from('audio')));
+  assert.equal(await readSongArtwork(filePath), null);
+  assert.equal((await readSongMetadata(filePath)).artwork, null);
+  await fs.writeFile(path.join(artworkDirectory, 'Song.png'), oversized);
+  assert.equal(await readDownloadedArtwork(filePath), null);
+});
+
 test('song artwork ignores absent, unsupported, mismatched and oversized images', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-artwork-'));
   context.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -41,7 +66,7 @@ test('song artwork ignores absent, unsupported, mismatched and oversized images'
     { mime: 'image/png', imageBuffer: Buffer.from('<script>alert(1)</script>') },
     { mime: 'image/svg+xml', imageBuffer: Buffer.from('<svg/>') },
     { mime: 'image/jpeg', imageBuffer: png },
-    { mime: 'image/png', imageBuffer: Buffer.concat([png, Buffer.alloc(2 * 1024 * 1024)]) }
+    { mime: 'image/png', imageBuffer: Buffer.concat([png, Buffer.alloc(3 * 1024 * 1024)]) }
   ]) {
     await fs.writeFile(filePath, NodeID3.write(image ? { image: { ...image, type: { id: 3 } } } : {}, Buffer.from('audio')));
     assert.equal(await readSongArtwork(filePath), null);
@@ -224,7 +249,7 @@ test('downloaded artwork ignores oversized sidecars and unrelated media covers',
   const filePath = path.join(directory, 'Song.mp3');
   await fs.mkdir(path.join(directory, '.thumbnails'));
   await fs.writeFile(path.join(directory, '.thumbnails', 'Other.png'), png);
-  await fs.writeFile(path.join(directory, '.thumbnails', 'Song.avif'), Buffer.alloc(2 * 1024 * 1024 + 1));
+  await fs.writeFile(path.join(directory, '.thumbnails', 'Song.avif'), Buffer.alloc(3 * 1024 * 1024 + 1));
   assert.equal(await readDownloadedArtwork(filePath), null);
   await fs.writeFile(path.join(directory, '.thumbnails', 'Song.png'), png);
   assert.deepEqual(await readDownloadedArtwork(filePath), { mime: 'image/png', imageBuffer: png });
@@ -399,7 +424,7 @@ test('AVIF artwork uploads round-trip through MP3 metadata and cached AVIF thumb
     `data:image/avif;base64,${png.toString('base64')}`,
     `data:image/png;base64,${imageBuffer.toString('base64')}`,
     'data:image/avif;base64,YmFk',
-    `data:image/avif;base64,${Buffer.alloc(2 * 1024 * 1024 + 1).toString('base64')}`
+    `data:image/avif;base64,${Buffer.alloc(3 * 1024 * 1024 + 1).toString('base64')}`
   ]) await assert.rejects(updateSongMetadata(filePath, { artwork: invalidArtwork }), { statusCode: 400 });
   assert.deepEqual(await fs.readFile(filePath), original);
   await updateSongMetadata(filePath, { artwork: null });

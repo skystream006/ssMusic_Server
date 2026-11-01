@@ -73,7 +73,7 @@ export async function readDownloadedArtwork(filePath) {
     const handle = await fs.open(source, 'r');
     try {
       const stat = await handle.stat();
-      if (!stat.isFile() || !stat.size || stat.size > 2 * 1024 * 1024) continue;
+      if (!stat.isFile() || !stat.size || stat.size > 3 * 1024 * 1024) continue;
       const imageBuffer = Buffer.alloc(stat.size);
       const { bytesRead } = await handle.read(imageBuffer, 0, imageBuffer.length, 0);
       if (bytesRead !== imageBuffer.length) continue;
