@@ -425,6 +425,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
   const [replacingFile, setReplacingFile] = useState(null);
   const [sharingFile, setSharingFile] = useState(null);
   const [library, setLibrary] = useState(null);
+  const [actionJobResult, setActionJobResult] = useState(null);
   const [selectedId, setSelectedId] = useState(new URLSearchParams(window.location.search).get('playlist'));
   const [trackResult, setTrackResult] = useState(null);
   const [trackPage, setTrackPage] = useState(1);
@@ -578,16 +579,28 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
     replaceURL(`/${params}`);
   }
 
+  useEffect(() => {
+    if (!actionTrack) return;
+    let active = true;
+    const stop = startVisiblePolling(async () => {
+      const job = await request(`/api/jobs/${encodeURIComponent(actionTrack.jobId)}`);
+      if (active) setActionJobResult(job);
+    }, 5000);
+    return () => { active = false; stop(); };
+  }, [actionTrack?.jobId, request, refresh, playback.libraryRevision]);
+
   function songState(track) {
-    const job = track.sourceJob || track.job || sourceJobMap.get(track.jobId);
+    const liveJob = actionTrack && actionJobResult?.id === track.jobId ? actionJobResult : null;
+    const job = liveJob || track.sourceJob || track.job || sourceJobMap.get(track.jobId);
     const key = songKey(track);
-    const transcription = pendingTranscriptions[key] || track.transcription || job?.transcriptions?.[track.name];
+    const transcription = pendingTranscriptions[key] || (liveJob ? liveJob.transcriptions?.[track.name]
+      : track.transcription || job?.transcriptions?.[track.name]);
     const trackReadOnly = readOnly || track.readOnly === true;
     const canModify = !trackReadOnly && canModifyJob(user, job);
     const canRate = !trackReadOnly && canEditSong(user, job);
     const busy = ['queued', 'running'].includes(job?.status)
-      || songMutations.current.has(key) || transcription?.status === 'sent';
-    return { canModify, canRate, canEditMetadata: canRate, metadataDisabled: !canRate || busy, ratingDisabled: !canRate || busy,
+      || songMutations.current.has(key) || transcription?.status === 'sent' || Boolean(actionTrack && !liveJob);
+    return { canModify, canRate, canEditMetadata: canRate, busy, metadataDisabled: !canRate || busy, ratingDisabled: !canRate || busy,
       canChangePrivacy: canChangePrivacy(user, job, trackReadOnly, track), privacy: getFilePrivacy(track, job),
       transcription, deleting: Boolean(deletingFiles[key]),
       disabled: !canModify || busy };
@@ -642,6 +655,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
     songMutations.current.add(key);
     setPendingTranscriptions((current) => ({ ...current, [key]: { status: locking ? 'locking' : 'sent', requestedAt: new Date().toISOString(),
       options: { NoVocalsOnly: options.NoVocalsOnly === true } } }));
+    playback.refreshLibrary();
     setTranscriptionNotice('');
     setActionError('');
     try {
@@ -659,6 +673,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
         const remaining = { ...current }; delete remaining[key]; return remaining;
       });
       setRefresh((value) => value + 1);
+      playback.refreshLibrary();
     }
   }
 
@@ -824,6 +839,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
   }
 
   function moveSong(track, playlistId, move = true) {
+    if (songState(track).busy || savingRef.current) return;
     if (!playlistId) { setMovingSong(track); return; }
     return persistLibrary(move ? '/api/library/songs/move' : '/api/library/songs/transfer', 'POST', {
       version: libraryVersion.current, sourcePlaylistId: track.playlistId, playlistId,
@@ -1064,7 +1080,8 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
     onReplaceFile: setReplacingFile, onShareMedia: setSharingFile, onChangePrivacy: changeFilePrivacy,
     onMetadataSaved: metadataSaved, onRatingError: setActionError,
     saving: saving || (actionTrack ? !library : tracksLoading || searchPending), onMove: moveSong };
-  const actionJob = actionTrack && (sourceJobMap.get(actionTrack.jobId) || actionTrack.sourceJob || actionTrack.job);
+  const actionJob = actionTrack && (actionJobResult?.id === actionTrack.jobId ? actionJobResult
+    : sourceJobMap.get(actionTrack.jobId) || actionTrack.sourceJob || actionTrack.job);
   const menuTrack = actionTrack && { ...actionTrack, sourceJob: actionJob,
     playlistId: actionTrack.playlistId || (library && jobPlaylistId(library, actionJob || { id: actionTrack.jobId })) };
 

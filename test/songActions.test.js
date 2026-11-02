@@ -103,6 +103,32 @@ test('expanded Player song actions reuse the complete library menu and read-only
   }
 });
 
+test('expanded Player menu disables busy mutations but retains viewing and playback actions', () => {
+  const track = { jobId: 'job', name: 'Song.mp3', downloadUrl: '/download/song',
+    noVocalsVersion: { jobId: 'job', name: '[NoVocals]/Song.mp3' } };
+  const render = (busy) => renderToStaticMarkup(createElement(LibrarySongActions, {
+    track, request() {}, onPlayKaraoke() {}, className: 'expanded-song-actions',
+    libraryView: { tracks: [track], transcriptionActive: true, songState: () => ({
+      canModify: true, canEditMetadata: true, canChangePrivacy: true, busy, disabled: busy, metadataDisabled: busy
+    }) }
+  }));
+  for (const busy of [false, true]) {
+    const html = render(busy);
+    for (const label of ['Make file private: Song.mp3', 'Share Media Song.mp3', 'Edit metadata Song.mp3',
+      'Replace File Song.mp3', 'Transcribe Song.mp3', 'Delete song Song.mp3', 'Add/Move Song.mp3 to playlist']) {
+      const button = html.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0];
+      assert.ok(button, label);
+      assert.equal(button.includes('disabled=""'), busy, label);
+    }
+    assert.match(html, /aria-label="Download Song.mp3"/);
+    assert.doesNotMatch(html.match(/<button[^>]*aria-label="Play karaoke version of Song.mp3"[^>]*>/)?.[0], /disabled=/);
+  }
+  const html = renderToStaticMarkup(createElement(LibrarySongActions, {
+    track, request() {}, libraryView: { tracks: [], songState: () => ({ canModify: false, disabled: true, busy: false }) }
+  }));
+  assert.doesNotMatch(html.match(/<button[^>]*aria-label="Add\/Move Song.mp3 to playlist"[^>]*>/)?.[0], /disabled=/);
+});
+
 test('expanded Player action controller renders only its menu and disables mutations while loading', () => {
   const previousWindow = globalThis.window;
   globalThis.window = { location: { pathname: '/', search: '' } };
