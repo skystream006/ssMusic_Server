@@ -77,7 +77,7 @@ function ConfirmationDialog({ title, message, action, label, onAnswer }) {
   const dialogRef = useRef(null);
   const titleId = useId();
   const messageId = useId();
-  const ActionIcon = action === 'delete' ? Trash2 : action === 'stop' ? Square : action === 'rerun' ? RotateCcw : ExternalLink;
+  const ActionIcon = action === 'delete' ? Trash2 : action === 'stop' ? Square : action === 'rerun' ? RotateCcw : action === 'metadata' ? RefreshCw : ExternalLink;
   const actionLabel = label || (action === 'delete' ? 'Delete job' : action === 'stop' ? 'Stop job' : action === 'rerun' ? 'Rerun job' : 'Open details');
 
   useEffect(() => {
@@ -736,6 +736,7 @@ function JobPage({ id }) {
   ]);
   const { data, error } = usePolling(loadJob, POLL_INTERVAL, `${id}:${fileRevision}`);
   const [rerunning, setRerunning] = useState(false);
+  const [retrievingMetadata, setRetrievingMetadata] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deletingFiles, setDeletingFiles] = useState({});
@@ -757,7 +758,7 @@ function JobPage({ id }) {
   const hasPendingTranscription = Object.values(job?.transcriptions || {}).some((transcription) => transcription.status === 'sent');
   const canModify = canModifyJob(user, job);
   const canManage = canManageJob(user, job);
-  const transcriptionDisabled = !canModify || isActive || rerunning || stopping || deleting || editingContributors || savingTitle || savingPrivacy;
+  const transcriptionDisabled = !canModify || isActive || rerunning || retrievingMetadata || stopping || deleting || editingContributors || savingTitle || savingPrivacy;
   const mutationDisabled = transcriptionDisabled || hasPendingTranscription || Object.keys(pendingTranscriptions).length > 0 || Object.keys(deletingFiles).length > 0 || transcribingFile !== null;
 
   async function savePrivacy(file = null) {
@@ -840,6 +841,19 @@ function JobPage({ id }) {
     } catch (requestError) {
       setActionError(requestError.message);
     } finally { setStopping(false); }
+  }
+
+  async function retrieveMetadata() {
+    if (mutationDisabled) return;
+    if (!await confirm({ title: 'Retrieve Metadata?', message: 'Retrieve artists and images from the source for existing songs? Matching artist and artwork tags will be replaced; audio and other tags will be kept.', action: 'metadata', label: 'Retrieve Metadata' })) return;
+    setRetrievingMetadata(true);
+    setActionError('');
+    try {
+      await request(`/api/jobs/${encodeURIComponent(id)}/retrieve-metadata`, { method: 'POST' });
+      setFileRevision((revision) => revision + 1);
+    } catch (requestError) {
+      setActionError(requestError.message);
+    } finally { setRetrievingMetadata(false); }
   }
 
   async function rerun() {
@@ -932,6 +946,12 @@ function JobPage({ id }) {
             {!job.source && <button className="primary-button job-action-button" disabled={mutationDisabled} onClick={rerun} type="button">
               {rerunning ? <RefreshCw className="spin" size={17} /> : <RotateCcw size={17} />}
               {rerunning ? 'Starting' : 'Rerun job'}
+            </button>}
+            {!job.source && <button className="secondary-button job-action-button"
+              disabled={mutationDisabled || job.downloadType === 'video' || !job.files?.some((name) => /\.mp3$/i.test(name) && !isNoVocals({ name }))}
+              onClick={retrieveMetadata} type="button">
+              <RefreshCw className={retrievingMetadata ? 'spin' : undefined} size={17} />
+              {retrievingMetadata ? 'Starting' : 'Retrieve Metadata'}
             </button>}
             {canManage && <button className="danger-button job-action-button" disabled={mutationDisabled} onClick={remove} type="button">
               {deleting ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}

@@ -275,6 +275,30 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     } while (['queued', 'running'].includes(response.body.status));
     return response;
   }
+  await context.test('metadata retrieval allows owners and admins for sessions, PATs and mobile clients', async () => {
+    const route = '/api/jobs/metadata-route/retrieve-metadata';
+    assert.equal((await call(route, 'POST')).status, 401);
+    assert.equal((await call(route, 'POST', credentials.Admin[0])).status, 404);
+    const outputDir = path.join(outputRoot, 'metadata-route');
+    await fs.mkdir(outputDir);
+    await fs.writeFile(path.join(outputDir, 'Existing.mp3'), 'unchanged audio');
+    await fs.writeFile(path.join(outputDir, '.download-archive.txt'), 'youtube existing\n');
+    await writeJob(openDatabase(), { id: 'metadata-route', url: 'https://music.youtube.com/watch?v=metadata-route',
+      status: 'completed', playlistTitle: 'Metadata route', outputDir, files: ['Existing.mp3'],
+      initiatedBy: users.Owner, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    for (const headers of [...credentials.Other, ...credentials.Reader, mobileHeaders.Other, mobileHeaders.Reader]) {
+      assert.equal((await call(route, 'POST', headers)).status, 403);
+    }
+    for (const headers of [...credentials.Owner, mobileHeaders.Owner, ...credentials.Admin, mobileHeaders.Admin]) {
+      const response = await call(route, 'POST', headers);
+      assert.equal(response.status, 202, response.text);
+      await waitForJob('metadata-route', headers);
+    }
+    assert.equal(await fs.readFile(path.join(outputDir, 'Existing.mp3'), 'utf8'), 'unchanged audio');
+    assert.equal(await fs.readFile(path.join(outputDir, '.download-archive.txt'), 'utf8'), 'youtube existing\n');
+    assert.equal((await call('/api/jobs/metadata-route', 'DELETE', credentials.Admin[0])).status, 204);
+  });
+
   await context.test('Jobs Queue frontend route serves the app shell on direct navigation', async () => {
     for (const route of ['/admin/jobs-queue', '/admin/jobs-queue/']) {
       const response = await call(route);

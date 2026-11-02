@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -629,8 +630,8 @@ function removeQueuedJob(job) {
   queuedJobs.forEach((queued, position) => { queued.queuePosition = position + 1; });
 }
 
-function startJob(job) {
-  const execution = { controller: new AbortController(), active: false, done: null };
+function startJob(job, work = executeJobWork) {
+  const execution = { controller: new AbortController(), active: false, done: null, work };
   jobExecutions.set(job.id, execution);
   job.queuePosition = queuedJobs.push(job);
   execution.done = jobExecutionTail.then(() => {
@@ -725,7 +726,7 @@ async function finishStoppedJob(job) {
   delete job.pausedUntil;
   job.updatedAt = new Date().toISOString();
   appendJobOutput(job, '[system]\nStopped by user. Downloaded files have been kept.');
-  if (job.outputDir && !jobExecutions.get(job.id)?.publisher) {
+  if (job.outputDir && !jobExecutions.get(job.id)?.publisher && jobExecutions.get(job.id)?.work === executeJobWork) {
     job.files = await listDownloadedFiles(job.outputDir);
     await refreshSongMetadata(job);
   }
@@ -747,7 +748,7 @@ async function executeJob(job, execution) {
     runningJobsCount += 1;
     counted = true;
     liveJobOutputs.set(job.id, { output: '', stream: null, truncated: false });
-    await executeJobWork(job, signal);
+    await execution.work(job, signal);
     signal.throwIfAborted();
   } catch (error) {
     if (!signal.aborted) throw error;
@@ -867,7 +868,11 @@ async function executeJobWork(job, signal) {
       '--format', 'bestaudio',
       '--extract-audio',
       '--audio-format', 'mp3',
-      '--audio-quality', '160K'
+      '--audio-quality', '160K',
+      ...['uploader', 'channel', 'creator', 'artist'].flatMap((field) => [
+        '--parse-metadata', `%(${field}|)s:%(meta_artist)s`
+      ]),
+      '--embed-metadata'
     ]),
     '--ffmpeg-location',
     ffmpegLocation,
@@ -1184,6 +1189,88 @@ export async function stopJob(id, user = null) {
   } finally {
     jobMutations.delete(id);
   }
+}
+
+async function retrieveJobMetadataWork(job, signal) {
+  job.status = 'running';
+  job.updatedAt = new Date().toISOString();
+  await persistJob(job);
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-metadata-'));
+  let commandError;
+  let updated = 0;
+  const matched = new Set();
+  try {
+    const args = ['--skip-download', '--write-info-json', '--write-thumbnail', '--ignore-errors',
+      '--no-write-playlist-metafiles', job.isPlaylist ? '--yes-playlist' : '--no-playlist',
+      '--js-runtimes', `deno:${resolveDenoPath()}`, '--output', path.join(temporary, '%(title)s.%(ext)s'),
+      '--output', `thumbnail:${path.join(temporary, '.thumbnails', '%(title)s.%(ext)s')}`, job.url];
+    await runJobCommand(job, resolveYtDlpPath(), args, { includeCommand: true, signal }).catch((error) => {
+      commandError = error;
+    });
+    signal.throwIfAborted();
+    const outputDir = await fs.realpath(job.outputDir);
+    const eligible = job.files.filter((name) => /\.mp3$/i.test(name) && !isNoVocals({ name }));
+    for (const entry of await fs.readdir(temporary, { withFileTypes: true })) {
+      signal.throwIfAborted();
+      if (!entry.isFile() || !entry.name.endsWith('.info.json')) continue;
+      const info = JSON.parse(await fs.readFile(path.join(temporary, entry.name), 'utf8'));
+      const name = await findExistingMediaFile(job, info.title)
+        || (!job.isPlaylist && eligible.length === 1 ? eligible[0] : null);
+      if (!name || !eligible.includes(name) || matched.has(name)) continue;
+      const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
+      if (!filePath || !isFileInsideJobFolder({ outputDir }, filePath)) continue;
+      const changes = {};
+      const artist = [info.artist, info.creator, info.channel, info.uploader]
+        .find((value) => typeof value === 'string' && value.trim());
+      if (artist) changes.artist = artist.trim();
+      const image = await readDownloadedArtwork(path.join(temporary, `${entry.name.slice(0, -'.info.json'.length)}.mp3`));
+      if (image) changes.artwork = `data:image/avif;base64,${(await encodeThumbnail(image)).toString('base64')}`;
+      signal.throwIfAborted();
+      if (Object.keys(changes).length) {
+        await updateSongMetadata(filePath, changes, { includeLyrics: false });
+        await refreshSongMetadata(job, [name]);
+        await refreshJobThumbnails(job, [name], { force: true });
+        updated += 1;
+        appendJobOutput(job, `[system]\nRetrieved metadata: ${name}`);
+        await persistJob(job);
+      }
+      matched.add(name);
+    }
+    if (commandError) throw commandError;
+    const skipped = eligible.length - updated;
+    job.status = skipped ? 'partially_completed' : 'completed';
+    job.warning = skipped ? `Metadata was not updated for ${skipped} song(s); no matching source metadata was available.` : null;
+    appendJobOutput(job, `[system]\nMetadata retrieval complete: ${updated} updated, ${skipped} unchanged.`);
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+  } finally {
+    await fs.rm(temporary, { recursive: true, force: true });
+  }
+}
+
+export async function retrieveJobMetadata(id, user = null) {
+  const job = await getJob(id);
+  if (!job) return null;
+  await assertCanModifyJob(job, user, true);
+  assertJobIsIdle(job, 'retrieve metadata for');
+  if (job.source || job.downloadType === 'video' || !job.outputDir
+    || !job.files.some((name) => /\.mp3$/i.test(name) && !isNoVocals({ name }))) {
+    throw Object.assign(new Error('Metadata retrieval requires downloaded audio files'), { statusCode: 400 });
+  }
+  jobMutations.add(id);
+  try {
+    job.status = 'queued';
+    job.error = null;
+    job.warning = null;
+    job.command = null;
+    job.output = null;
+    delete job.pausedUntil;
+    delete job.commandProgress;
+    job.updatedAt = new Date().toISOString();
+    await persistJob(job);
+    startJob(job, retrieveJobMetadataWork);
+    return job;
+  } finally { jobMutations.delete(id); }
 }
 
 export async function rerunJob(id, user = null) {

@@ -1150,8 +1150,9 @@ code { font: 400 11px 'DM Mono', monospace; }
   td, th { padding-left: 8px; padding-right: 8px; }
   .job-name { min-width: 170px; max-width: 240px; }
   .job-row-actions { display: grid; grid-template-columns: repeat(3, 44px); min-width: 144px; }
-  .detail-heading { align-items: flex-start; }
-  .detail-actions { align-items: flex-end; }
+  .detail-heading { align-items: stretch; flex-direction: column; gap: 20px; }
+  .detail-actions { flex-direction: row; flex-wrap: wrap; align-items: stretch; }
+  .detail-actions .job-action-button { flex: 1 1 138px; width: auto; min-height: 44px; }
   .record-art { display: none; }
   .detail-meta { align-items: flex-start; flex-direction: column; gap: 8px; }
   .info-panel dl { grid-template-columns: 1fr; }
