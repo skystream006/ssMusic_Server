@@ -49,7 +49,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import appIcon from './assets/ic_launcher.png';
-import MusicPlayer, { PlaybackProvider, PlaybackSettings, usePlayback } from './MusicPlayer.jsx';
+import MusicPlayer, { PlaybackProvider, PlaybackSettings, SongArtwork, usePlayback } from './MusicPlayer.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
 import PublicMedia, { PublicPlaylist } from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
@@ -1023,7 +1023,7 @@ function JobPage({ id }) {
                 return (
                 <li key={file.name}>
                   {file.isPlayable ? <a className="song-file-link" href={`/job/${encodeURIComponent(id)}/player?${new URLSearchParams({ song: file.name, play: '1' })}`} aria-label={`Play ${file.name}`} title="Play media">
-                    <span className="file-icon">{file.mediaType === 'video' ? <Play size={19} /> : <FileAudio size={19} />}</span>
+                    <SongArtwork track={file} />
                     <span className="file-song-info"><strong>{file.title || file.name}</strong>
                       {(file.artist || file.album) && <span className="file-song-credit">{[file.artist, file.album].filter(Boolean).join(' / ')}</span>}
                       <small>{file.title ? `${file.name} / ` : ''}{formatBytes(file.sizeBytes)}</small>
