@@ -1455,6 +1455,30 @@ test('paused job checkpoints survive for inspection after restart while manual r
   assert.equal(rerun.output, '[stdout]\nFresh manual rerun');
 });
 
+test('process output size totals saved UTF-8 logs across all jobs and resets after cleanup', { timeout: 10_000 }, async (context) => {
+  const { manager } = await makeQueueFixture(context);
+  const database = openDatabase();
+  const admin = { id: 'admin', role: 'admin' };
+  assert.deepEqual(await manager.getProcessOutputSize(admin), { totalSizeBytes: 0 });
+  for (const user of [null, { id: 'reader', role: 'user' }, { id: 'shared', role: 'shared' }]) {
+    await assert.rejects(manager.getProcessOutputSize(user), { statusCode: 403 });
+  }
+  const outputs = ['Saved\n', 'Caf\u00e9 \u97f3\u4e50 \ud83c\udfb5', null, '', undefined];
+  for (const [index, output] of outputs.entries()) {
+    await writeJob(database, { id: `size-${index}`, url: '', status: 'completed', files: [],
+      initiatedBy: { id: index === 0 ? 'first-owner' : 'other-owner' }, private: index === 1,
+      playlistTitle: 'Output size fixture', output, createdAt: new Date().toISOString() });
+  }
+  const totalSizeBytes = outputs.reduce((total, output) => total + Buffer.byteLength(output || '', 'utf8'), 0);
+  assert.deepEqual(await manager.getProcessOutputSize(admin), { totalSizeBytes });
+  const updated = await manager.getJob('size-0');
+  updated.output += 'Next\n';
+  await writeJob(database, updated);
+  assert.deepEqual(await manager.getProcessOutputSize(admin), { totalSizeBytes: totalSizeBytes + 5 });
+  await manager.clearProcessOutputs(admin);
+  assert.deepEqual(await manager.getProcessOutputSize(admin), { totalSizeBytes: 0 });
+});
+
 test('process output cleanup is admin-only and cannot be undone by stale job saves', { timeout: 10_000 }, async (context) => {
   const { manager } = await makeQueueFixture(context);
   const database = openDatabase();

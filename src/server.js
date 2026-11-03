@@ -8,7 +8,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { clearProcessOutputs, createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, getLiveJobOutput, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, retrieveJobMetadata, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, stopJob, transcribeJobFile } from './jobManager.js';
+import { clearProcessOutputs, createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, getLiveJobOutput, getProcessOutputSize, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, retrieveJobMetadata, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, stopJob, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
@@ -137,6 +137,14 @@ app.use('/api/admin/media-shares', requireAdmin, mediaShareHeaders, adminMediaSh
 app.get('/api/admin/jobs-queue', requireAdmin, (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ ...getJobQueue(req.user), maintenance: isUpdateInProgress(), rateLimit: getJobRateLimit() });
+});
+app.get('/api/admin/jobs/process-outputs', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json(await getProcessOutputSize(req.user));
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message });
+  }
 });
 app.delete('/api/admin/jobs/process-outputs', requireAdmin, async (req, res) => {
   res.set('Cache-Control', 'no-store');

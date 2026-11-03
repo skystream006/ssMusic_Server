@@ -198,6 +198,7 @@ function usePolling(loader, interval = POLL_INTERVAL, pollingKey = 'default') {
 const loadJobs = () => request('/api/jobs');
 const loadJobQueue = () => request('/api/admin/jobs-queue');
 const loadJobRateLimit = () => request('/api/jobs/status');
+const loadProcessOutputSize = () => request('/api/admin/jobs/process-outputs');
 const loadBackup = () => request('/api/library/backup');
 const loadHealth = () => request('/api/health');
 
@@ -334,6 +335,20 @@ function BackupJobStatus() {
       {backup.error && <div className="notice error" role="alert"><CircleAlert size={16} />{backup.error}</div>}
     </> : !error && <p className="refresh-note" role="status">Loading backup status</p>}
   </section>;
+}
+
+function ProcessOutputCleanup({ clearing, onClear, revision }) {
+  const { data: size, error } = usePolling(loadProcessOutputSize, POLL_INTERVAL, revision);
+  const sizeId = useId();
+  return <div className="process-output-task">
+    <button className="secondary-button" type="button" disabled={clearing} onClick={onClear} aria-describedby={sizeId}>
+      {clearing ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}Clear all process outputs
+    </button>
+    <small id={sizeId} className="process-output-size" role="status"
+      title={error || (size ? `${size.totalSizeBytes.toLocaleString()} bytes of saved process output (UTF-8)` : undefined)}>
+      Total output: {error ? 'Unavailable' : size ? formatBytes(size.totalSizeBytes) : 'Loading...'}
+    </small>
+  </div>;
 }
 
 function JobsPage({ tab = 'tasks' }) {
@@ -581,9 +596,7 @@ function JobsPage({ tab = 'tasks' }) {
         <div className="section-title"><div><span>02</span><h2 id="featured-tasks-heading">Featured Tasks</h2></div></div>
         <div className="featured-task-actions">
           <button className="secondary-button" type="button" onClick={() => setImporting(true)}><Upload size={17} />Import media</button>
-          {user.role === 'admin' && <button className="secondary-button" type="button" disabled={clearingOutputs} onClick={clearAllProcessOutputs}>
-            {clearingOutputs ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}Clear all process outputs
-          </button>}
+          {user.role === 'admin' && <ProcessOutputCleanup clearing={clearingOutputs} onClear={clearAllProcessOutputs} revision={revision} />}
         </div>
         {outputCleanupMessage && <div className={`notice ${outputCleanupMessage.type}`} role={outputCleanupMessage.type === 'error' ? 'alert' : 'status'}>{outputCleanupMessage.text}</div>}
       </section>

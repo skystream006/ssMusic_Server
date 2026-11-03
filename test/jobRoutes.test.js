@@ -222,9 +222,11 @@ test('job storage totals and process output cleanup enforce HTTP permissions', {
   await fs.writeFile(path.join(outputDir, 'Open.wav'), Buffer.alloc(9));
   assert.equal((await call('/api/jobs', credentials.Owner[0])).body.find((job) => job.id === 'stored-output').totalSizeBytes, 38);
   const route = '/api/admin/jobs/process-outputs';
-  assert.equal((await call(route, {}, 'DELETE')).status, 401);
-  for (const name of ['Owner', 'Other', 'Reader']) {
-    for (const headers of credentials[name]) assert.equal((await call(route, headers, 'DELETE')).status, 403);
+  for (const method of ['GET', 'DELETE']) {
+    assert.equal((await call(route, {}, method)).status, 401);
+    for (const name of ['Owner', 'Other', 'Reader']) {
+      for (const headers of credentials[name]) assert.equal((await call(route, headers, method)).status, 403);
+    }
   }
   assert.equal((await readPostgresJob(database, 'private-output')).output, 'Private process output');
   for (const [index, headers] of credentials.Admin.entries()) {
@@ -232,6 +234,10 @@ test('job storage totals and process output cleanup enforce HTTP permissions', {
       const job = await readPostgresJob(database, 'stored-output');
       await writeJob(database, { ...job, output: 'Another process output' });
     }
+    const size = await call(route, headers);
+    assert.equal(size.status, 200);
+    assert.equal(size.headers['cache-control'], 'no-store');
+    assert.deepEqual(size.body, { totalSizeBytes: Buffer.byteLength(index ? 'Another process output' : 'Old failed command outputPrivate process output', 'utf8') });
     const response = await call(route, headers, 'DELETE');
     assert.equal(response.status, 200);
     assert.equal(response.headers['cache-control'], 'no-store');
@@ -241,12 +247,14 @@ test('job storage totals and process output cleanup enforce HTTP permissions', {
     assert.equal(job.output, null);
     assert.equal(job.status, 'failed');
     assert.equal(Object.hasOwn(job, 'outputRevision'), false);
+    assert.deepEqual((await call(route, headers)).body, { totalSizeBytes: 0 });
   }
   assert.deepEqual((await call(route, credentials.Admin[0], 'DELETE')).body, { clearedJobs: 0 });
   for (const [name, size] of sizes) assert.equal((await fs.stat(path.join(outputDir, name))).size, name === 'Open.wav' ? 9 : size);
   await stopServer();
   await startServer();
   assert.equal((await call('/api/jobs/stored-output', credentials.Owner[0])).body.output, null);
+  assert.deepEqual((await call(route, credentials.Admin[0])).body, { totalSizeBytes: 0 });
   assert.equal((await call('/api/jobs', credentials.Other[0])).body.find((job) => job.id === 'stored-output').totalSizeBytes, 14);
 });
 

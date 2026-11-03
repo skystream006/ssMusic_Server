@@ -280,6 +280,13 @@ export function getLiveJobOutput(job) {
   };
 }
 
+export async function getProcessOutputSize(user) {
+  if (user?.role !== 'admin') throw Object.assign(new Error('Administrator access required'), { statusCode: 403 });
+  const { totalSizeBytes } = await database.prepare(`SELECT
+    COALESCE(SUM(octet_length(COALESCE(data->>'output', ''))), 0) AS "totalSizeBytes" FROM jobs`).get();
+  return { totalSizeBytes: Number(totalSizeBytes) };
+}
+
 export async function clearProcessOutputs(user) {
   if (user?.role !== 'admin') throw Object.assign(new Error('Administrator access required'), { statusCode: 403 });
   const operation = processOutputCleanup.then(async () => {

@@ -46,6 +46,12 @@ job status, and command history fields are kept; running jobs continue and can
 produce new output. The admin-only `DELETE /api/admin/jobs/process-outputs`
 endpoint returns `{ clearedJobs }`.
 
+The clear action shows the total saved process-output size across all users,
+including private jobs. It refreshes every five seconds while Tasks is visible
+and after a successful cleanup. This measures UTF-8 text bytes, not compressed
+database storage or unsaved live output. The admin-only
+`GET /api/admin/jobs/process-outputs` endpoint returns `{ totalSizeBytes }`.
+
 Recent Jobs includes a sortable **Total Size** column (`totalSizeBytes` in
 `GET /api/jobs`). It sums current file sizes in each job's visible inventory,
 including NoVocals files and sidecars, without duplicate paths or missing files.

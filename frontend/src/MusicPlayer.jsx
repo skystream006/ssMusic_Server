@@ -222,6 +222,12 @@ export function NowPlayingPanel({ panel, onChange, expanded = true, wide = false
   </section>;
 }
 
+function SongMetadataLine({ track, fallback = '' }) {
+  const text = [track?.artist, track?.album, track?.performerInfo]
+    .filter((value) => typeof value === 'string' && value.trim()).join(' / ') || fallback;
+  return <small title={text}>{text}</small>;
+}
+
 export function PlaybackQueueRow({ track, number, current, user, sourceJob, request, onSelect, onMetadataSaved }) {
   const [ratingError, setRatingError] = useState('');
   const job = track.sourceJob || track.job || sourceJob;
@@ -232,7 +238,7 @@ export function PlaybackQueueRow({ track, number, current, user, sourceJob, requ
     <button className="queue-song-select" type="button" aria-label={`Play ${track.title || track.name}`}
       aria-current={current ? 'true' : undefined} onClick={() => onSelect(track)}>
       <span className="queue-track-number">{number}</span>
-      <SongArtwork track={track} /><span className="queue-track-title"><strong>{track.title || track.name.split('/').at(-1)}</strong><small>{track.artist || track.playlistTitle}</small></span>
+      <SongArtwork track={track} /><span className="queue-track-title"><strong>{track.title || track.name.split('/').at(-1)}</strong><SongMetadataLine track={track} fallback={track.playlistTitle} /></span>
     </button>
     {/\.mp3$/i.test(track.name) && <ListSongRating file={track} jobId={track.jobId} request={request}
       canModify={canRate} disabled={busy} onError={setRatingError} onSaved={(result) => onMetadataSaved(track, result)} />}
@@ -318,6 +324,7 @@ function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mou
     <div className="expanded-track-heading"><h2>{current.title || song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</h2>
       {(current.artist || song.artist) && <p>{current.artist || song.artist}</p>}
       {(current.album || song.album) && <p className="expanded-album">{current.album || song.album}</p>}
+      {current.performerInfo && <p className="expanded-album-artist">{current.performerInfo}</p>}
     </div>
     {supportsRating && <div className="expanded-rating">
       <ListSongRating file={{ ...song, rating: song.rating ?? details?.rating }} jobId={song.jobId} request={request}
@@ -940,7 +947,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
 
   useEffect(() => {
     setMetadata(song ? { title: song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, ''),
-      artist: song.artist || '', album: song.album || '', rating: song.rating } : null);
+      artist: song.artist || '', album: song.album || '', performerInfo: song.performerInfo || '', rating: song.rating } : null);
     setLyricsLoaded(false);
     setLyricError('');
     if (!mediaSourcePlayback.blocked) setPlayError('');
@@ -1191,7 +1198,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   function updateMetadata(jobId, name, result, readSnapshot = null) {
     if (selectedRef.current === JSON.stringify([jobId, name])) setMetadata((current) => mergePlaybackMetadata(current, result, readSnapshot));
     setSongs((current) => current?.map((track) => track.jobId === jobId && track.name === name
-      ? mergePlaybackMetadata(track, { title: result.title, artist: result.artist, album: result.album, rating: result.rating,
+      ? mergePlaybackMetadata(track, { title: result.title, artist: result.artist, album: result.album, performerInfo: result.performerInfo, rating: result.rating,
         transcriptionLocked: result.transcriptionLocked }, readSnapshot) : track));
   }
 
@@ -1510,7 +1517,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
                 onClick={() => playLibrary(libraryView, track)}>
                 <span className="song-number">{mediaType(track.name) === 'video' ? <Film size={15} aria-label="Movie" /> : current && playing ? <Music2 size={15} /> : track.orderNumber ?? trackIndex + 1}</span>
                 <SongArtwork track={track} />
-                <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><small>{track.artist || (track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original')}</small>
+                <span><strong>{track.title || track.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</strong><SongMetadataLine track={track} fallback={track.name.startsWith('[NoVocals]/') ? 'Instrumental' : track.playlistTitle || 'Original'} />
                   {privacy.private && <small><Lock size={12} /> {privacy.inherited ? 'Inherited privacy — owner only' : 'Private file — owner only'}</small>}
                   <TranscriptionStatus transcription={action.transcription} /></span>
               </button></div>
@@ -1550,7 +1557,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           title={panel ? 'Collapse now playing' : 'Expand now playing'} aria-label={panel ? 'Collapse now playing' : 'Expand now playing'}
           aria-expanded={Boolean(panel)} aria-controls={panel ? 'now-playing-expanded' : undefined} onClick={() => setPanel(panel ? null : 'player')}>
           <span className={`dock-artwork ${playing && !isVideo ? 'is-playing' : ''}`}>{isVideo ? <Film size={30} /> : artwork ? <img src={artwork} alt="Album cover" /> : <Disc3 size={30} />}</span>
-          <span className="dock-summary"><strong>{metadata?.title || song?.name.split('/').at(-1).replace(/\.[^.]+$/, '') || 'Nothing playing'}</strong><small>{metadata?.artist || song?.playlistTitle || 'ssMusic Player'}</small></span>
+          <span className="dock-summary"><strong>{metadata?.title || song?.name.split('/').at(-1).replace(/\.[^.]+$/, '') || 'Nothing playing'}</strong><SongMetadataLine track={{ ...song, ...metadata }} fallback={song?.playlistTitle || 'ssMusic Player'} /></span>
           {panel ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
         </button><KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} /></div>
         <div className="dock-controls"><div className="dock-transport">
@@ -1593,7 +1600,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         <div className="playback-main">
           <div className="track-heading"><div><span>{song.name.startsWith('[NoVocals]/') ? 'NoVocals' : 'Original'}</span>
             <h2>{metadata?.title || song.name.split('/').at(-1)}</h2>
-            {metadata?.artist && <p>{metadata.artist}{metadata.album ? ` / ${metadata.album}` : ''}</p>}
+            <SongMetadataLine track={{ ...song, ...metadata }} />
           </div><span className="track-position">{index + 1} / {songs.length}</span></div>
           <div className="transport-actions">
             <KaraokeButton track={song} tracks={songs} onPlay={playKaraoke} />

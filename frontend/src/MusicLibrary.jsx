@@ -640,8 +640,10 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
   function metadataSaved(file, result) {
     playback.updateMetadata(file.jobId, file.name, result);
     setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(file)
-      ? { ...track, title: result.title, artist: result.artist, album: result.album, rating: result.rating,
-        transcriptionLocked: result.transcriptionLocked } : track) } : current);
+      ? { ...track, title: result.title, artist: result.artist, album: result.album, performerInfo: result.performerInfo, rating: result.rating,
+        genre: result.genre, year: result.year, trackNumber: result.trackNumber, partOfSet: result.partOfSet,
+        transcriptionLocked: result.transcriptionLocked,
+        ...(Object.hasOwn(result, 'artworkUrl') ? { artworkUrl: result.artworkUrl } : {}) } : track) } : current);
       if (actionTrack) playback.refreshLibrary();
   }
 
@@ -1115,8 +1117,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
     {transcribingFile && <TranscriptionDialog file={transcribingFile} serviceActive={transcriptionActive} onClose={() => setTranscribingFile(null)} onSubmit={transcribe} />}
     {sharingFile && <ShareMediaDialog file={{ ...sharingFile, private: songState(sharingFile).privacy.private }} jobId={sharingFile.jobId} request={request} onClose={() => setSharingFile(null)} />}
     {editingMetadata && <MetadataDialog file={editingMetadata} jobId={editingMetadata.jobId} request={request} readOnly={!songState(editingMetadata).canEditMetadata} onClose={() => setEditingMetadata(null)} onSaved={(result) => {
-      metadataSaved(editingMetadata, result);
-      setRefresh((value) => value + 1);
+      metadataSaved(editingMetadata, { ...result, artworkUrl: result.artwork ?? null });
     }} />}
     {replacingFile && <ReplaceFileDialog file={replacingFile} jobId={replacingFile.jobId} request={request} onClose={() => setReplacingFile(null)} onSaved={(result) => {
       playback.replaceFile(replacingFile.jobId, replacingFile.name, result);

@@ -982,6 +982,11 @@ test('music-page metadata saves update rows in place without refreshing the sort
   assert.match(handler, /title: result\.title/);
   assert.match(handler, /rating: result\.rating/);
   assert.doesNotMatch(handler, /setRefresh|request\(|\.sort\(|setTrackSort/);
+  const saved = library.match(/\{editingMetadata && <MetadataDialog[\s\S]*?onSaved=\{\(result\) => \{([\s\S]*?)\n    \}\} \/>/)?.[1];
+  assert.ok(saved);
+  assert.match(saved, /metadataSaved\(editingMetadata/);
+  assert.match(saved, /artworkUrl: result\.artwork \?\? null/);
+  assert.doesNotMatch(saved, /setRefresh|refreshLibrary|request\(/);
 });
 
 test('song search normalization folds Vietnamese accents and crossed D without changing literal search characters', () => {
@@ -1731,6 +1736,32 @@ test('replacing queued audio also refreshes nested karaoke versions without losi
   assert.equal(queue[1].streamUrl, '/old');
   assert.equal(queueSongNext(updated, JSON.stringify(['job', original.name]), updated[0].noVocalsVersion)[1].streamUrl, '/new');
   assert.equal(replaceSongFile(null, 'job', file.name, file), undefined);
+});
+
+test('library and queue rows show artist, album and album artist with missing-field fallbacks', () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { search: '' } };
+  try {
+    for (const [metadata, expected] of [
+      [{ artist: 'Track artist', album: 'Album title', performerInfo: 'Album artist' }, 'Track artist / Album title / Album artist'],
+      [{ album: 'Album title', performerInfo: 'Album artist' }, 'Album title / Album artist'],
+      [{ artist: 'Track artist' }, 'Track artist'],
+      [{ performerInfo: 'Album artist' }, 'Album artist'],
+      [{ artist: ' ', album: '', performerInfo: null }, 'Playlist']
+    ]) {
+      const track = { jobId: 'job', name: 'Song.mp3', playlistTitle: 'Playlist', ...metadata };
+      const library = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
+        libraryView: { readOnly: true, tracks: [track], title: 'Playlist', selectedId: 'playlist',
+          songState: () => ({ canModify: false, disabled: true }) }
+      })));
+      const queue = renderToStaticMarkup(createElement(PlaybackQueueRow, { track, number: 1,
+        user: { id: 'reader', role: 'shared' }, request() {}, onSelect() {}, onMetadataSaved() {} }));
+      for (const html of [library, queue]) assert.ok(html.includes(`<small title="${expected}">${expected}</small>`), expected);
+    }
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
 });
 
 test('track search matches artist, album and other song metadata in unpaged views', () => {
