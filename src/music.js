@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { fileTypeFromBuffer } from 'file-type';
 import { songMetadataFields as metadataFields } from './library.js';
+import { normalizeVideoUrl } from './utils.js';
 
 const ratingBytes = [0, 1, 64, 128, 196, 255];
 const summaryCache = new Map();
@@ -100,6 +101,16 @@ export async function readSongSummary(filePath, stat) {
   if (summaryCache.size >= 1000) summaryCache.delete(summaryCache.keys().next().value);
   summaryCache.set(filePath, { signature, summary });
   return summary;
+}
+
+export async function readSongSourceUrl(filePath) {
+  if (path.extname(filePath).toLowerCase() !== '.mp3') return null;
+  const tags = await readBoundedId3Tags(filePath, { include: ['WOAS', 'WOAF', 'WXXX', 'TXXX', 'COMM'] });
+  const urls = [tags.audioSourceUrl, tags.fileUrl, tags.comment?.text,
+    ...(Array.isArray(tags.userDefinedUrl) ? tags.userDefinedUrl.map((entry) => entry.url) : []),
+    ...(Array.isArray(tags.userDefinedText) ? tags.userDefinedText
+      .filter((entry) => /^(purl|url|source|webpage_url)$/i.test(entry.description)).map((entry) => entry.value) : [])];
+  return urls.map((url) => normalizeVideoUrl(typeof url === 'string' ? url.trim() : url)).find(Boolean) || null;
 }
 
 export async function readSongArtwork(filePath) {

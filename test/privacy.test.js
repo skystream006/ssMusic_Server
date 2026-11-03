@@ -93,6 +93,7 @@ test('privacy defaults public and permits only the owning user, never an adminis
     files: ['Public.mp3', 'Secret.mp3', '[NoVocals]/Different.mp3'],
     privateFiles: ['Secret.mp3'], output: 'Secret.mp3', command: ['Secret.mp3'], logs: ['Secret.mp3'],
     error: 'Secret.mp3', warning: 'Secret.mp3',
+    sourceSongs: [{ title: 'Secret', url: 'https://youtu.be/abcdefghijk' }],
     songMetadata: { 'Public.mp3': { title: 'Public' }, 'Secret.mp3': { title: 'Secret' } },
     transcriptions: { 'Secret.mp3': { noVocalsName: '[NoVocals]/Different.mp3', status: 'sent' } } };
   assert.equal(canReadJob(job, null), true);
@@ -114,6 +115,8 @@ test('privacy defaults public and permits only the owning user, never an adminis
   assert.equal(canReadFile({ private: true }, 'Secret.mp3', { role: 'admin' }), false);
   assert.equal(canReadJob({ private: true }, {}), false);
   const clone = visibleJob(job, { id: 'owner' });
+  assert.equal(clone.sourceSongs, undefined);
+  assert.equal(job.sourceSongs[0].title, 'Secret');
   clone.songMetadata['Secret.mp3'].title = 'Changed';
   assert.equal(job.songMetadata['Secret.mp3'].title, 'Secret');
 });

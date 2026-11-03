@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +9,8 @@ import { openDatabase, writeJob, withTransaction } from './database.js';
 import { deletePostgresJob, indexPostgresSongMetadata, normalizePostgresSearchIndex, readPostgresJob, readPostgresJobs, updatePostgresSong } from './postgresCatalog.js';
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
-import { readSongArtwork, readSongMetadata, readSongSummary, updateSongMetadata } from './music.js';
+import { readSongArtwork, readSongMetadata, readSongSourceUrl, readSongSummary, updateSongMetadata } from './music.js';
+import { retrieveYoutubeMetadata } from './youtubeMetadata.js';
 import { encodeThumbnail, readDownloadedArtwork, refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
 import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
@@ -335,7 +335,7 @@ function runCommand(command, args, signal, onOutput) {
 }
 
 function isPrivateVideoOnlyOutput(output = '') {
-  const errorLines = output
+  const errorLines = (output ?? '')
     .split(/\r?\n/)
     .filter((line) => /^(?:ERROR|WARNING):/i.test(line.trim()));
   return errorLines.some((line) => privateVideoPattern.test(line))
@@ -630,14 +630,22 @@ function removeQueuedJob(job) {
   queuedJobs.forEach((queued, position) => { queued.queuePosition = position + 1; });
 }
 
-function startJob(job, work = executeJobWork) {
-  const execution = { controller: new AbortController(), active: false, done: null, work };
+function startJob(job, { metadata = false } = {}) {
+  const execution = { controller: new AbortController(), active: false, done: null, metadata, enumerating: metadata };
   jobExecutions.set(job.id, execution);
   job.queuePosition = queuedJobs.push(job);
-  execution.done = jobExecutionTail.then(() => {
+  const queuedWork = jobExecutionTail.then(() => {
     if (!execution.controller.signal.aborted) return executeJob(job, execution);
+  });
+  execution.done = queuedWork.then(async () => {
+    if (!metadata || execution.controller.signal.aborted) return;
+    execution.enumerating = false;
+    await retrieveJobMetadataWork(job, execution.controller.signal);
   }).catch(async (error) => {
-    if (execution.controller.signal.aborted) return;
+    if (execution.controller.signal.aborted) {
+      if (metadata && execution.active && !execution.enumerating) await finishStoppedJob(job);
+      return;
+    }
     removeQueuedJob(job);
     job.status = 'failed';
     job.error = error.message;
@@ -651,7 +659,8 @@ function startJob(job, work = executeJobWork) {
   }).finally(() => {
     if (jobExecutions.get(job.id) === execution) jobExecutions.delete(job.id);
   });
-  jobExecutionTail = execution.done;
+  jobExecutionTail = metadata ? queuedWork.catch(() => {}) : execution.done;
+  execution.done.catch((error) => console.error('Unable to persist job:', error.message));
 }
 
 function hasJobAccess(job, user, allowContributors = false) {
@@ -726,7 +735,7 @@ async function finishStoppedJob(job) {
   delete job.pausedUntil;
   job.updatedAt = new Date().toISOString();
   appendJobOutput(job, '[system]\nStopped by user. Downloaded files have been kept.');
-  if (job.outputDir && !jobExecutions.get(job.id)?.publisher && jobExecutions.get(job.id)?.work === executeJobWork) {
+  if (job.outputDir && !jobExecutions.get(job.id)?.publisher && !jobExecutions.get(job.id)?.metadata) {
     job.files = await listDownloadedFiles(job.outputDir);
     await refreshSongMetadata(job);
   }
@@ -748,7 +757,19 @@ async function executeJob(job, execution) {
     runningJobsCount += 1;
     counted = true;
     liveJobOutputs.set(job.id, { output: '', stream: null, truncated: false });
-    await execution.work(job, signal);
+    if (execution.metadata) {
+      job.status = 'running';
+      job.updatedAt = new Date().toISOString();
+      appendJobOutput(job, '[system]\nEnumerating playlist video URLs with yt-dlp; no media will be downloaded.');
+      await persistJob(job);
+      const source = await getSourceMetadata(job, resolveDenoPath(), signal);
+      signal.throwIfAborted();
+      job.sourceSongs = source.playlistSongs;
+      appendJobOutput(job, `[system]\nRetrieved ${job.sourceSongs.length} playlist video URLs. Continuing with YouTube oEmbed.`);
+      await persistJob(job);
+    } else {
+      await executeJobWork(job, signal);
+    }
     signal.throwIfAborted();
   } catch (error) {
     if (!signal.aborted) throw error;
@@ -848,6 +869,7 @@ async function executeJobWork(job, signal) {
 
   job.playlistTitle = job.playlistTitleOverride || sourceMetadata?.playlistTitle || job.playlistTitle;
   job.playlistSongCount = job.isPlaylist ? sourceMetadata?.playlistSongCount ?? null : null;
+  if (sourceMetadata?.playlistSongs?.length) job.sourceSongs = sourceMetadata.playlistSongs;
   job.folderName = folderName;
   job.outputDir = job.outputDir || path.join(outputRoot, folderName);
 
@@ -1192,60 +1214,60 @@ export async function stopJob(id, user = null) {
 }
 
 async function retrieveJobMetadataWork(job, signal) {
-  job.status = 'running';
-  job.updatedAt = new Date().toISOString();
-  await persistJob(job);
-  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-metadata-'));
-  let commandError;
-  let updated = 0;
-  const matched = new Set();
-  try {
-    const args = ['--skip-download', '--write-info-json', '--write-thumbnail', '--ignore-errors',
-      '--no-write-playlist-metafiles', job.isPlaylist ? '--yes-playlist' : '--no-playlist',
-      '--js-runtimes', `deno:${resolveDenoPath()}`, '--output', path.join(temporary, '%(title)s.%(ext)s'),
-      '--output', `thumbnail:${path.join(temporary, '.thumbnails', '%(title)s.%(ext)s')}`, job.url];
-    await runJobCommand(job, resolveYtDlpPath(), args, { includeCommand: true, signal }).catch((error) => {
-      commandError = error;
-    });
+  const outputDir = await fs.realpath(job.outputDir);
+  const eligible = job.files.filter((name) => /\.mp3$/i.test(name) && !isNoVocals({ name }));
+  const sourceUrls = new Map();
+  for (const source of job.sourceSongs || []) {
     signal.throwIfAborted();
-    const outputDir = await fs.realpath(job.outputDir);
-    const eligible = job.files.filter((name) => /\.mp3$/i.test(name) && !isNoVocals({ name }));
-    for (const entry of await fs.readdir(temporary, { withFileTypes: true })) {
-      signal.throwIfAborted();
-      if (!entry.isFile() || !entry.name.endsWith('.info.json')) continue;
-      const info = JSON.parse(await fs.readFile(path.join(temporary, entry.name), 'utf8'));
-      const name = await findExistingMediaFile(job, info.title)
-        || (!job.isPlaylist && eligible.length === 1 ? eligible[0] : null);
-      if (!name || !eligible.includes(name) || matched.has(name)) continue;
+    const url = normalizeVideoUrl(source.url);
+    const name = url && typeof source.title === 'string' ? await findExistingMediaFile(job, source.title) : null;
+    if (name && eligible.includes(name)) {
+      sourceUrls.set(name, sourceUrls.has(name) && sourceUrls.get(name) !== url ? null : url);
+    }
+  }
+  let updated = 0;
+  let incomplete = 0;
+  for (const name of eligible) {
+    signal.throwIfAborted();
+    try {
       const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
-      if (!filePath || !isFileInsideJobFolder({ outputDir }, filePath)) continue;
+      if (!filePath || !isValidJobFileName(name) || !isFileInsideJobFolder({ outputDir }, filePath)) {
+        throw new Error('Downloaded song file is unavailable');
+      }
+      const sourceUrl = await readSongSourceUrl(filePath) || sourceUrls.get(name)
+        || (!job.isPlaylist && eligible.length === 1 ? normalizeVideoUrl(job.url) : null);
+      if (!sourceUrl) throw new Error(sourceUrls.has(name)
+        ? 'Ambiguous playlist title matches multiple video URLs'
+        : 'No matching YouTube video URL for the downloaded filename');
+      const { artist, image, warning } = await retrieveYoutubeMetadata(sourceUrl, signal);
       const changes = {};
-      const artist = [info.artist, info.creator, info.channel, info.uploader]
-        .find((value) => typeof value === 'string' && value.trim());
-      if (artist) changes.artist = artist.trim();
-      const image = await readDownloadedArtwork(path.join(temporary, `${entry.name.slice(0, -'.info.json'.length)}.mp3`));
+      if (artist) changes.artist = artist;
       if (image) changes.artwork = `data:image/avif;base64,${(await encodeThumbnail(image)).toString('base64')}`;
       signal.throwIfAborted();
-      if (Object.keys(changes).length) {
-        await updateSongMetadata(filePath, changes, { includeLyrics: false });
-        await refreshSongMetadata(job, [name]);
-        await refreshJobThumbnails(job, [name], { force: true });
-        updated += 1;
-        appendJobOutput(job, `[system]\nRetrieved metadata: ${name}`);
-        await persistJob(job);
+      if (!Object.keys(changes).length) throw new Error(warning || 'No artist or artwork was returned by oEmbed');
+      await updateSongMetadata(filePath, changes, { includeLyrics: false });
+      await refreshSongMetadata(job, [name]);
+      await refreshJobThumbnails(job, [name], { force: true });
+      updated += 1;
+      appendJobOutput(job, `[system]\nRetrieved metadata via YouTube oEmbed: ${name}`);
+      if (warning) {
+        incomplete += 1;
+        appendJobOutput(job, `[system]\nArtwork unavailable for ${name}: ${warning}`);
       }
-      matched.add(name);
+    } catch (error) {
+      signal.throwIfAborted();
+      incomplete += 1;
+      appendJobOutput(job, `[system]\nUnable to retrieve metadata for ${name}: ${error.message}`);
     }
-    if (commandError) throw commandError;
-    const skipped = eligible.length - updated;
-    job.status = skipped ? 'partially_completed' : 'completed';
-    job.warning = skipped ? `Metadata was not updated for ${skipped} song(s); no matching source metadata was available.` : null;
-    appendJobOutput(job, `[system]\nMetadata retrieval complete: ${updated} updated, ${skipped} unchanged.`);
     job.updatedAt = new Date().toISOString();
     await persistJob(job);
-  } finally {
-    await fs.rm(temporary, { recursive: true, force: true });
   }
+  signal.throwIfAborted();
+  job.status = incomplete ? 'partially_completed' : 'completed';
+  job.warning = incomplete ? `Metadata retrieval was incomplete for ${incomplete} song(s). See process output for details.` : null;
+  appendJobOutput(job, `[system]\nMetadata retrieval complete: ${updated} updated, ${eligible.length - updated} unchanged.`);
+  job.updatedAt = new Date().toISOString();
+  await persistJob(job);
 }
 
 export async function retrieveJobMetadata(id, user = null) {
@@ -1259,16 +1281,34 @@ export async function retrieveJobMetadata(id, user = null) {
   }
   jobMutations.add(id);
   try {
-    job.status = 'queued';
+    job.status = job.isPlaylist ? 'queued' : 'running';
     job.error = null;
     job.warning = null;
     job.command = null;
-    job.output = null;
+    job.output = job.isPlaylist ? '[system]\nWaiting to enumerate playlist video URLs.' : '[system]\nRetrieving metadata via YouTube oEmbed.';
+    delete job.queuePosition;
     delete job.pausedUntil;
     delete job.commandProgress;
     job.updatedAt = new Date().toISOString();
     await persistJob(job);
-    startJob(job, retrieveJobMetadataWork);
+    if (job.isPlaylist) {
+      startJob(job, { metadata: true });
+      return job;
+    }
+    const execution = { controller: new AbortController(), active: true, metadata: true, done: null };
+    jobExecutions.set(id, execution);
+    execution.done = Promise.resolve().then(() => retrieveJobMetadataWork(job, execution.controller.signal))
+      .catch(async (error) => {
+        if (execution.controller.signal.aborted) return finishStoppedJob(job);
+        job.status = 'failed';
+        job.error = error.message;
+        job.updatedAt = new Date().toISOString();
+        appendJobOutput(job, `[system]\nMetadata retrieval failed: ${error.message}`);
+        await persistJob(job);
+      }).finally(() => {
+        if (jobExecutions.get(id) === execution) jobExecutions.delete(id);
+      });
+    execution.done.catch((error) => console.error('Unable to persist metadata retrieval:', error.message));
     return job;
   } finally { jobMutations.delete(id); }
 }
@@ -1709,7 +1749,8 @@ export function getJobQueue(user) {
       updatedAt: visible.updatedAt
     };
   };
-  const running = [...jobs.values()].find((job) => job.status === 'running');
+  const running = [...jobs.values()].find((job) => job.status === 'running'
+    && (!jobExecutions.get(job.id)?.metadata || jobExecutions.get(job.id)?.enumerating));
   return { running: running ? summarize(running) : null, queued: queuedJobs.map(summarize) };
 }
 

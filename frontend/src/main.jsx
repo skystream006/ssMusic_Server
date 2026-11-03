@@ -845,7 +845,10 @@ function JobPage({ id }) {
 
   async function retrieveMetadata() {
     if (mutationDisabled) return;
-    if (!await confirm({ title: 'Retrieve Metadata?', message: 'Retrieve artists and images from the source for existing songs? Matching artist and artwork tags will be replaced; audio and other tags will be kept.', action: 'metadata', label: 'Retrieve Metadata' })) return;
+    const message = job.isPlaylist
+      ? 'Enumerate playlist video URLs, then retrieve channel names and images from YouTube for matching files? Artist and artwork tags will be replaced where available; audio and other tags will be kept.'
+      : 'Retrieve channel names and images from YouTube for existing songs? Artist and artwork tags will be replaced where available; audio and other tags will be kept.';
+    if (!await confirm({ title: 'Retrieve Metadata?', message, action: 'metadata', label: 'Retrieve Metadata' })) return;
     setRetrievingMetadata(true);
     setActionError('');
     try {

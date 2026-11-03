@@ -224,6 +224,12 @@ for (const { label, metadata, isPlaylist = true, downloadType = 'audio', metadat
     const job = await manager.createJob(url, null, { downloadType, metadataOnly });
     await waitForJobToFinish(job);
     assert.equal(job.status, expectedStatus);
+    if (metadata.entries?.length) {
+      const stored = await manager.getJob(job.id);
+      assert.deepEqual(stored.sourceSongs, metadata.entries.map((entry) => ({
+        url: `https://www.youtube.com/watch?v=${entry.id}`, title: entry.title || null
+      })));
+    }
     const downloads = metadataOnly ? 0 : individual ? metadata.entries?.length || 0 : 1;
     assert.deepEqual(job.commandProgress, individual && !metadataOnly
       ? { completed: downloads, total: metadata.playlist_count ?? metadata.entries.length } : undefined);
@@ -308,7 +314,15 @@ async function makeQueueFixture(t) {
 
 for (const access of ['owner', 'contributor', 'admin']) {
 test(`retrieve metadata allows ${access} access without downloading or replacing other tags`, { timeout: 15_000 }, async (context) => {
-  const { manager, nextCommand } = await makeQueueFixture(context);
+  const { manager, calls } = await makeQueueFixture(context);
+  let releaseMetadata;
+  const metadataGate = new Promise((resolve) => { releaseMetadata = resolve; });
+  const requests = [];
+  context.mock.method(globalThis, 'fetch', async (url) => {
+    requests.push(String(url));
+    await metadataGate;
+    return Response.json({ author_name: 'Channel artist' });
+  });
   const owner = { id: 'owner', role: 'user' };
   const actor = access === 'owner' ? owner : { id: access, role: access === 'admin' ? 'admin' : 'user' };
   const outputDir = path.join(fixtureDirectory, 'existing');
@@ -316,7 +330,7 @@ test(`retrieve metadata allows ${access} access without downloading or replacing
   const filePath = path.join(outputDir, 'Song.mp3');
   await fs.writeFile(filePath, NodeID3.write({ title: 'Edited title', artist: 'Old artist', album: 'Keep album',
     unsynchronisedLyrics: { language: 'eng', text: 'Keep lyrics' } }, Buffer.from('audio bytes')));
-  await writeJob(openDatabase(), { id: 'metadata-job', url: 'https://music.youtube.com/watch?v=metadata',
+  await writeJob(openDatabase(), { id: 'metadata-job', url: 'https://music.youtube.com/watch?v=abcdefghijk',
     isPlaylist: false, downloadType: 'audio', status: 'completed', playlistTitle: 'Song', outputDir,
     files: ['Song.mp3'], initiatedBy: owner, contributors: [{ id: 'contributor', name: 'Contributor' }],
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
@@ -324,17 +338,14 @@ test(`retrieve metadata allows ${access} access without downloading or replacing
   await assert.rejects(manager.retrieveJobMetadata('metadata-job', { id: 'contributor', role: 'shared' }), { statusCode: 403 });
   const job = await manager.retrieveJobMetadata('metadata-job', actor);
   fixtureCleanups.set(context, async () => {
+    releaseMetadata();
     if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
   });
-  const command = await nextCommand(0);
-  assert.ok(command.args.includes('--skip-download'));
-  assert.ok(command.args.includes('--write-info-json'));
-  assert.ok(command.args.includes('--write-thumbnail'));
-  assert.ok(!command.args.includes('--download-archive'));
+  assert.equal(job.status, 'running');
+  assert.equal(job.queuePosition, undefined);
+  assert.deepEqual(manager.getJobQueue(), { running: null, queued: [] });
   await assert.rejects(manager.retrieveJobMetadata(job.id, actor), { statusCode: 409 });
-  const temporary = path.dirname(command.args[command.args.indexOf('--output') + 1]);
-  await fs.writeFile(path.join(temporary, 'Song.info.json'), JSON.stringify({ title: 'Song', artist: '', channel: 'Channel artist' }));
-  command.finish('Metadata retrieved\n');
+  releaseMetadata();
   await waitForJobToFinish(job);
   assert.equal(job.status, 'completed', job.error);
   const tags = NodeID3.read(await fs.readFile(filePath));
@@ -345,18 +356,33 @@ test(`retrieve metadata allows ${access} access without downloading or replacing
   assert.ok((await fs.readFile(filePath)).subarray(-11).equals(Buffer.from('audio bytes')));
   assert.equal((await manager.getJob(job.id)).songMetadata['Song.mp3'].artist, 'Channel artist');
   assert.deepEqual(job.files, ['Song.mp3']);
-  await assert.rejects(fs.stat(temporary), { code: 'ENOENT' });
+  assert.equal(calls.length, 0, 'retrieval must not spawn yt-dlp');
+  assert.equal(requests.length, 1);
+  assert.equal(new URL(requests[0]).pathname, '/oembed');
 });
 }
 
 test('retrieve metadata matches playlist songs, embeds artwork and leaves unmatched and no-vocals files intact', { timeout: 15_000 }, async (context) => {
-  const { manager, nextCommand } = await makeQueueFixture(context);
+  const { manager, nextCommand, calls } = await makeQueueFixture(context);
+  const requests = [];
+  context.mock.method(globalThis, 'fetch', async (url) => {
+    const target = new URL(url);
+    requests.push(target.href);
+    if (target.hostname === 'i.ytimg.com') return new Response(Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
+    const videoId = new URL(target.searchParams.get('url')).searchParams.get('v');
+    if (videoId === 'ccccccccccc') return new Response('', { status: 404 });
+    return Response.json(videoId === 'aaaaaaaaaaa'
+      ? { author_name: 'First channel', thumbnail_url: 'https://i.ytimg.com/vi/aaaaaaaaaaa/hqdefault.jpg' }
+      : { author_name: 'Second channel' });
+  });
   const admin = { id: 'admin', role: 'admin' };
   const outputDir = path.join(fixtureDirectory, 'playlist');
   await fs.mkdir(path.join(outputDir, '[NoVocals]'), { recursive: true });
-  const names = ['First.mp3', 'Second.mp3', 'Unmatched.mp3', '[NoVocals]/First.mp3'];
+  const names = ['First.mp3', 'Second.mp3', 'Unmatched.mp3', 'Unavailable.mp3', '[NoVocals]/First.mp3'];
   const original = NodeID3.write({ title: 'Keep title', artist: 'Keep artist', popularimeter: { email: 'listener', rating: 196 } }, Buffer.from('audio'));
   for (const name of names) await fs.writeFile(path.join(outputDir, name), original);
+  await NodeID3.Promise.update({ userDefinedText: [{ description: 'purl', value: 'https://www.youtube.com/watch?v=bbbbbbbbbbb' }] }, path.join(outputDir, 'Second.mp3'));
   const stored = { id: 'metadata-playlist', url: 'https://music.youtube.com/playlist?list=metadata',
     isPlaylist: true, downloadType: 'audio', status: 'completed', playlistTitle: 'Playlist', outputDir,
     files: names, initiatedBy: admin, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -368,53 +394,252 @@ test('retrieve metadata matches playlist songs, embeds artwork and leaves unmatc
     if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, admin);
     for (const name of names) await removeSongThumbnail(path.join(outputDir, name));
   });
-  const command = await nextCommand(0);
-  assert.ok(command.args.includes('--yes-playlist'));
-  const temporary = path.dirname(command.args[command.args.indexOf('--output') + 1]);
-  await fs.mkdir(path.join(temporary, '.thumbnails'));
-  await fs.writeFile(path.join(temporary, 'First.info.json'), JSON.stringify({ title: 'First', artist: 'First artist', channel: 'Channel' }));
-  await fs.writeFile(path.join(temporary, 'Second.info.json'), JSON.stringify({ title: 'Second', creator: 'Second creator', uploader: 'Uploader' }));
-  await fs.writeFile(path.join(temporary, 'Not downloaded.info.json'), JSON.stringify({ title: 'Not downloaded', artist: 'Do not apply' }));
-  await fs.writeFile(path.join(temporary, '.thumbnails', 'First.png'), Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
-  command.finish('Metadata retrieved\n');
+  const enumeration = await nextCommand(0);
+  for (const argument of ['--flat-playlist', '--dump-single-json', '--skip-download', '--yes-playlist']) {
+    assert.ok(enumeration.args.includes(argument));
+  }
+  assert.equal(requests.length, 0, 'enumeration must finish before oEmbed starts');
+  assert.equal(manager.getJobQueue().running.id, job.id);
+  enumeration.finish(JSON.stringify({ entries: [
+    { id: 'aaaaaaaaaaa', title: 'First' }, { id: 'ccccccccccc', title: 'Unavailable' },
+    { id: 'ddddddddddd', title: 'Not downloaded' }
+  ] }));
   await waitForJobToFinish(job);
   assert.equal(job.status, 'partially_completed', job.error);
-  assert.match(job.warning, /1 song/);
-  assert.equal(job.songMetadata['First.mp3'].artist, 'First artist');
-  assert.equal(job.songMetadata['Second.mp3'].artist, 'Second creator');
+  assert.match(job.warning, /2 song/);
+  assert.equal(job.songMetadata['First.mp3'].artist, 'First channel');
+  assert.equal(job.songMetadata['Second.mp3'].artist, 'Second channel');
   assert.equal(job.songMetadata['First.mp3'].rating, 4);
   assert.equal(job.songMetadata['First.mp3'].title, 'Keep title');
   assert.equal((await readSongArtwork(path.join(outputDir, 'First.mp3'))).mime, 'image/avif');
-  for (const name of ['Unmatched.mp3', '[NoVocals]/First.mp3']) {
+  for (const name of ['Unmatched.mp3', 'Unavailable.mp3', '[NoVocals]/First.mp3']) {
     assert.deepEqual(await fs.readFile(path.join(outputDir, name)), original);
   }
   assert.deepEqual(job.files, names);
+  assert.equal(calls.length, 1, 'only playlist enumeration may spawn yt-dlp');
+  assert.equal((await manager.getJob(job.id)).sourceSongs.length, 3);
+  assert.equal(requests.length, 4);
+  assert.match(job.output, /No matching YouTube video URL/);
+  assert.match(job.output, /HTTP 404/);
   await assert.rejects(fs.stat(path.join(outputDir, 'Not downloaded.mp3')), { code: 'ENOENT' });
 });
 
-test('retrieve metadata can be stopped without changing audio or the published inventory', { timeout: 15_000 }, async (context) => {
+test('playlist metadata enumeration releases the queue before oEmbed finishes', { timeout: 15_000 }, async (context) => {
+  const { manager, nextCommand, calls } = await makeQueueFixture(context);
+  const owner = { id: 'owner', role: 'user' };
+  const outputDir = path.join(fixtureDirectory, 'enumeration');
+  await fs.mkdir(outputDir);
+  await fs.writeFile(path.join(outputDir, 'Song.mp3'), 'original audio');
+  await fs.writeFile(path.join(outputDir, 'Unpublished.mp3'), 'unpublished audio');
+  await fs.writeFile(path.join(outputDir, '.download-archive.txt'), 'youtube abcdefghijk\n');
+  await writeJob(openDatabase(), { id: 'enumeration', url: 'https://music.youtube.com/playlist?list=enumeration',
+    isPlaylist: true, status: 'completed', playlistTitle: 'Keep playlist title', outputDir, files: ['Song.mp3'],
+    initiatedBy: owner, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  let releaseMetadata;
+  const metadataGate = new Promise((resolve) => { releaseMetadata = resolve; });
+  const fetchMock = context.mock.method(globalThis, 'fetch', async () => {
+    await metadataGate;
+    return Response.json({ author_name: 'Channel artist' });
+  });
+  const first = await manager.createJob('https://youtu.be/aaaaaaaaaaa', owner, { metadataOnly: true });
+  const firstCommand = await nextCommand(0);
+  let retrieval;
+  let next;
+  fixtureCleanups.set(context, async () => {
+    releaseMetadata();
+    for (const job of [first, retrieval, next]) {
+      if (job && ['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+    }
+  });
+  retrieval = await manager.retrieveJobMetadata('enumeration', owner);
+  assert.equal(retrieval.status, 'queued');
+  assert.equal(retrieval.queuePosition, 1);
+  next = await manager.createJob('https://youtu.be/bbbbbbbbbbb', owner, { metadataOnly: true });
+  assert.equal(next.queuePosition, 2);
+  assert.equal(fetchMock.mock.callCount(), 0);
+  firstCommand.finish();
+  const enumeration = await nextCommand(1);
+  assert.equal(manager.getJobQueue().running.id, retrieval.id);
+  assert.equal(fetchMock.mock.callCount(), 0);
+  enumeration.finish(JSON.stringify({ entries: [{ id: 'abcdefghijk', title: 'Song' }] }));
+  const nextCommandAfterEnumeration = await nextCommand(2);
+  assert.equal(retrieval.status, 'running');
+  assert.equal(retrieval.queuePosition, undefined);
+  assert.equal(manager.getJobQueue().running.id, next.id);
+  nextCommandAfterEnumeration.finish();
+  await waitForJobToFinish(next);
+  assert.equal(retrieval.status, 'running', 'oEmbed must not occupy the yt-dlp queue');
+  releaseMetadata();
+  await waitForJobToFinish(retrieval);
+  assert.equal(retrieval.status, 'completed', retrieval.error);
+  assert.equal(retrieval.playlistTitle, 'Keep playlist title');
+  assert.deepEqual(retrieval.files, ['Song.mp3']);
+  assert.equal(await fs.readFile(path.join(outputDir, '.download-archive.txt'), 'utf8'), 'youtube abcdefghijk\n');
+  assert.equal(calls.length, 3);
+  assert.equal(fetchMock.mock.callCount(), 1);
+});
+
+for (const phase of ['queued', 'enumeration', 'oembed', 'failure']) {
+  test(`playlist metadata retrieval handles ${phase} without changing files`, { timeout: 15_000 }, async (context) => {
+    if (phase === 'queued') {
+      await openDatabase().prepare("INSERT INTO job_server_state (key, value) VALUES ('jobsDisabledUntil', $1)")
+        .run(String(Date.now() + 65 * 60 * 1000));
+    }
+    const { manager, nextCommand, calls } = await makeQueueFixture(context);
+    const owner = { id: 'owner', role: 'user' };
+    const outputDir = path.join(fixtureDirectory, 'playlist-stop');
+    await fs.mkdir(outputDir);
+    await fs.writeFile(path.join(outputDir, 'Song.mp3'), 'original audio');
+    await fs.writeFile(path.join(outputDir, 'Unpublished.mp3'), 'unpublished audio');
+    await writeJob(openDatabase(), { id: 'playlist-stop', url: 'https://music.youtube.com/playlist?list=stop',
+      isPlaylist: true, status: 'completed', playlistTitle: 'Playlist', outputDir, files: ['Song.mp3'],
+      initiatedBy: owner, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    let requestStarted;
+    const requested = new Promise((resolve) => { requestStarted = resolve; });
+    const fetchMock = context.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      requestStarted();
+    }));
+    const job = await manager.retrieveJobMetadata('playlist-stop', owner);
+    fixtureCleanups.set(context, async () => {
+      if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+    });
+    if (phase === 'queued') {
+      assert.equal(job.status, 'queued');
+      assert.equal(job.queuePosition, 1);
+      assert.equal(calls.length, 0);
+      assert.equal(manager.getJobRateLimit().limited, true);
+    } else {
+      const enumeration = await nextCommand(0);
+      if (phase === 'failure') enumeration.finish('Enumeration failed', 1);
+      if (phase === 'oembed') {
+        enumeration.finish(JSON.stringify({ entries: [{ id: 'abcdefghijk', title: 'Song' }] }));
+        await requested;
+        assert.deepEqual(manager.getJobQueue(), { running: null, queued: [] });
+      }
+    }
+    if (phase === 'failure') {
+      await waitForJobToFinish(job);
+      assert.equal(job.status, 'failed');
+    } else {
+      await manager.stopJob(job.id, owner);
+      assert.equal(job.status, 'stopped');
+    }
+    assert.equal(fetchMock.mock.callCount(), phase === 'oembed' ? 1 : 0);
+    assert.deepEqual(job.files, ['Song.mp3']);
+    assert.equal(await fs.readFile(path.join(outputDir, 'Song.mp3'), 'utf8'), 'original audio');
+    assert.deepEqual(manager.getJobQueue(), { running: null, queued: [] });
+  });
+}
+
+test('playlist metadata matching rejects ambiguous titles and handles yt-dlp filename substitutions', { timeout: 15_000 }, async (context) => {
   const { manager, nextCommand } = await makeQueueFixture(context);
+  const owner = { id: 'owner', role: 'user' };
+  const outputDir = path.join(fixtureDirectory, 'matching');
+  await fs.mkdir(outputDir);
+  const safeName = 'Artist \u29f8 Song.mp3';
+  for (const name of ['Ambiguous.mp3', safeName]) await fs.writeFile(path.join(outputDir, name), 'original audio');
+  await writeJob(openDatabase(), { id: 'matching', url: 'https://music.youtube.com/playlist?list=matching',
+    isPlaylist: true, status: 'completed', playlistTitle: 'Matching', outputDir, files: ['Ambiguous.mp3', safeName],
+    initiatedBy: owner, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  const requests = [];
+  context.mock.method(globalThis, 'fetch', async (url) => {
+    requests.push(new URL(url).searchParams.get('url'));
+    return Response.json({ author_name: 'Matched channel' });
+  });
+  const job = await manager.retrieveJobMetadata('matching', owner);
+  fixtureCleanups.set(context, async () => {
+    if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+  });
+  (await nextCommand(0)).finish(JSON.stringify({ entries: [
+    { id: 'aaaaaaaaaaa', title: 'Ambiguous' }, { id: 'bbbbbbbbbbb', title: 'Ambiguous' },
+    { id: 'ccccccccccc', title: 'Artist / Song' }, { id: 'ccccccccccc', title: 'Artist / Song' }
+  ] }));
+  await waitForJobToFinish(job);
+  assert.equal(job.status, 'partially_completed', job.error);
+  assert.match(job.output, /Ambiguous playlist title/);
+  assert.equal(await fs.readFile(path.join(outputDir, 'Ambiguous.mp3'), 'utf8'), 'original audio');
+  assert.equal(job.songMetadata[safeName].artist, 'Matched channel');
+  assert.deepEqual(requests, ['https://www.youtube.com/watch?v=ccccccccccc']);
+});
+
+test('retrieve metadata can be stopped without changing audio or the published inventory', { timeout: 15_000 }, async (context) => {
+  const { manager, calls } = await makeQueueFixture(context);
+  let requestStarted;
+  const requested = new Promise((resolve) => { requestStarted = resolve; });
+  let requestSignal;
+  context.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_resolve, reject) => {
+    requestSignal = signal;
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    requestStarted();
+  }));
   const admin = { id: 'admin', role: 'admin' };
   const outputDir = path.join(fixtureDirectory, 'stoppable');
   await fs.mkdir(outputDir);
   await fs.writeFile(path.join(outputDir, 'Song.mp3'), 'original audio');
   await fs.writeFile(path.join(outputDir, 'Unpublished.mp3'), 'unpublished audio');
-  await writeJob(openDatabase(), { id: 'metadata-stop', url: 'https://music.youtube.com/watch?v=stop',
+  await writeJob(openDatabase(), { id: 'metadata-stop', url: 'https://music.youtube.com/watch?v=abcdefghijk',
     status: 'completed', playlistTitle: 'Song', outputDir, files: ['Song.mp3'], initiatedBy: admin,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   const job = await manager.retrieveJobMetadata('metadata-stop', admin);
   fixtureCleanups.set(context, async () => {
     if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, admin);
   });
-  const command = await nextCommand(0);
-  const temporary = path.dirname(command.args[command.args.indexOf('--output') + 1]);
+  await requested;
   await manager.stopJob(job.id, admin);
   assert.equal(job.status, 'stopped');
   assert.deepEqual(job.files, ['Song.mp3']);
   assert.equal(await fs.readFile(path.join(outputDir, 'Song.mp3'), 'utf8'), 'original audio');
-  await assert.rejects(fs.stat(temporary), { code: 'ENOENT' });
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(calls.length, 0);
 });
+
+for (const phase of ['download', 'cooldown']) {
+  test(`retrieve metadata bypasses the yt-dlp queue during ${phase}`, { timeout: 15_000 }, async (context) => {
+    if (phase === 'cooldown') {
+      await openDatabase().prepare("INSERT INTO job_server_state (key, value) VALUES ('jobsDisabledUntil', $1)")
+        .run(String(Date.now() + 65 * 60 * 1000));
+    }
+    const { manager, nextCommand, calls } = await makeQueueFixture(context);
+    const owner = { id: 'owner', role: 'user' };
+    const download = await manager.createJob('https://music.youtube.com/watch?v=aaaaaaaaaaa', owner);
+    let heldDownload;
+    if (phase === 'download') heldDownload = await nextCommand(0);
+    context.mock.method(globalThis, 'fetch', async () => Response.json({ author_name: 'Independent channel' }));
+    const outputDir = path.join(fixtureDirectory, 'independent');
+    await fs.mkdir(outputDir);
+    await fs.writeFile(path.join(outputDir, 'Song.mp3'), 'audio');
+    await writeJob(openDatabase(), { id: 'independent', url: 'https://youtu.be/bbbbbbbbbbb',
+      status: 'completed', playlistTitle: 'Independent', outputDir, files: ['Song.mp3'], initiatedBy: owner,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    let retrieval;
+    fixtureCleanups.set(context, async () => {
+      for (const job of [retrieval, download]) {
+        if (job && ['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+      }
+    });
+    retrieval = await manager.retrieveJobMetadata('independent', owner);
+    assert.equal(retrieval.status, 'running');
+    assert.equal(retrieval.queuePosition, undefined);
+    await waitForJobToFinish(retrieval);
+    assert.equal(retrieval.status, 'completed', retrieval.error);
+    assert.equal(retrieval.songMetadata['Song.mp3'].artist, 'Independent channel');
+    const queue = manager.getJobQueue();
+    if (phase === 'download') {
+      assert.equal(queue.running.id, download.id);
+      assert.equal(calls.length, 1);
+      heldDownload.finish();
+      (await nextCommand(1)).finish('Downloaded\n');
+      await waitForJobToFinish(download);
+    } else {
+      assert.equal(manager.getJobRateLimit().limited, true);
+      assert.equal(queue.running, null);
+      assert.equal(queue.queued[0].id, download.id);
+      assert.equal(calls.length, 0);
+      await manager.stopJob(download.id, owner);
+    }
+  });
+}
 
 test('large playlist publishes completed files while the next download runs without indexing unfinished files', { timeout: 15_000 }, async (context) => {
   const delayMock = context.mock.method(timers, 'setTimeout', async () => {});
@@ -1977,6 +2202,29 @@ test('playlist titles are owner-editable metadata and survive reruns and reloads
   const reloaded = await import(`../src/jobManager.js?renamed-reload=${Date.now()}`);
   assert.equal((await reloaded.getJob(job.id)).playlistTitleOverride, 'Owner collection');
   assert.equal(await manager.setJobTitle('missing', 'Title', owner), null);
+});
+
+test('persisted failed and warning jobs with absent output do not crash startup', async () => {
+  const records = ['failed', 'warning'].flatMap((status) => [
+    { id: `${status}-null`, status, output: null },
+    { id: `${status}-missing`, status },
+    { id: `${status}-empty`, status, output: '' }
+  ]);
+  for (const record of records) {
+    await writeJob(openDatabase(), {
+      ...record, url: `https://music.youtube.com/watch?v=${record.id}`,
+      playlistTitle: 'Saved job', error: 'Original error', warning: 'Original warning',
+      files: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    });
+  }
+  const manager = await import(`../src/jobManager.js?absent-output=${encodeURIComponent(fixtureDirectory)}`);
+  for (const record of records) {
+    const job = await manager.getJob(record.id);
+    assert.equal(job.status, record.status);
+    assert.equal(job.output, record.output);
+    assert.equal(job.error, 'Original error');
+    assert.equal(job.warning, 'Original warning');
+  }
 });
 
 test('persisted private video failures become partially completed', async () => {

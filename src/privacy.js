@@ -97,6 +97,7 @@ export async function attachPrivacyAliases(database, jobs) {
 export function visibleJob(job, user) {
   if (!canReadJob(job, user)) return null;
   const result = structuredClone(job);
+  delete result.sourceSongs;
   result.private = job.private === true;
   result.privateFiles = (job.privateFiles || []).filter((name) => canReadFile(job, name, user));
   const files = (job.files || []).filter((name) => canReadFile(job, name, user));

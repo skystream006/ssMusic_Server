@@ -48,7 +48,8 @@ existing job's normal rerun or details action.
 `{ "url": "https://www.youtube.com/watch?v=VIDEO_ID", "downloadType": "video" }`.
 
 Only jobs requiring yt-dlp use the server-wide, single-running-job queue.
-Downloads, reruns, and metadata lookups join the same first-in, first-out queue.
+Downloads, reruns, yt-dlp metadata-only jobs, and playlist metadata enumeration
+join the same first-in, first-out queue.
 Waiting jobs display `Queued - Current Position #N`; position 1 is the next job
 to run, excluding the running job. API responses retain `status: "queued"` and
 include a live `queuePosition`. Runtime maintenance and rate-limit cooldowns pause
@@ -59,6 +60,22 @@ Imports, manual playlist creation, transcription, backups, and other library
 operations run independently of the yt-dlp queue and can run in parallel with it.
 They are not paused by its rate-limit cooldown. Existing protections against
 conflicting changes to the same files or playlists still apply.
+
+**Retrieve Metadata** is available to owners, contributors, and administrators for
+idle downloaded-audio jobs. Playlist jobs first enumerate video URLs and titles
+with yt-dlp (`--flat-playlist --dump-single-json --skip-download`), using the normal
+queue, maintenance, and cooldown rules. This step downloads no audio or video.
+The source list is saved and titles are matched to downloaded filenames, including
+yt-dlp's filename substitutions. Conflicting video URLs for the same filename are
+treated as ambiguous; an embedded video URL can identify the actual source.
+
+Once enumeration finishes, the queue slot is released. Artist and artwork retrieval
+then uses YouTube oEmbed independently of other downloads or yt-dlp cooldowns, with
+no API key. Single-song jobs use an embedded video URL or their job URL directly,
+without enumeration or queuing. oEmbed supplies the channel name as artist and a
+thumbnail that is converted to AVIF. Audio, lyrics, ratings, and other tags are kept.
+Unmatched or ambiguous files stay unchanged and are reported in process output;
+per-song failures do not stop the other songs. Stop cancels either phase.
 
 Before a playlist download starts, its metadata is checked for the total item
 count and song list. Playlists with more than 100 items run a separate yt-dlp
