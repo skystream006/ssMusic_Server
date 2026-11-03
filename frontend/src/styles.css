@@ -725,6 +725,9 @@ code { font: 400 11px 'DM Mono', monospace; }
 .metadata-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .metadata-inputs label { display: grid; gap: 6px; font-size: 12px; }
 .metadata-inputs input { width: 100%; min-width: 0; height: 40px; padding: 0 10px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 4px; }
+.retrieve-metadata-dialog .existing-artist-option { grid-column: 1 / -1; }
+.retrieve-metadata-dialog select { width: 100%; min-width: 0; height: 44px; padding: 0 10px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 4px; }
+.retrieve-metadata-dialog :is(input, select) { font-size: 16px; }
 @media (max-width: 560px) {
   .metadata-inputs { grid-template-columns: minmax(0, 1fr); }
   .metadata-artwork { align-items: flex-start; gap: 12px; }

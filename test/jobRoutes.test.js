@@ -281,7 +281,8 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     assert.equal((await call(route, 'POST', credentials.Admin[0])).status, 404);
     const outputDir = path.join(outputRoot, 'metadata-route');
     await fs.mkdir(outputDir);
-    await fs.writeFile(path.join(outputDir, 'Existing.mp3'), 'unchanged audio');
+    const original = NodeID3.write({ title: 'Keep title', artist: 'Keep artist' }, Buffer.from('unchanged audio'));
+    await fs.writeFile(path.join(outputDir, 'Existing.mp3'), original);
     await fs.writeFile(path.join(outputDir, '.download-archive.txt'), 'youtube existing\n');
     await writeJob(openDatabase(), { id: 'metadata-route', url: 'https://music.youtube.com/watch?v=metadata-route',
       status: 'completed', playlistTitle: 'Metadata route', outputDir, files: ['Existing.mp3'],
@@ -289,12 +290,15 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     for (const headers of [...credentials.Other, ...credentials.Reader, mobileHeaders.Other, mobileHeaders.Reader]) {
       assert.equal((await call(route, 'POST', headers)).status, 403);
     }
-    for (const headers of [...credentials.Owner, mobileHeaders.Owner, ...credentials.Admin, mobileHeaders.Admin]) {
-      const response = await call(route, 'POST', headers);
-      assert.equal(response.status, 202, response.text);
-      await waitForJob('metadata-route', headers);
+    for (const options of [{ existingArtist: 'invalid' }, { artistPrefix: 1 }, { artistPostfix: 'x'.repeat(201) }]) {
+      assert.equal((await call(route, 'POST', credentials.Owner[0], options)).status, 400);
     }
-    assert.equal(await fs.readFile(path.join(outputDir, 'Existing.mp3'), 'utf8'), 'unchanged audio');
+    for (const headers of [...credentials.Owner, mobileHeaders.Owner, ...credentials.Admin, mobileHeaders.Admin]) {
+      const response = await call(route, 'POST', headers, { artistPrefix: '[YT] ', artistPostfix: ' (channel)', existingArtist: 'skip' });
+      assert.equal(response.status, 202, response.text);
+      assert.equal((await waitForJob('metadata-route', headers)).body.status, 'completed');
+    }
+    assert.deepEqual(await fs.readFile(path.join(outputDir, 'Existing.mp3')), original);
     assert.equal(await fs.readFile(path.join(outputDir, '.download-archive.txt'), 'utf8'), 'youtube existing\n');
     assert.equal((await call('/api/jobs/metadata-route', 'DELETE', credentials.Admin[0])).status, 204);
   });

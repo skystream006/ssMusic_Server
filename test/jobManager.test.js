@@ -362,6 +362,58 @@ test(`retrieve metadata allows ${access} access without downloading or replacing
 });
 }
 
+for (const isPlaylist of [false, true]) {
+  for (const existingArtist of ['overwrite', 'skip']) {
+    test(`retrieve metadata artist options: playlist=${isPlaylist}, existingArtist=${existingArtist}`, { timeout: 15_000 }, async (context) => {
+      const { manager, nextCommand } = await makeQueueFixture(context);
+      const owner = { id: 'owner', role: 'user' };
+      const outputDir = path.join(fixtureDirectory, 'artist-options');
+      await fs.mkdir(outputDir);
+      const names = ['Existing.mp3', 'Blank.mp3'];
+      const originals = [];
+      for (const name of names) {
+        const original = NodeID3.write({ title: 'Keep title', artist: name === names[0] ? 'Keep artist' : '  ',
+          audioSourceUrl: 'https://www.youtube.com/watch?v=abcdefghijk' }, Buffer.from('audio bytes'));
+        originals.push(original);
+        await fs.writeFile(path.join(outputDir, name), original);
+      }
+      await writeJob(openDatabase(), { id: 'artist-options', url: isPlaylist
+        ? 'https://music.youtube.com/playlist?list=options' : 'https://www.youtube.com/watch?v=abcdefghijk',
+        isPlaylist, status: 'completed', outputDir, files: names, initiatedBy: owner,
+        songMetadata: { 'Existing.mp3': { artist: '' }, 'Blank.mp3': { artist: 'Stale cache' } },
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      for (const options of [null, [], { artistPrefix: 1 }, { artistPostfix: 'x'.repeat(201) }, { existingArtist: 'other' }]) {
+        await assert.rejects(manager.retrieveJobMetadata('artist-options', owner, options), { statusCode: 400 });
+      }
+      const fetchMock = context.mock.method(globalThis, 'fetch', async () => Response.json({ author_name: 'Channel artist' }));
+      const job = await manager.retrieveJobMetadata('artist-options', owner, {
+        artistPrefix: '[YT] ', artistPostfix: ' (channel)', existingArtist
+      });
+      fixtureCleanups.set(context, async () => {
+        if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+      });
+      if (isPlaylist) (await nextCommand(0)).finish(JSON.stringify({ entries: [
+        { id: 'abcdefghijk', title: 'Existing' }, { id: 'abcdefghijk', title: 'Blank' }
+      ] }));
+      await waitForJobToFinish(job);
+      assert.equal(job.status, 'completed', job.error);
+      for (const [index, name] of names.entries()) {
+        const content = await fs.readFile(path.join(outputDir, name));
+        if (existingArtist === 'skip' && index === 0) {
+          assert.deepEqual(content, originals[index]);
+          assert.match(job.output, /Skipped file with existing artist/);
+        } else {
+          const tags = NodeID3.read(content);
+          assert.equal(tags.artist, '[YT] Channel artist (channel)');
+          assert.equal(tags.title, 'Keep title');
+          assert.deepEqual(NodeID3.removeTagsFromBuffer(content), Buffer.from('audio bytes'));
+        }
+      }
+      assert.equal(fetchMock.mock.callCount(), existingArtist === 'skip' ? 1 : 2);
+    });
+  }
+}
+
 test('retrieve metadata matches playlist songs, embeds artwork and leaves unmatched and no-vocals files intact', { timeout: 15_000 }, async (context) => {
   const { manager, nextCommand, calls } = await makeQueueFixture(context);
   const requests = [];
@@ -418,7 +470,7 @@ test('retrieve metadata matches playlist songs, embeds artwork and leaves unmatc
   assert.deepEqual(job.files, names);
   assert.equal(calls.length, 1, 'only playlist enumeration may spawn yt-dlp');
   assert.equal((await manager.getJob(job.id)).sourceSongs.length, 3);
-  assert.equal(requests.length, 4);
+  assert.equal(requests.length, 5);
   assert.match(job.output, /No matching YouTube video URL/);
   assert.match(job.output, /HTTP 404/);
   await assert.rejects(fs.stat(path.join(outputDir, 'Not downloaded.mp3')), { code: 'ENOENT' });
@@ -479,7 +531,7 @@ test('playlist metadata enumeration releases the queue before oEmbed finishes', 
   assert.equal(fetchMock.mock.callCount(), 1);
 });
 
-for (const phase of ['queued', 'enumeration', 'oembed', 'failure']) {
+for (const phase of ['queued', 'enumeration', 'oembed', 'title-lookup', 'failure']) {
   test(`playlist metadata retrieval handles ${phase} without changing files`, { timeout: 15_000 }, async (context) => {
     if (phase === 'queued') {
       await openDatabase().prepare("INSERT INTO job_server_state (key, value) VALUES ('jobsDisabledUntil', $1)")
@@ -512,8 +564,8 @@ for (const phase of ['queued', 'enumeration', 'oembed', 'failure']) {
     } else {
       const enumeration = await nextCommand(0);
       if (phase === 'failure') enumeration.finish('Enumeration failed', 1);
-      if (phase === 'oembed') {
-        enumeration.finish(JSON.stringify({ entries: [{ id: 'abcdefghijk', title: 'Song' }] }));
+      if (['oembed', 'title-lookup'].includes(phase)) {
+        enumeration.finish(JSON.stringify({ entries: [{ id: 'abcdefghijk', title: phase === 'title-lookup' ? 'Translated title' : 'Song' }] }));
         await requested;
         assert.deepEqual(manager.getJobQueue(), { running: null, queued: [] });
       }
@@ -525,7 +577,7 @@ for (const phase of ['queued', 'enumeration', 'oembed', 'failure']) {
       await manager.stopJob(job.id, owner);
       assert.equal(job.status, 'stopped');
     }
-    assert.equal(fetchMock.mock.callCount(), phase === 'oembed' ? 1 : 0);
+    assert.equal(fetchMock.mock.callCount(), ['oembed', 'title-lookup'].includes(phase) ? 1 : 0);
     assert.deepEqual(job.files, ['Song.mp3']);
     assert.equal(await fs.readFile(path.join(outputDir, 'Song.mp3'), 'utf8'), 'original audio');
     assert.deepEqual(manager.getJobQueue(), { running: null, queued: [] });
@@ -562,6 +614,97 @@ test('playlist metadata matching rejects ambiguous titles and handles yt-dlp fil
   assert.equal(job.songMetadata[safeName].artist, 'Matched channel');
   assert.deepEqual(requests, ['https://www.youtube.com/watch?v=ccccccccccc']);
 });
+
+test('playlist metadata matches translated titles using oEmbed before updating downloaded files', { timeout: 15_000 }, async (context) => {
+  const { manager, nextCommand } = await makeQueueFixture(context);
+  const owner = { id: 'owner', role: 'user' };
+  const outputDir = path.join(fixtureDirectory, 'translated');
+  await fs.mkdir(outputDir);
+  const originalTitle = 'Jack - J97 | Cu\u1ed1i C\u00f9ng Th\u00ec | Special Stage Video';
+  const fileName = `${originalTitle.replaceAll('|', '\uff5c')}.mp3`;
+  const filePath = path.join(outputDir, fileName);
+  const audio = Buffer.from('original audio');
+  await fs.writeFile(filePath, NodeID3.write({ title: 'Keep edited title', artist: 'Old artist' }, audio));
+  await writeJob(openDatabase(), { id: 'translated', url: 'https://music.youtube.com/playlist?list=translated',
+    isPlaylist: true, status: 'completed', playlistTitle: 'Translated', outputDir, files: [fileName],
+    initiatedBy: owner, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  const requests = [];
+  context.mock.method(globalThis, 'fetch', async (url) => {
+    const target = new URL(url);
+    requests.push(target.href);
+    if (target.hostname === 'i.ytimg.com') return new Response(Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
+    const videoId = new URL(target.searchParams.get('url')).searchParams.get('v');
+    if (videoId === 'ccccccccccc') return new Response('', { status: 404 });
+    return Response.json({ title: videoId === 'red9YvYlPWg' ? originalTitle : 'Not downloaded', author_name: 'J97',
+      thumbnail_url: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` });
+  });
+  const job = await manager.retrieveJobMetadata('translated', owner);
+  fixtureCleanups.set(context, async () => {
+    if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+    await removeSongThumbnail(filePath);
+  });
+  (await nextCommand(0)).finish(JSON.stringify({ entries: [
+    { id: 'ccccccccccc', title: 'Unavailable video' },
+    { id: 'red9YvYlPWg', title: 'Jack - J97 | In The End | Special Stage Video' },
+    { id: 'red9YvYlPWg', title: 'Jack - J97 | In The End | Special Stage Video' },
+    { id: 'bbbbbbbbbbb', title: 'Not downloaded' }
+  ] }));
+  await waitForJobToFinish(job);
+  assert.equal(job.status, 'completed', job.error);
+  assert.equal(job.songMetadata[fileName].artist, 'J97');
+  assert.equal(job.songMetadata[fileName].title, 'Keep edited title');
+  assert.equal((await readSongArtwork(filePath)).mime, 'image/avif');
+  assert.deepEqual(NodeID3.removeTagsFromBuffer(await fs.readFile(filePath)), audio);
+  assert.match(job.output, /Matched by oEmbed title/);
+  assert.match(job.output, /HTTP 404/);
+  assert.equal(requests.filter((url) => new URL(url).pathname === '/oembed').length, 3);
+  assert.deepEqual(requests.filter((url) => new URL(url).hostname === 'i.ytimg.com'),
+    ['https://i.ytimg.com/vi/red9YvYlPWg/hqdefault.jpg']);
+});
+
+for (const matching of ['fallback', 'direct collision', 'embedded URL']) {
+  test(`playlist oEmbed title ambiguity is handled safely with ${matching}`, { timeout: 15_000 }, async (context) => {
+    const { manager, nextCommand } = await makeQueueFixture(context);
+    const owner = { id: 'owner', role: 'user' };
+    const outputDir = path.join(fixtureDirectory, 'title-ambiguity');
+    await fs.mkdir(outputDir);
+    const filePath = path.join(outputDir, 'Original.mp3');
+    const original = NodeID3.write({ title: 'Keep title', artist: 'Keep artist',
+      ...(matching === 'embedded URL' ? { userDefinedText: [{ description: 'purl', value: 'https://youtu.be/aaaaaaaaaaa' }] } : {})
+    }, Buffer.from('audio'));
+    await fs.writeFile(filePath, original);
+    await writeJob(openDatabase(), { id: 'title-ambiguity', url: 'https://music.youtube.com/playlist?list=ambiguity',
+      isPlaylist: true, status: 'completed', playlistTitle: 'Ambiguity', outputDir, files: ['Original.mp3'],
+      initiatedBy: owner, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    const requests = [];
+    context.mock.method(globalThis, 'fetch', async (url) => {
+      const target = new URL(url);
+      assert.equal(target.pathname, '/oembed', 'ambiguous title lookups must not fetch artwork');
+      const videoId = new URL(target.searchParams.get('url')).searchParams.get('v');
+      requests.push(videoId);
+      return Response.json({ title: 'Original', author_name: `Channel ${videoId}` });
+    });
+    const job = await manager.retrieveJobMetadata('title-ambiguity', owner);
+    fixtureCleanups.set(context, async () => {
+      if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+    });
+    (await nextCommand(0)).finish(JSON.stringify({ entries: [
+      { id: 'aaaaaaaaaaa', title: matching === 'direct collision' ? 'Original' : 'Translated one' },
+      { id: 'bbbbbbbbbbb', title: 'Translated two' }
+    ] }));
+    await waitForJobToFinish(job);
+    if (matching === 'embedded URL') {
+      assert.equal(job.status, 'completed', job.error);
+      assert.equal(job.songMetadata['Original.mp3'].artist, 'Channel aaaaaaaaaaa');
+    } else {
+      assert.equal(job.status, 'partially_completed', job.error);
+      assert.match(job.output, /Ambiguous playlist title/);
+      assert.deepEqual(await fs.readFile(filePath), original);
+    }
+    assert.equal(requests.length, matching === 'direct collision' ? 1 : 2);
+  });
+}
 
 test('retrieve metadata can be stopped without changing audio or the published inventory', { timeout: 15_000 }, async (context) => {
   const { manager, calls } = await makeQueueFixture(context);

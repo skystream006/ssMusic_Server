@@ -66,7 +66,10 @@ idle downloaded-audio jobs. Playlist jobs first enumerate video URLs and titles
 with yt-dlp (`--flat-playlist --dump-single-json --skip-download`), using the normal
 queue, maintenance, and cooldown rules. This step downloads no audio or video.
 The source list is saved and titles are matched to downloaded filenames, including
-yt-dlp's filename substitutions. Conflicting video URLs for the same filename are
+yt-dlp's filename substitutions. Entries without a filename match are checked
+against their oEmbed titles, which can differ from YouTube's localized playlist
+titles. These title-only lookups do not download artwork; matched metadata is reused
+when updating the file. Conflicting video URLs for the same filename are
 treated as ambiguous; an embedded video URL can identify the actual source.
 
 Once enumeration finishes, the queue slot is released. Artist and artwork retrieval
@@ -74,6 +77,10 @@ then uses YouTube oEmbed independently of other downloads or yt-dlp cooldowns, w
 no API key. Single-song jobs use an embedded video URL or their job URL directly,
 without enumeration or queuing. oEmbed supplies the channel name as artist and a
 thumbnail that is converted to AVIF. Audio, lyrics, ratings, and other tags are kept.
+The retrieval dialog accepts an artist prefix and postfix (including any desired
+spaces), and lets you overwrite metadata or skip entire files with nonblank
+artist tags. Overwrite is the default. Skipped files keep their artwork and all
+other tags; blank artist tags are still eligible for retrieval.
 Unmatched or ambiguous files stay unchanged and are reported in process output;
 per-song failures do not stop the other songs. Stop cancels either phase.
 

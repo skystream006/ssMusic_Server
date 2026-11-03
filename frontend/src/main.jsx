@@ -77,6 +77,9 @@ function ConfirmationDialog({ title, message, action, label, onAnswer }) {
   const dialogRef = useRef(null);
   const titleId = useId();
   const messageId = useId();
+  const [artistPrefix, setArtistPrefix] = useState('');
+  const [artistPostfix, setArtistPostfix] = useState('');
+  const [existingArtist, setExistingArtist] = useState('overwrite');
   const ActionIcon = action === 'delete' ? Trash2 : action === 'stop' ? Square : action === 'rerun' ? RotateCcw : action === 'metadata' ? RefreshCw : ExternalLink;
   const actionLabel = label || (action === 'delete' ? 'Delete job' : action === 'stop' ? 'Stop job' : action === 'rerun' ? 'Rerun job' : 'Open details');
 
@@ -90,17 +93,32 @@ function ConfirmationDialog({ title, message, action, label, onAnswer }) {
     };
   }, []);
 
-  return <dialog ref={dialogRef} className="confirmation-dialog" aria-labelledby={titleId} aria-describedby={messageId}
+  return <dialog ref={dialogRef} className={`confirmation-dialog${action === 'metadata' ? ' retrieve-metadata-dialog' : ''}`} aria-labelledby={titleId} aria-describedby={messageId}
     onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); onAnswer(false); } }}
     onCancel={(event) => { event.preventDefault(); onAnswer(false); }}>
+    <form onSubmit={(event) => {
+      event.preventDefault();
+      onAnswer(action === 'metadata' ? { artistPrefix, artistPostfix, existingArtist } : true);
+    }}>
     <h2 id={titleId}>{title}</h2>
     <p id={messageId}>{message}</p>
+    {action === 'metadata' && <div className="metadata-fields metadata-inputs">
+      <label>Artist prefix<input value={artistPrefix} maxLength={200} onChange={(event) => setArtistPrefix(event.target.value)} /></label>
+      <label>Artist postfix<input value={artistPostfix} maxLength={200} onChange={(event) => setArtistPostfix(event.target.value)} /></label>
+      <label className="existing-artist-option">Files with existing artist
+        <select value={existingArtist} onChange={(event) => setExistingArtist(event.target.value)}>
+          <option value="overwrite">Overwrite metadata</option>
+          <option value="skip">Skip files</option>
+        </select>
+      </label>
+    </div>}
     <div className="dialog-actions">
       <button className="secondary-button" type="button" onClick={() => onAnswer(false)}>Cancel</button>
-      <button className={action === 'delete' ? 'danger-button' : 'primary-button'} type="button" onClick={() => onAnswer(true)}>
+      <button className={action === 'delete' ? 'danger-button' : 'primary-button'} type="submit">
         <ActionIcon size={17} />{actionLabel}
       </button>
     </div>
+    </form>
   </dialog>;
 }
 
@@ -845,14 +863,14 @@ function JobPage({ id }) {
 
   async function retrieveMetadata() {
     if (mutationDisabled) return;
-    const message = job.isPlaylist
-      ? 'Enumerate playlist video URLs, then retrieve channel names and images from YouTube for matching files? Artist and artwork tags will be replaced where available; audio and other tags will be kept.'
-      : 'Retrieve channel names and images from YouTube for existing songs? Artist and artwork tags will be replaced where available; audio and other tags will be kept.';
-    if (!await confirm({ title: 'Retrieve Metadata?', message, action: 'metadata', label: 'Retrieve Metadata' })) return;
+    const options = await confirm({ title: 'Retrieve Metadata', message: job.playlistTitle || job.id, action: 'metadata', label: 'Retrieve Metadata' });
+    if (!options) return;
     setRetrievingMetadata(true);
     setActionError('');
     try {
-      await request(`/api/jobs/${encodeURIComponent(id)}/retrieve-metadata`, { method: 'POST' });
+      await request(`/api/jobs/${encodeURIComponent(id)}/retrieve-metadata`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options)
+      });
       setFileRevision((revision) => revision + 1);
     } catch (requestError) {
       setActionError(requestError.message);

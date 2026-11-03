@@ -21,18 +21,25 @@ async function fetchBounded(url, limit, signal) {
   return Buffer.concat(chunks);
 }
 
-export async function retrieveYoutubeMetadata(source, signal = new AbortController().signal) {
+export async function retrieveYoutubeMetadata(source, signal = new AbortController().signal, { includeArtwork = true } = {}) {
   const videoUrl = normalizeVideoUrl(source);
   if (!videoUrl) throw new Error('A YouTube video URL is required');
   const endpoint = new URL('https://www.youtube.com/oembed');
   endpoint.search = new URLSearchParams({ url: videoUrl, format: 'json' }).toString();
   const metadata = JSON.parse((await fetchBounded(endpoint, 128 * 1024, signal)).toString('utf8'));
+  const title = typeof metadata.title === 'string' ? metadata.title.trim() : '';
   const artist = typeof metadata.author_name === 'string' ? metadata.author_name.trim() : '';
+  const thumbnailUrl = typeof metadata.thumbnail_url === 'string' ? metadata.thumbnail_url : null;
+  const artwork = includeArtwork ? await retrieveYoutubeArtwork(thumbnailUrl, signal) : { image: null, warning: null };
+  return { title, artist, thumbnailUrl, ...artwork };
+}
+
+export async function retrieveYoutubeArtwork(thumbnailUrl, signal = new AbortController().signal) {
   let image = null;
   let warning = null;
-  if (metadata.thumbnail_url) {
+  if (thumbnailUrl) {
     try {
-      const thumbnail = new URL(metadata.thumbnail_url);
+      const thumbnail = new URL(thumbnailUrl);
       if (thumbnail.protocol !== 'https:' || thumbnail.username || thumbnail.password || thumbnail.port
         || !(thumbnail.hostname.endsWith('.ytimg.com') || thumbnail.hostname === 'img.youtube.com')) {
         throw new Error('Unsupported YouTube thumbnail URL');
@@ -48,5 +55,5 @@ export async function retrieveYoutubeMetadata(source, signal = new AbortControll
       warning = error.message;
     }
   }
-  return { artist, image, warning };
+  return { image, warning };
 }

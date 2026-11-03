@@ -794,7 +794,7 @@ app.post('/api/jobs/:id/stop', async (req, res) => {
 
 app.post('/api/jobs/:id/retrieve-metadata', async (req, res) => {
   try {
-    const job = await retrieveJobMetadata(req.params.id, req.user);
+    const job = await retrieveJobMetadata(req.params.id, req.user, req.body);
     if (!job) return res.status(404).json({ error: 'Job not found' });
     return res.status(202).json(visibleJob(job, req.user));
   } catch (error) {

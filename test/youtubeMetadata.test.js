@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import NodeID3 from 'node-id3';
-import { retrieveYoutubeMetadata } from '../src/youtubeMetadata.js';
+import { retrieveYoutubeArtwork, retrieveYoutubeMetadata } from '../src/youtubeMetadata.js';
 import { readSongSourceUrl } from '../src/music.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
@@ -49,6 +49,24 @@ test('oEmbed retrieves channel and thumbnail directly with bounded, nonredirecti
     assert.equal(call.options.redirect, 'error');
     assert.ok(call.options.signal instanceof AbortSignal);
   }
+});
+
+test('oEmbed title lookups defer artwork until a source has been matched', async (context) => {
+  const calls = [];
+  context.mock.method(globalThis, 'fetch', async (url) => {
+    calls.push(new URL(url).href);
+    return calls.length === 1 ? Response.json({ title: ' Original title ', author_name: 'Channel',
+      thumbnail_url: 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg' }) : new Response(png);
+  });
+  const metadata = await retrieveYoutubeMetadata('https://youtu.be/abcdefghijk', undefined, { includeArtwork: false });
+  assert.equal(metadata.title, 'Original title');
+  assert.equal(metadata.artist, 'Channel');
+  assert.equal(metadata.image, null);
+  assert.equal(calls.length, 1);
+  const artwork = await retrieveYoutubeArtwork(metadata.thumbnailUrl);
+  assert.deepEqual(artwork.image, { mime: 'image/png', imageBuffer: png });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1], metadata.thumbnailUrl);
 });
 
 test('oEmbed rejects invalid sources and unsafe artwork URLs without fetching them', async (context) => {

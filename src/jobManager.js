@@ -10,7 +10,7 @@ import { deletePostgresJob, indexPostgresSongMetadata, normalizePostgresSearchIn
 import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTranscriptionOptions } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongArtwork, readSongMetadata, readSongSourceUrl, readSongSummary, updateSongMetadata } from './music.js';
-import { retrieveYoutubeMetadata } from './youtubeMetadata.js';
+import { retrieveYoutubeArtwork, retrieveYoutubeMetadata } from './youtubeMetadata.js';
 import { encodeThumbnail, readDownloadedArtwork, refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
 import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
@@ -630,7 +630,7 @@ function removeQueuedJob(job) {
   queuedJobs.forEach((queued, position) => { queued.queuePosition = position + 1; });
 }
 
-function startJob(job, { metadata = false } = {}) {
+function startJob(job, { metadata = false, metadataOptions } = {}) {
   const execution = { controller: new AbortController(), active: false, done: null, metadata, enumerating: metadata };
   jobExecutions.set(job.id, execution);
   job.queuePosition = queuedJobs.push(job);
@@ -640,7 +640,7 @@ function startJob(job, { metadata = false } = {}) {
   execution.done = queuedWork.then(async () => {
     if (!metadata || execution.controller.signal.aborted) return;
     execution.enumerating = false;
-    await retrieveJobMetadataWork(job, execution.controller.signal);
+    await retrieveJobMetadataWork(job, execution.controller.signal, metadataOptions);
   }).catch(async (error) => {
     if (execution.controller.signal.aborted) {
       if (metadata && execution.active && !execution.enumerating) await finishStoppedJob(job);
@@ -1213,16 +1213,38 @@ export async function stopJob(id, user = null) {
   }
 }
 
-async function retrieveJobMetadataWork(job, signal) {
+async function retrieveJobMetadataWork(job, signal, { artistPrefix = '', artistPostfix = '', existingArtist = 'overwrite' } = {}) {
   const outputDir = await fs.realpath(job.outputDir);
   const eligible = job.files.filter((name) => /\.mp3$/i.test(name) && !isNoVocals({ name }));
   const sourceUrls = new Map();
+  const unmatchedUrls = new Set();
+  const metadataByUrl = new Map();
+  const addSourceMatch = (name, url) => {
+    if (!name || !eligible.includes(name)) return false;
+    sourceUrls.set(name, sourceUrls.has(name) && sourceUrls.get(name) !== url ? null : url);
+    return true;
+  };
   for (const source of job.sourceSongs || []) {
     signal.throwIfAborted();
     const url = normalizeVideoUrl(source.url);
+    if (!url) continue;
     const name = url && typeof source.title === 'string' ? await findExistingMediaFile(job, source.title) : null;
-    if (name && eligible.includes(name)) {
-      sourceUrls.set(name, sourceUrls.has(name) && sourceUrls.get(name) !== url ? null : url);
+    if (!addSourceMatch(name, url)) unmatchedUrls.add(url);
+  }
+  if (unmatchedUrls.size) {
+    appendJobOutput(job, `[system]\nChecking oEmbed titles for ${unmatchedUrls.size} unmatched playlist video(s).`);
+    await persistJob(job);
+  }
+  for (const url of unmatchedUrls) {
+    signal.throwIfAborted();
+    try {
+      const metadata = await retrieveYoutubeMetadata(url, signal, { includeArtwork: false });
+      metadataByUrl.set(url, metadata);
+      const name = await findExistingMediaFile(job, metadata.title);
+      if (addSourceMatch(name, url)) appendJobOutput(job, `[system]\nMatched by oEmbed title: ${name}`);
+    } catch (error) {
+      signal.throwIfAborted();
+      appendJobOutput(job, `[system]\nUnable to check oEmbed title for ${url}: ${error.message}`);
     }
   }
   let updated = 0;
@@ -1234,14 +1256,21 @@ async function retrieveJobMetadataWork(job, signal) {
       if (!filePath || !isValidJobFileName(name) || !isFileInsideJobFolder({ outputDir }, filePath)) {
         throw new Error('Downloaded song file is unavailable');
       }
+      if (existingArtist === 'skip' && (await readSongSummary(filePath, await fs.stat(filePath))).artist?.trim()) {
+        appendJobOutput(job, `[system]\nSkipped file with existing artist: ${name}`);
+        continue;
+      }
       const sourceUrl = await readSongSourceUrl(filePath) || sourceUrls.get(name)
         || (!job.isPlaylist && eligible.length === 1 ? normalizeVideoUrl(job.url) : null);
       if (!sourceUrl) throw new Error(sourceUrls.has(name)
         ? 'Ambiguous playlist title matches multiple video URLs'
         : 'No matching YouTube video URL for the downloaded filename');
-      const { artist, image, warning } = await retrieveYoutubeMetadata(sourceUrl, signal);
+      const cachedMetadata = metadataByUrl.get(sourceUrl);
+      const { artist, image, warning } = cachedMetadata
+        ? { ...cachedMetadata, ...await retrieveYoutubeArtwork(cachedMetadata.thumbnailUrl, signal) }
+        : await retrieveYoutubeMetadata(sourceUrl, signal);
       const changes = {};
-      if (artist) changes.artist = artist;
+      if (artist) changes.artist = `${artistPrefix}${artist}${artistPostfix}`;
       if (image) changes.artwork = `data:image/avif;base64,${(await encodeThumbnail(image)).toString('base64')}`;
       signal.throwIfAborted();
       if (!Object.keys(changes).length) throw new Error(warning || 'No artist or artwork was returned by oEmbed');
@@ -1270,11 +1299,18 @@ async function retrieveJobMetadataWork(job, signal) {
   await persistJob(job);
 }
 
-export async function retrieveJobMetadata(id, user = null) {
+export async function retrieveJobMetadata(id, user = null, options = {}) {
   const job = await getJob(id);
   if (!job) return null;
   await assertCanModifyJob(job, user, true);
   assertJobIsIdle(job, 'retrieve metadata for');
+  if (!options || typeof options !== 'object' || Array.isArray(options)
+    || ['artistPrefix', 'artistPostfix'].some((key) => options[key] !== undefined
+      && (typeof options[key] !== 'string' || options[key].length > 200))
+    || (options.existingArtist !== undefined && !['overwrite', 'skip'].includes(options.existingArtist))) {
+    throw Object.assign(new Error('Invalid metadata retrieval options'), { statusCode: 400 });
+  }
+  const metadataOptions = { artistPrefix: options.artistPrefix, artistPostfix: options.artistPostfix, existingArtist: options.existingArtist };
   if (job.source || job.downloadType === 'video' || !job.outputDir
     || !job.files.some((name) => /\.mp3$/i.test(name) && !isNoVocals({ name }))) {
     throw Object.assign(new Error('Metadata retrieval requires downloaded audio files'), { statusCode: 400 });
@@ -1292,12 +1328,12 @@ export async function retrieveJobMetadata(id, user = null) {
     job.updatedAt = new Date().toISOString();
     await persistJob(job);
     if (job.isPlaylist) {
-      startJob(job, { metadata: true });
+      startJob(job, { metadata: true, metadataOptions });
       return job;
     }
     const execution = { controller: new AbortController(), active: true, metadata: true, done: null };
     jobExecutions.set(id, execution);
-    execution.done = Promise.resolve().then(() => retrieveJobMetadataWork(job, execution.controller.signal))
+    execution.done = Promise.resolve().then(() => retrieveJobMetadataWork(job, execution.controller.signal, metadataOptions))
       .catch(async (error) => {
         if (execution.controller.signal.aborted) return finishStoppedJob(job);
         job.status = 'failed';
