@@ -143,6 +143,113 @@ test('MP3 lyrics edit and clear SYLT and USLT independently without changing aud
   assert.deepEqual(await fs.readFile(filePath), unchanged);
 });
 
+test('job storage totals and process output cleanup enforce HTTP permissions', { timeout: 30_000 }, async (context) => {
+  let server;
+  async function stopServer() {
+    if (server && server.exitCode === null && server.signalCode === null) {
+      const exited = once(server, 'exit');
+      server.kill();
+      await exited;
+    }
+  }
+  const { directory, database } = await createTestDatabase(context, { beforeCleanup: stopServer });
+  const store = await import('../src/authStore.js');
+  const users = {};
+  const credentials = {};
+  for (const name of ['Admin', 'Owner', 'Other', 'Reader']) {
+    const user = await store.registerUser(name, name, { id: name, publicKey: Buffer.from(name), counter: 0 });
+    if (name !== 'Admin') await store.updateUser(user.id, { status: 'approved' }, users.Admin.id);
+    users[name] = user;
+    const session = await store.createSession(user.id);
+    const pat = await store.createPrivateAccessToken(user.id, 'Output cleanup test');
+    credentials[name] = [{ Cookie: `ssmusic_session=${session.token}` }, { 'X-PAT': pat.token }, { Authorization: `Bearer ${session.token}` }];
+  }
+  await store.updateUser(users.Reader.id, { role: 'shared', sharedUserIds: [users.Owner.id] }, users.Admin.id);
+  const outputDir = path.join(directory, 'output', 'stored-output');
+  await fs.mkdir(path.join(outputDir, '[NoVocals]'), { recursive: true });
+  const sizes = [['Open.wav', 7], ['secret.mp3', 11], ['[NoVocals]/secret.mp3', 13], ['cover.jpg', 5]];
+  for (const [name, size] of sizes) await fs.writeFile(path.join(outputDir, name), Buffer.alloc(size));
+  const now = new Date().toISOString();
+  await writeJob(database, { id: 'stored-output', url: '', status: 'failed', source: 'upload',
+    initiatedBy: users.Owner, playlistTitle: 'Stored output', outputDir,
+    files: [...sizes.map(([name]) => name), 'missing.mp3'], privateFiles: ['secret.mp3'],
+    createdAt: now, updatedAt: now, output: 'Old failed command output' });
+  await writeJob(database, { id: 'private-output', url: '', status: 'completed', private: true,
+    initiatedBy: users.Owner, playlistTitle: 'Private job', files: [], createdAt: now, updatedAt: now, output: 'Private process output' });
+  const listeners = [net.createServer(), net.createServer()];
+  await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve))));
+  const [httpPort, httpsPort] = listeners.map((listener) => listener.address().port);
+  await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.close(resolve))));
+  async function startServer() {
+    server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
+      '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
+      cwd: directory, env: { ...process.env, YTDLP_OUTPUT_ROOT: path.join(directory, 'output'),
+        LIBRARY_BACKUP_ROOT: path.join(directory, 'backups'), HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '',
+        PASSKEY_RP_ID: 'localhost', PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: '' },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    await new Promise((resolve, reject) => {
+      let output = '';
+      server.once('error', reject);
+      server.once('exit', (code) => reject(new Error(`Test server exited with ${code}: ${output}`)));
+      server.stderr.on('data', (chunk) => { output += chunk; });
+      server.stdout.on('data', (chunk) => {
+        output += chunk;
+        if (output.includes('ssMusic HTTPS server listening')) resolve();
+      });
+    });
+  }
+  const call = (route, headers = {}, method = 'GET') => new Promise((resolve, reject) => {
+    const request = https.request({ hostname: '127.0.0.1', port: httpsPort, path: route,
+      headers, method, rejectUnauthorized: false }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers,
+        body: JSON.parse(Buffer.concat(chunks).toString()) }));
+    });
+    request.on('error', reject);
+    request.setTimeout(5000, () => request.destroy(new Error('HTTP test request timed out')));
+    request.end();
+  });
+  await startServer();
+  for (const name of ['Admin', 'Owner', 'Other']) {
+    const response = await call('/api/jobs', credentials[name][0]);
+    assert.equal(response.status, 200);
+    const job = response.body.find((candidate) => candidate.id === 'stored-output');
+    assert.equal(job.totalSizeBytes, name === 'Owner' ? 36 : 12);
+    assert.equal(response.body.some((candidate) => candidate.id === 'private-output'), name === 'Owner');
+  }
+  await fs.writeFile(path.join(outputDir, 'Open.wav'), Buffer.alloc(9));
+  assert.equal((await call('/api/jobs', credentials.Owner[0])).body.find((job) => job.id === 'stored-output').totalSizeBytes, 38);
+  const route = '/api/admin/jobs/process-outputs';
+  assert.equal((await call(route, {}, 'DELETE')).status, 401);
+  for (const name of ['Owner', 'Other', 'Reader']) {
+    for (const headers of credentials[name]) assert.equal((await call(route, headers, 'DELETE')).status, 403);
+  }
+  assert.equal((await readPostgresJob(database, 'private-output')).output, 'Private process output');
+  for (const [index, headers] of credentials.Admin.entries()) {
+    if (index) {
+      const job = await readPostgresJob(database, 'stored-output');
+      await writeJob(database, { ...job, output: 'Another process output' });
+    }
+    const response = await call(route, headers, 'DELETE');
+    assert.equal(response.status, 200);
+    assert.equal(response.headers['cache-control'], 'no-store');
+    assert.deepEqual(response.body, { clearedJobs: index ? 1 : 2 });
+    assert.equal((await readPostgresJob(database, 'private-output')).output, null);
+    const job = (await call('/api/jobs/stored-output', credentials.Owner[0])).body;
+    assert.equal(job.output, null);
+    assert.equal(job.status, 'failed');
+    assert.equal(Object.hasOwn(job, 'outputRevision'), false);
+  }
+  assert.deepEqual((await call(route, credentials.Admin[0], 'DELETE')).body, { clearedJobs: 0 });
+  for (const [name, size] of sizes) assert.equal((await fs.stat(path.join(outputDir, name))).size, name === 'Open.wav' ? 9 : size);
+  await stopServer();
+  await startServer();
+  assert.equal((await call('/api/jobs/stored-output', credentials.Owner[0])).body.output, null);
+  assert.equal((await call('/api/jobs', credentials.Other[0])).body.find((job) => job.id === 'stored-output').totalSizeBytes, 14);
+});
+
 test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 120_000 }, async (context) => {
   let server;
   const { directory } = await createTestDatabase(context, { beforeCleanup: async () => {

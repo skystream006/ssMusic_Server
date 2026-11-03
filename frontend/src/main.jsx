@@ -309,7 +309,7 @@ function BackupJobStatus() {
     : hasCount ? 'Writing archive' : 'Preparing songs';
 
   return <section className="jobs-section backup-jobs-section" aria-labelledby="backup-jobs-heading">
-    <div className="section-title"><div><span>02</span><h2 id="backup-jobs-heading">Your library backup</h2></div></div>
+    <div className="section-title"><div><span>03</span><h2 id="backup-jobs-heading">Your library backup</h2></div></div>
     {error && <div className="notice error" role="alert"><CircleAlert size={16} />Backup status unavailable: {error}</div>}
     {backup ? <>
       <div className="backup-job-row">
@@ -358,6 +358,8 @@ function JobsPage({ tab = 'tasks' }) {
   const [selectingJobs, setSelectingJobs] = useState(false);
   const [selectedJobIds, setSelectedJobIds] = useState(new Set());
   const [bulkResult, setBulkResult] = useState(null);
+  const [clearingOutputs, setClearingOutputs] = useState(false);
+  const [outputCleanupMessage, setOutputCleanupMessage] = useState(null);
 
   useEffect(() => {
     if (!jobs) return;
@@ -447,6 +449,26 @@ function JobsPage({ tab = 'tasks' }) {
     setRevision((current) => current + 1);
   }
 
+  async function clearAllProcessOutputs() {
+    if (user.role !== 'admin' || clearingOutputs) return;
+    if (!await confirm({
+      title: 'Clear all process outputs?',
+      message: "Clear current process output for every job, including other users' jobs? Downloaded files are kept, and running jobs can produce new output. This cannot be undone.",
+      action: 'delete', label: 'Clear outputs'
+    })) return;
+    setClearingOutputs(true);
+    setOutputCleanupMessage(null);
+    try {
+      const { clearedJobs } = await request('/api/admin/jobs/process-outputs', { method: 'DELETE' });
+      setOutputCleanupMessage({ type: 'success', text: `Cleared process output for ${clearedJobs} ${clearedJobs === 1 ? 'job' : 'jobs'}.` });
+      setRevision((current) => current + 1);
+    } catch (error) {
+      setOutputCleanupMessage({ type: 'error', text: error.message });
+    } finally {
+      setClearingOutputs(false);
+    }
+  }
+
   async function submitJob(event) {
     event.preventDefault();
     setSubmitting(true);
@@ -509,7 +531,6 @@ function JobsPage({ tab = 'tasks' }) {
           <p>Your local media archive.</p>
         </div>
         <div className="jobs-heading-actions">
-          {tab === 'tasks' && <button className="secondary-button" type="button" onClick={() => setImporting(true)}><Upload size={17} />Import media</button>}
           <div className="queue-summary" aria-label="Queue summary">
           <div><strong>{jobs ? filteredJobs.length : '-'}</strong><span>Total</span></div>
           <div><strong>{counts.running || 0}</strong><span>Active</span></div>
@@ -554,6 +575,17 @@ function JobsPage({ tab = 'tasks' }) {
           </div>
         </form>
         {message && <div className={`notice ${message.type}`} role="status">{message.text}</div>}
+      </section>
+
+      <section className="jobs-section featured-tasks" aria-labelledby="featured-tasks-heading">
+        <div className="section-title"><div><span>02</span><h2 id="featured-tasks-heading">Featured Tasks</h2></div></div>
+        <div className="featured-task-actions">
+          <button className="secondary-button" type="button" onClick={() => setImporting(true)}><Upload size={17} />Import media</button>
+          {user.role === 'admin' && <button className="secondary-button" type="button" disabled={clearingOutputs} onClick={clearAllProcessOutputs}>
+            {clearingOutputs ? <RefreshCw className="spin" size={17} /> : <Trash2 size={17} />}Clear all process outputs
+          </button>}
+        </div>
+        {outputCleanupMessage && <div className={`notice ${outputCleanupMessage.type}`} role={outputCleanupMessage.type === 'error' ? 'alert' : 'status'}>{outputCleanupMessage.text}</div>}
       </section>
 
       <BackupJobStatus /></>}
@@ -642,6 +674,9 @@ function JobsPage({ tab = 'tasks' }) {
                   <td className="job-column-created">{formatDate(job.createdAt)}</td>
                   <td>{job.isPlaylist ? (job.playlistSongCount ?? '-') : 1}</td>
                   <td>{countDownloadedFiles(job.files)}</td>
+                  <td className="job-column-size" title={job.totalSizeBytes == null ? 'Storage size unavailable' : `${job.totalSizeBytes.toLocaleString()} bytes`}>
+                    {job.totalSizeBytes == null ? '-' : formatBytes(job.totalSizeBytes)}
+                  </td>
                   <td><span className="job-initiator">{job.initiatedBy?.name || 'Unknown'}</span></td>
                   <td><div className="job-row-actions">
                     <a className="icon-link" href={`/job/${job.id}`} aria-label={`Open job ${job.id}`} title="Open job"><ExternalLink size={17} /></a>
@@ -1108,7 +1143,7 @@ function HealthMetrics() {
   const { data: health, error } = usePolling(loadHealth, 3000);
   const memoryPercent = health ? health.memory.usedBytes / health.memory.totalBytes * 100 : 0;
   const diskUsed = health ? health.storage.totalBytes - health.storage.freeBytes : 0;
-  const diskPercent = health ? diskUsed / health.storage.totalBytes * 100 : 0;
+  const diskPercent = health?.storage.totalBytes > 0 ? diskUsed / health.storage.totalBytes * 100 : 0;
 
   return <AppShell section="health">
     <section className="page-heading health-heading">
@@ -1121,7 +1156,7 @@ function HealthMetrics() {
       <section className="metrics-grid">
         <Metric icon={<Activity />} label="CPU usage" value={`${health.cpu.usagePercent.toFixed(1)}%`} detail="Current processor load" percent={health.cpu.usagePercent} />
         <Metric icon={<MemoryStick />} label="Memory" value={formatBytes(health.memory.usedBytes)} detail={`${formatBytes(health.memory.totalBytes)} total`} percent={memoryPercent} />
-        <Metric icon={<HardDrive />} label="Storage free" value={formatBytes(health.storage.freeBytes)} detail={`${formatBytes(health.storage.totalBytes)} total`} percent={diskPercent} />
+        <Metric icon={<HardDrive />} label="Storage used" value={`${diskPercent.toFixed(1)}%`} detail={`${formatBytes(health.storage.freeBytes)} free of ${formatBytes(health.storage.totalBytes)}`} percent={diskPercent} />
         <Metric icon={<Network />} label="Network in" value={`${formatBytes(health.network.rxSec)}/s`} detail={`${formatBytes(health.network.rxBytes)} received`} />
         <Metric icon={<Network />} label="Network out" value={`${formatBytes(health.network.txSec)}/s`} detail={`${formatBytes(health.network.txBytes)} sent`} />
         <Metric icon={<Mic />} label="Transcription service" value={health.transcription?.status === 'active' ? <span className="transcription-active">Active</span> : <span className="transcription-inactive">Inactive</span>} detail={health.transcription?.status === 'active' ? null : health.transcription?.message || 'Status unavailable'} />

@@ -7,6 +7,7 @@ export const jobSortColumns = [
   { key: 'created', label: 'Created', value: (job) => Date.parse(job.createdAt) },
   { key: 'songs', label: 'Songs', value: (job) => job.isPlaylist ? job.playlistSongCount : 1 },
   { key: 'files', label: 'Files', value: (job) => countDownloadedFiles(job.files) },
+  { key: 'size', label: 'Total Size', value: (job) => job.totalSizeBytes },
   { key: 'initiator', label: 'Initiated by', value: (job) => job.initiatedBy?.name || 'Unknown' }
 ];
 

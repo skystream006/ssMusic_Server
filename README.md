@@ -35,9 +35,22 @@ Standard YouTube, mobile YouTube, YouTube Music, and `youtu.be` links are accept
 Links containing a `list` query parameter download the complete playlist.
 
 The Jobs tabs are ordered **Tasks**, **Recent Jobs**, then **Jobs Queue**.
-Tasks (`/job`) contains downloads, imports, and library backup status.
+Tasks (`/job`) contains downloads, **Featured Tasks** (imports and admin process-output
+cleanup), and library backup status.
 Recent Jobs (`/job?tab=recent`) contains the job list, filters, sorting, and job
 actions. Jobs Queue is the last tab and is visible only to administrators.
+
+Administrators can use **Tasks > Featured Tasks > Clear all process outputs** to erase current
+saved and live process output for every user's jobs, after confirmation. Files,
+job status, and command history fields are kept; running jobs continue and can
+produce new output. The admin-only `DELETE /api/admin/jobs/process-outputs`
+endpoint returns `{ clearedJobs }`.
+
+Recent Jobs includes a sortable **Total Size** column (`totalSizeBytes` in
+`GET /api/jobs`). It sums current file sizes in each job's visible inventory,
+including NoVocals files and sidecars, without duplicate paths or missing files.
+Private files remain excluded for other viewers. Database logs, shared caches,
+and untracked temporary files are not included; unavailable storage shows `-`.
 
 Video jobs download video with audio, preferring MP4/M4A streams, and use FFmpeg
 to merge or remux the result to MP4. Reruns keep the original format. The same URL
@@ -2173,7 +2186,17 @@ completes.
 ## System health
 
 Open `/health` on your configured HTTPS origin to view CPU, memory, network, disk,
-total media files, and transcription-service status. **Total media files** counts
+total media files, and transcription-service status. **Storage used** shows the
+percentage used, with free space and total capacity underneath, for one drive.
+Docker reads the existing `/app/import-storage` host bind mount instead of its
+virtual filesystem. With the default import folder in a checkout on `C:`, this
+reports the Windows `C:` drive. Native Node defaults to the application's drive.
+`HEALTH_STORAGE_PATH` can select another filesystem path (a mounted path inside
+the container for Docker, or for example `C:/` for native Node). If the selected
+path is unavailable, Health reports an error instead of silently showing Docker's
+virtual disk or combining other drives.
+
+**Total media files** counts
 existing audio and video files in the server's saved job inventory across all users,
 including imported media and NoVocals audio. Playlist links and repeated references
 to the same file path count once; separate stored copies count separately. Metadata,

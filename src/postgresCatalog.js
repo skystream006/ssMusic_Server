@@ -141,10 +141,19 @@ export async function writePostgresJob(database, job) {
     const fileNames = new Set(files);
     if (header.songMetadata) header.songMetadata = Object.fromEntries(Object.entries(header.songMetadata).filter(([name]) => !fileNames.has(name)));
     if (header.transcriptions) header.transcriptions = Object.fromEntries(Object.entries(header.transcriptions).filter(([name]) => !fileNames.has(name)));
-    await database.prepare(`INSERT INTO jobs (id, url, status, created_at, data, song_count) VALUES ($1, $2, $3, $4, $5, $6)
+    const stored = await database.prepare(`INSERT INTO jobs (id, url, status, created_at, data, song_count) VALUES ($1, $2, $3, $4, $5, $6)
       ON CONFLICT(id) DO UPDATE SET url = excluded.url, status = excluded.status,
-        created_at = excluded.created_at, data = excluded.data, song_count = excluded.song_count`)
-      .run(job.id, job.url.trim(), job.status, job.createdAt || '', JSON.stringify(header), files.filter(mediaType).length);
+        created_at = excluded.created_at, song_count = excluded.song_count,
+        data = CASE WHEN jobs.data->>'outputRevision' IS DISTINCT FROM excluded.data->>'outputRevision'
+          THEN excluded.data || jsonb_build_object('output', jobs.data->'output', 'outputRevision', jobs.data->'outputRevision')
+          ELSE excluded.data END
+      RETURNING CASE WHEN data->>'outputRevision' IS DISTINCT FROM $7::text THEN data->>'output' END AS output,
+        data->>'outputRevision' AS "outputRevision"`)
+      .get(job.id, job.url.trim(), job.status, job.createdAt || '', JSON.stringify(header), files.filter(mediaType).length, header.outputRevision ?? null);
+    if (job.outputRevision === header.outputRevision && job.outputRevision !== (stored.outputRevision || undefined)) {
+      job.output = stored.output;
+      job.outputRevision = stored.outputRevision;
+    }
     await database.prepare('DELETE FROM job_users WHERE job_id = $1').run(job.id);
     for (const userId of users) await database.prepare('INSERT INTO job_users (job_id, user_id) VALUES ($1, $2)').run(job.id, userId);
     await insertRows(database, `INSERT INTO songs (job_id, name, file_order, media_type, metadata, transcription, search_text, karaoke_stem)

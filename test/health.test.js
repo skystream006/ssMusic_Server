@@ -3,8 +3,46 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { countMediaFiles, scanMediaFiles, createMediaCountMonitor, getTranscriptionHealth } from '../src/health.js';
+import si from 'systeminformation';
+import { countMediaFiles, scanMediaFiles, createMediaCountMonitor, getJobStorageBytes, getSystemHealth, getTranscriptionHealth } from '../src/health.js';
 import { audioExtensions, videoExtensions } from '../src/media.js';
+
+for (const storagePath of [undefined, '/app/import-storage']) {
+test(`system health reports only the ${storagePath ? 'configured host drive instead of the Docker filesystem' : 'filesystem containing the server application'}`, async (context) => {
+  const previous = process.env.HEALTH_STORAGE_PATH;
+  if (storagePath) process.env.HEALTH_STORAGE_PATH = storagePath;
+  else delete process.env.HEALTH_STORAGE_PATH;
+  context.after(() => {
+    if (previous === undefined) delete process.env.HEALTH_STORAGE_PATH;
+    else process.env.HEALTH_STORAGE_PATH = previous;
+  });
+  configureEndpoint(context, '');
+  context.mock.method(si, 'currentLoad', async () => ({ currentLoad: 12 }));
+  context.mock.method(si, 'mem', async () => ({ total: 100, active: 40, available: 60 }));
+  context.mock.method(si, 'networkStats', async () => []);
+  const allDrives = context.mock.method(si, 'fsSize', async () => [
+    { size: 100_000_000, available: 50_000_000 },
+    { size: 200_000_000, available: 150_000_000 }
+  ]);
+  const filesystem = context.mock.method(fs, 'statfs', async (directory) => {
+    if (storagePath) assert.equal(directory, storagePath);
+    else assert.equal(directory.href, new URL('../', import.meta.url).href);
+    return { blocks: 2000, bsize: 4096, bfree: 500, bavail: 400 };
+  });
+  const health = await getSystemHealth();
+  assert.deepEqual(health.storage, { totalBytes: 8_192_000, freeBytes: 1_638_400 });
+  assert.equal(health.cpu.usagePercent, 12);
+  assert.equal(filesystem.mock.callCount(), 1);
+  if (storagePath) {
+    context.mock.method(fs, 'statfs', async (directory) => {
+      assert.equal(directory, storagePath);
+      throw Object.assign(new Error('Host mount unavailable'), { code: 'ENOENT' });
+    });
+    await assert.rejects(getSystemHealth(), { code: 'ENOENT' });
+  }
+  assert.equal(allDrives.mock.callCount(), 0);
+});
+}
 
 test('media count includes audio and video across jobs, without counting links, missing files or non-media', async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-media-count-'));
@@ -57,6 +95,38 @@ test('media usage groups actual song files and storage by owner without counting
     }
   });
   assert.deepEqual(await scanMediaFiles([]), { totalFiles: 0, totalBytes: 0, byUser: {} });
+});
+
+test('job storage totals actual visible files without duplicates, missing files or escaped paths', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-job-size-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const outputDir = path.join(directory, 'job');
+  await fs.mkdir(path.join(outputDir, '[NoVocals]'), { recursive: true });
+  await fs.mkdir(path.join(outputDir, 'directory.mp3'));
+  for (const [name, size] of [['Song.mp3', 10], ['Video.mp4', 20], ['[NoVocals]/Song.wav', 5], ['cover.jpg', 4]]) {
+    await fs.writeFile(path.join(outputDir, name), Buffer.alloc(size));
+  }
+  await fs.writeFile(path.join(directory, 'outside.mp3'), Buffer.alloc(100));
+  const job = { outputDir, files: ['Song.mp3', 'Video.mp4', '[NoVocals]/Song.wav', 'cover.jpg', 'Song.mp3',
+    'missing.mp3', 'directory.mp3', '../outside.mp3', path.join(directory, 'outside.mp3'), null] };
+  assert.equal(await getJobStorageBytes(job), 39);
+  assert.equal(await getJobStorageBytes({ ...job, files: ['Video.mp4'] }), 20);
+  await fs.unlink(path.join(outputDir, 'Song.mp3'));
+  await fs.writeFile(path.join(outputDir, 'Video.mp4'), Buffer.alloc(25));
+  assert.equal(await getJobStorageBytes(job), 34);
+  assert.equal(await getJobStorageBytes({ files: ['Song.mp3'] }), 0);
+  assert.equal(await getJobStorageBytes({ outputDir, files: [] }), 0);
+  assert.equal(await getJobStorageBytes({ outputDir: path.join(directory, 'missing'), files: ['Song.mp3'] }), 0);
+});
+
+test('job storage rejects external symlink targets and reports inaccessible storage as unknown', async (context) => {
+  const outputDir = path.resolve('job-storage');
+  context.mock.method(fs, 'realpath', async (filePath) => filePath === outputDir ? outputDir : path.resolve('outside.mp3'));
+  const stat = context.mock.method(fs, 'stat', async () => assert.fail('Must not inspect files outside the job'));
+  assert.equal(await getJobStorageBytes({ outputDir, files: ['link.mp3'] }), 0);
+  assert.equal(stat.mock.callCount(), 0);
+  context.mock.method(fs, 'realpath', async () => { throw Object.assign(new Error('Access denied'), { code: 'EACCES' }); });
+  assert.equal(await getJobStorageBytes({ outputDir, files: ['Song.mp3'] }), null);
 });
 
 test('media usage scans at startup and daily, while status reads retain the last scan timestamp', async (context) => {

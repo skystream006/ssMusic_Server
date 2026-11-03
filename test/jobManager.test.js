@@ -1455,6 +1455,104 @@ test('paused job checkpoints survive for inspection after restart while manual r
   assert.equal(rerun.output, '[stdout]\nFresh manual rerun');
 });
 
+test('process output cleanup is admin-only and cannot be undone by stale job saves', { timeout: 10_000 }, async (context) => {
+  const { manager } = await makeQueueFixture(context);
+  const database = openDatabase();
+  const filePath = path.join(fixtureDirectory, 'Kept.mp3');
+  await fs.writeFile(filePath, 'unchanged media');
+  const stored = {
+    id: 'stored-output', url: '', status: 'completed', source: 'upload', private: true,
+    playlistTitle: 'Stored job', outputDir: fixtureDirectory, files: ['Kept.mp3'],
+    command: 'original command', output: '[stdout]\nOld process output',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  await writeJob(database, stored);
+  await writeJob(database, { ...stored, id: 'empty-output', files: [], output: null });
+  const stale = await manager.getJob(stored.id);
+  for (const user of [null, { id: 'reader', role: 'user' }, { id: 'shared', role: 'shared' }]) {
+    await assert.rejects(manager.clearProcessOutputs(user), { statusCode: 403 });
+    assert.equal((await manager.getJob(stored.id)).output, stored.output);
+  }
+  const admin = { id: 'admin', role: 'admin' };
+  assert.deepEqual(await manager.clearProcessOutputs(admin), { clearedJobs: 1 });
+  const cleared = await manager.getJob(stored.id);
+  assert.equal(cleared.output, null);
+  for (const key of ['status', 'source', 'private', 'playlistTitle', 'outputDir', 'files', 'command', 'createdAt', 'updatedAt']) {
+    assert.deepEqual(cleared[key], stored[key]);
+  }
+  assert.equal(await fs.readFile(filePath, 'utf8'), 'unchanged media');
+  stale.playlistTitle = 'Edited while clearing';
+  await writeJob(database, stale);
+  assert.equal((await manager.getJob(stored.id)).output, null);
+  assert.equal((await manager.getJob(stored.id)).playlistTitle, stale.playlistTitle);
+  assert.deepEqual(await manager.clearProcessOutputs(admin), { clearedJobs: 0 });
+});
+
+test('process output cleanup resets live buffers without stopping downloads or restoring old command text', { timeout: 10_000 }, async (context) => {
+  const { manager, nextCommand } = await makeQueueFixture(context);
+  const admin = { id: 'admin', role: 'admin' };
+  const job = await manager.createJob('https://music.youtube.com/watch?v=clear-output', admin);
+  fixtureCleanups.set(context, async () => {
+    if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, admin);
+  });
+  (await nextCommand(0)).finish();
+  const download = await nextCommand(1);
+  download.stdout.write('Old progress\n');
+  download.stderr.write('ERROR: Private video\n');
+  assert.deepEqual(await manager.clearProcessOutputs(admin), { clearedJobs: 1 });
+  assert.equal(job.status, 'running');
+  assert.equal(job.output, null);
+  assert.deepEqual(manager.getLiveJobOutput(job), { status: 'running', output: '', truncated: false });
+  download.stdout.write('New progress\n');
+  download.stderr.write('New diagnostic\n');
+  assert.match(manager.getLiveJobOutput(job).output, /New progress/);
+  assert.doesNotMatch(manager.getLiveJobOutput(job).output, /Old progress|Private video/);
+  download.finish('Finished\n');
+  await waitForJobToFinish(job);
+  assert.equal(job.status, 'partially_completed');
+  assert.match(job.output, /New progress/);
+  assert.match(job.output, /New diagnostic/);
+  assert.doesNotMatch(job.output, /Old progress|Private video/);
+  assert.equal((await manager.getJob(job.id)).output, job.output);
+});
+
+test('process output cleanup during the final command save cannot restore failure output', { timeout: 10_000 }, async (context) => {
+  const { manager, nextCommand } = await makeQueueFixture(context);
+  const admin = { id: 'admin', role: 'admin' };
+  const job = await manager.createJob('https://music.youtube.com/watch?v=clear-final-output', admin);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let reached;
+  const saved = new Promise((resolve) => { reached = resolve; });
+  fixtureCleanups.set(context, async () => {
+    release();
+    if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, admin);
+  });
+  (await nextCommand(0)).finish();
+  const download = await nextCommand(1);
+  const database = openDatabase();
+  const transact = database.withTransaction.bind(database);
+  let hold = true;
+  context.mock.method(database, 'withTransaction', async (operation) => {
+    const result = await transact(operation);
+    if (hold && job.output?.includes('Old terminal failure')) {
+      hold = false;
+      reached();
+      await gate;
+    }
+    return result;
+  });
+  download.finish('ERROR: Old terminal failure\n', 1);
+  await saved;
+  await manager.clearProcessOutputs(admin);
+  assert.equal(job.output, null);
+  release();
+  await waitForJobToFinish(job);
+  assert.equal(job.status, 'failed');
+  assert.doesNotMatch(job.output || '', /Old terminal failure/);
+  assert.doesNotMatch((await manager.getJob(job.id)).output || '', /Old terminal failure/);
+});
+
 for (const exitCode of [0, 1]) {
   test(`live job output exposes both streams before exit code ${exitCode}`, async (t) => {
     const { manager, nextCommand } = await makeQueueFixture(t);

@@ -48,6 +48,39 @@ export async function scanMediaFiles(jobs) {
   return { totalFiles, totalBytes, byUser: Object.fromEntries(byUser) };
 }
 
+export async function getJobStorageBytes(job) {
+  if (!job.outputDir || !job.files?.length) return 0;
+  try {
+    const outputDir = await fs.realpath(job.outputDir);
+    const inside = (filePath) => {
+      const relative = path.relative(outputDir, filePath);
+      return relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    };
+    const counted = new Set();
+    let totalBytes = 0;
+    for (const name of job.files) {
+      if (typeof name !== 'string' || path.isAbsolute(name)) continue;
+      const filePath = path.resolve(outputDir, name);
+      if (!inside(filePath)) continue;
+      try {
+        const realPath = await fs.realpath(filePath);
+        if (!inside(realPath)) continue;
+        const key = process.platform === 'win32' ? realPath.toLowerCase() : realPath;
+        if (counted.has(key)) continue;
+        const stat = await fs.stat(realPath);
+        if (!stat.isFile()) continue;
+        counted.add(key);
+        totalBytes += stat.size;
+      } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+      }
+    }
+    return totalBytes;
+  } catch (error) {
+    return error.code === 'ENOENT' || error.code === 'ENOTDIR' ? 0 : null;
+  }
+}
+
 export function createMediaCountMonitor(scan) {
   let state = { totalFiles: null, totalBytes: null, byUser: null, scannedAt: null, scanning: false, error: null };
   async function refresh() {
@@ -90,19 +123,10 @@ export async function getSystemHealth() {
   const [load, memory, disk, network, transcription] = await Promise.all([
     si.currentLoad(),
     si.mem(),
-    si.fsSize(),
+    fs.statfs(process.env.HEALTH_STORAGE_PATH?.trim() || new URL('../', import.meta.url)),
     si.networkStats(),
     getTranscriptionHealth()
   ]);
-
-  const diskTotals = disk.reduce(
-    (acc, item) => {
-      acc.total += item.size;
-      acc.free += item.available;
-      return acc;
-    },
-    { total: 0, free: 0 }
-  );
 
   const networkTotals = network.reduce(
     (acc, item) => {
@@ -128,8 +152,8 @@ export async function getSystemHealth() {
     },
     network: networkTotals,
     storage: {
-      totalBytes: diskTotals.total,
-      freeBytes: diskTotals.free
+      totalBytes: disk.blocks * disk.bsize,
+      freeBytes: disk.bavail * disk.bsize
     },
     timestamp: new Date().toISOString()
   };

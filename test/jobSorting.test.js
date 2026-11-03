@@ -3,9 +3,9 @@ import test from 'node:test';
 import { jobSortColumns, sortJobs } from '../frontend/src/jobSorting.js';
 
 const jobs = [
-  { id: 'ten', playlistTitle: 'album 10', isPlaylist: true, status: 'running', createdAt: '2026-09-18T12:00:00Z', playlistSongCount: 10, files: Array.from({ length: 10 }, (_, index) => `Song ${index}.mp3`), initiatedBy: { name: 'Zoe' } },
-  { id: 'two', playlistTitle: 'Album 2', isPlaylist: true, status: 'completed', createdAt: '2026-09-18T14:00:00+03:00', playlistSongCount: 2, files: ['One.mp3', 'Two.mp3', '[NoVocals]/One.mp3'], initiatedBy: { name: 'alice' } },
-  { id: 'one', playlistTitle: 'Album 1', isPlaylist: false, status: 'failed', createdAt: '2026-09-19T12:00:00Z', files: ['One.mp3'], initiatedBy: { name: 'Bob' } }
+  { id: 'ten', playlistTitle: 'album 10', isPlaylist: true, status: 'running', createdAt: '2026-09-18T12:00:00Z', playlistSongCount: 10, files: Array.from({ length: 10 }, (_, index) => `Song ${index}.mp3`), totalSizeBytes: 10_000, initiatedBy: { name: 'Zoe' } },
+  { id: 'two', playlistTitle: 'Album 2', isPlaylist: true, status: 'completed', createdAt: '2026-09-18T14:00:00+03:00', playlistSongCount: 2, files: ['One.mp3', 'Two.mp3', '[NoVocals]/One.mp3'], totalSizeBytes: 200, initiatedBy: { name: 'alice' } },
+  { id: 'one', playlistTitle: 'Album 1', isPlaylist: false, status: 'failed', createdAt: '2026-09-19T12:00:00Z', files: ['One.mp3'], totalSizeBytes: 1024, initiatedBy: { name: 'Bob' } }
 ];
 const ids = (result) => result.map((job) => job.id);
 
@@ -23,6 +23,7 @@ const ascending = {
   created: ['two', 'ten', 'one'],
   songs: ['one', 'two', 'ten'],
   files: ['one', 'two', 'ten'],
+  size: ['two', 'one', 'ten'],
   initiator: ['two', 'one', 'ten']
 };
 const descending = { format: ['one', 'ten', 'two'] };
@@ -34,14 +35,14 @@ for (const { key } of jobSortColumns) {
   });
 }
 
-test('unknown song counts and invalid dates stay last in both directions', () => {
+test('unknown song counts, storage sizes and invalid dates stay last in both directions', () => {
   const records = [
     { id: 'missing', isPlaylist: true },
-    { id: 'invalid', isPlaylist: true, createdAt: 'invalid', playlistSongCount: null },
-    { id: 'zero', isPlaylist: true, createdAt: '1970-01-01T00:00:00Z', playlistSongCount: 0 },
-    { id: 'track', createdAt: '2026-09-18T12:00:00Z' }
+    { id: 'invalid', isPlaylist: true, createdAt: 'invalid', playlistSongCount: null, totalSizeBytes: null },
+    { id: 'zero', isPlaylist: true, createdAt: '1970-01-01T00:00:00Z', playlistSongCount: 0, totalSizeBytes: 0 },
+    { id: 'track', createdAt: '2026-09-18T12:00:00Z', totalSizeBytes: 1 }
   ];
-  for (const key of ['songs', 'created']) {
+  for (const key of ['songs', 'created', 'size']) {
     assert.deepEqual(ids(sortJobs(records, key, 'asc')), ['zero', 'track', 'missing', 'invalid']);
     assert.deepEqual(ids(sortJobs(records, key, 'desc')), ['track', 'zero', 'missing', 'invalid']);
   }

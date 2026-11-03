@@ -18,6 +18,8 @@ import { assertPrivacyEnabled, attachPrivacyAliases, canReadAllFiles, canReadFil
 
 const jobs = new Map();
 const liveJobOutputs = new Map();
+const jobCommandOutputs = new Map();
+let processOutputCleanup = Promise.resolve();
 const maxLiveOutputLength = 256 * 1024;
 const queuedJobs = [];
 let jobExecutionTail = Promise.resolve();
@@ -278,6 +280,36 @@ export function getLiveJobOutput(job) {
   };
 }
 
+export async function clearProcessOutputs(user) {
+  if (user?.role !== 'admin') throw Object.assign(new Error('Administrator access required'), { statusCode: 403 });
+  const operation = processOutputCleanup.then(async () => {
+    const revision = randomUUID();
+    const records = await database.prepare(`WITH previous AS (
+      SELECT id, COALESCE(data->>'output', '') <> '' AS had_output FROM jobs FOR UPDATE
+    ) UPDATE jobs SET data = jobs.data || jsonb_build_object('output', NULL, 'outputRevision', $1::text)
+      FROM previous WHERE jobs.id = previous.id RETURNING jobs.id, previous.had_output`).all(revision);
+    let clearedJobs = 0;
+    for (const record of records) {
+      const live = liveJobOutputs.get(record.id);
+      if (record.had_output || live?.output) clearedJobs += 1;
+      const job = jobs.get(record.id);
+      if (job) {
+        job.output = null;
+        job.outputRevision = revision;
+      }
+      if (live) liveJobOutputs.set(record.id, { output: '', stream: null, truncated: false });
+      const command = jobCommandOutputs.get(record.id);
+      if (command) {
+        command.offsets = { stdout: command.stdout, stderr: command.stderr };
+        command.cleared = true;
+      }
+    }
+    return { clearedJobs };
+  });
+  processOutputCleanup = operation.catch(() => {});
+  return operation;
+}
+
 function runCommand(command, args, signal, onOutput) {
   signal?.throwIfAborted();
   if (signal) assertJobsEnabled();
@@ -507,10 +539,6 @@ function createJobPublisher(job) {
 async function runJobCommand(job, command, args, { metadata = false, includeCommand = false, signal: jobSignal, publisher } = {}) {
   const commandText = [command, ...args].map((value) => value.includes(' ') ? `"${value}"` : value).join(' ');
   let retried = false;
-  const recordOutput = (result) => {
-    const output = formatCommandOutput(result) || result.message || 'Command completed without output.';
-    appendJobOutput(job, includeCommand || retried ? `[command]\n${commandText}\n\n${output}` : output);
-  };
   for (;;) {
     jobSignal.throwIfAborted();
     job.command = commandText;
@@ -521,6 +549,15 @@ async function runJobCommand(job, command, args, { metadata = false, includeComm
     activeJobControllers.set(job.id, controller);
     const signal = AbortSignal.any([controller.signal, jobSignal]);
     let pendingLine = '';
+    const commandOutput = { stdout: 0, stderr: 0, offsets: { stdout: 0, stderr: 0 }, cleared: false };
+    jobCommandOutputs.set(job.id, commandOutput);
+    const recordOutput = (result) => {
+      const output = formatCommandOutput({
+        stdout: (result.stdout || '').slice(commandOutput.offsets.stdout),
+        stderr: (result.stderr || '').slice(commandOutput.offsets.stderr)
+      }) || (!commandOutput.cleared && result.message) || 'Command completed without output.';
+      appendJobOutput(job, includeCommand || retried ? `[command]\n${commandText}\n\n${output}` : output);
+    };
     const completedLine = (line) => {
       if (!line.startsWith(completedFilePrefix)) return;
       try { publisher.enqueue(JSON.parse(line.slice(completedFilePrefix.length))); }
@@ -530,6 +567,7 @@ async function runJobCommand(job, command, args, { metadata = false, includeComm
     try {
       const result = await runCommand(command, args, signal,
         (stream, chunk) => {
+          commandOutput[stream] += chunk.length;
           appendLiveJobOutput(job.id, metadata ? `metadata ${stream}` : stream, chunk);
           if (publisher && stream === 'stdout') {
             const lines = (pendingLine + chunk).split(/\r?\n/);
@@ -550,7 +588,7 @@ async function runJobCommand(job, command, args, { metadata = false, includeComm
         error.stderr = `${error.stderr || ''}\n${message}`;
         appendLiveJobOutput(job.id, metadata ? 'metadata stderr' : 'stderr', message);
       }
-      if (!metadata || retried || jobSignal.aborted || error.code === 'JOBS_RATE_LIMITED') recordOutput(error);
+      if (!metadata || retried || jobSignal.aborted || error.code === 'JOBS_RATE_LIMITED' || commandOutput.cleared) recordOutput(error);
       if (jobSignal.aborted) throw error;
       if (error.code !== 'JOBS_RATE_LIMITED') {
         if (publisher) publisher.checkpoint();
@@ -573,6 +611,7 @@ async function runJobCommand(job, command, args, { metadata = false, includeComm
       retried = true;
     } finally {
       activeJobControllers.delete(job.id);
+      jobCommandOutputs.delete(job.id);
     }
   }
 }
@@ -849,6 +888,7 @@ async function runDownloadCommands(job, command, args, songs, signal, publisher)
 async function executeJobWork(job, signal) {
   assertJobsEnabled();
 
+  const outputRevision = job.outputRevision;
   const denoPath = resolveDenoPath();
   const ytDlpPath = resolveYtDlpPath();
   const ffmpegLocation = resolveFfmpegLocation();
@@ -946,7 +986,7 @@ async function executeJobWork(job, signal) {
     completedStatus = privateVideosOnly ? 'partially_completed' : 'failed';
     job.error = privateVideosOnly ? null : error.message;
     job.warning = privateVideosOnly ? 'One or more private or unavailable videos were skipped.' : null;
-    job.output ||= formatCommandOutput(error) || error.message;
+    job.output ||= (job.outputRevision === outputRevision && formatCommandOutput(error)) || error.message;
     if (!publisher) job.files = await listDownloadedFiles(job.outputDir);
   } finally {
     await publisher?.flush();

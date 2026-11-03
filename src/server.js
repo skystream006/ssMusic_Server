@@ -8,7 +8,7 @@ import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, getLiveJobOutput, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, retrieveJobMetadata, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, stopJob, transcribeJobFile } from './jobManager.js';
+import { clearProcessOutputs, createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, getLiveJobOutput, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, retrieveJobMetadata, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, stopJob, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
@@ -21,7 +21,7 @@ import { createLibraryBackupService } from './libraryBackup.js';
 import { prepareLibraryExport } from './libraryExport.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles, resolveImportUser } from './libraryImport.js';
 import { createReplaceFileHandler } from './replaceFile.js';
-import { scanMediaFiles, createMediaCountMonitor, getSystemHealth } from './health.js';
+import { scanMediaFiles, createMediaCountMonitor, getJobStorageBytes, getSystemHealth } from './health.js';
 import { isYouTubeUrl } from './utils.js';
 import { scheduleDailyMaintenance, scheduleLibraryBackups } from './scheduler.js';
 import { attachUser, registerAuthRoutes, requireAdmin, requireAuth } from './auth.js';
@@ -137,6 +137,14 @@ app.use('/api/admin/media-shares', requireAdmin, mediaShareHeaders, adminMediaSh
 app.get('/api/admin/jobs-queue', requireAdmin, (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ ...getJobQueue(req.user), maintenance: isUpdateInProgress(), rateLimit: getJobRateLimit() });
+});
+app.delete('/api/admin/jobs/process-outputs', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json(await clearProcessOutputs(req.user));
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message });
+  }
 });
 app.get('/api/settings/privacy', requireAuth, async (_req, res) => {
   res.set('Cache-Control', 'no-store');
@@ -487,7 +495,9 @@ app.get('/api/jobs/import/local', requireAdmin, async (_req, res) => {
 app.get('/api/jobs', async (req, res) => {
   const jobs = (await getJobs()).map((job) => visibleJob(job, req.user)).filter(Boolean);
   const library = (await getLibrary(req.user.id, jobs));
-  res.json(jobs.map((job) => ({ ...job, files: orderFiles(job.files || [], library.songOrder[job.id]) })));
+  res.json(await Promise.all(jobs.map(async (job) => ({
+    ...job, totalSizeBytes: await getJobStorageBytes(job), files: orderFiles(job.files || [], library.songOrder[job.id])
+  }))));
 });
 
 app.get('/api/jobs/status', (_req, res) => {

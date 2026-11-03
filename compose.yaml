@@ -40,6 +40,7 @@ services:
       MAX_CONNECTIONS: ${MAX_CONNECTIONS:-500}
       IMPORT_STORAGE_ROOT: /app/import-storage
       IMPORT_STORAGE_COMPLETED_ROOT: /app/import-storage-completed
+      HEALTH_STORAGE_PATH: ${HEALTH_STORAGE_PATH:-/app/import-storage}
       TRUST_PROXY: ${TRUST_PROXY:-}
       TRANSCRIPTION_ENDPOINT: ${TRANSCRIPTION_ENDPOINT:-}
       SEARCH_API_KEY: ${SEARCH_API_KEY:-}
