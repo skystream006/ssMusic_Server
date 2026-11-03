@@ -497,9 +497,10 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
     if (actionTrack) return;
     const sidebar = sidebarRef.current;
     const home = sidebar.closest('.music-home');
+    const layout = sidebar.closest('.library-layout');
     const resize = () => {
       if (!sidebar.getClientRects().length) return;
-      sidebar.style.setProperty('--playlist-top', `${sidebar.getBoundingClientRect().top + window.scrollY}px`);
+      sidebar.style.setProperty('--playlist-top', `${layout.getBoundingClientRect().top + window.scrollY + layout.clientTop}px`);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(home);

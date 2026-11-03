@@ -632,7 +632,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 .music-icon-button:hover:not(:disabled), .music-icon-button[aria-pressed="true"] { color: var(--royal); background: color-mix(in srgb, var(--royal) 12%, transparent); }
 .music-icon-button:disabled { opacity: .3; cursor: not-allowed; }
 .music-home :is(button, a, input, select):focus-visible { outline: 2px solid var(--royal); outline-offset: 2px; }
-.library-sidebar { min-width: 0; height: max(160px, calc(100dvh - var(--playlist-top, 200px) - var(--dock-height, 124px) - 12px)); align-self: start; padding: 22px 18px 12px 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: auto; scrollbar-width: thin; }
+.library-sidebar { position: sticky; top: var(--playlist-top, 200px); min-width: 0; height: max(160px, calc(100dvh - var(--playlist-top, 200px) - var(--dock-height, 124px) - 12px)); align-self: start; padding: 22px 18px 12px 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: auto; scrollbar-width: thin; }
 .library-sidebar > :not(.library-tree-scroll) { flex-shrink: 0; }
 .library-sidebar-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
 .library-sidebar-heading h2 { font: 700 13px 'Manrope', sans-serif; margin: 0; }
@@ -966,7 +966,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .library-mobile-tabs button { display: flex; gap: 8px; align-items: center; justify-content: center; flex: 1; height: 40px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; font-size: 12px; }
   .library-mobile-tabs [aria-pressed="true"] { color: var(--royal); border-bottom-color: var(--royal); }
   .library-layout, .library-layout:has(.player-panel) { display: block; border-top: 0; min-height: 360px; }
-  .library-sidebar { display: none; border-right: 0; padding: 4px 0 12px; }
+  .library-sidebar { position: static; display: none; border-right: 0; padding: 4px 0 12px; }
   .sidebar-open .library-sidebar { display: flex; }
   .sidebar-open .library-songs { display: none; }
   .library-songs { padding: 8px 0 20px; }
