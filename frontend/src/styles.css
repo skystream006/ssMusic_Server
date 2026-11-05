@@ -458,7 +458,8 @@ code { font: 400 11px 'DM Mono', monospace; }
 @keyframes music-loading-turn { to { transform: rotate(360deg); } }
 @keyframes music-loading-beat { from { transform: scaleY(.25); opacity: .45; } to { transform: scaleY(1); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .music-loading-record::before, .music-loading-record::after, .music-loading-record > svg, .music-loading-bars > span { animation: none; }
+  .music-loading-record::before { animation-duration: 6s; }
+  .music-loading-record::after, .music-loading-record > svg, .music-loading-bars > span { animation: none; }
 }
 .page-notice { margin: 30px 0; }
 .auth-page { min-height: 100vh; width: min(1060px, calc(100% - 48px)); padding: 70px 0; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(340px, .8fr); align-items: center; gap: 90px; }

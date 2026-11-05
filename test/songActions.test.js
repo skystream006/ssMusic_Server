@@ -98,7 +98,7 @@ test('queue reordering preserves track identities and supports before and after 
   assert.match(html, /aria-keyshortcuts="ArrowUp ArrowDown"/);
 });
 
-test('music loaders share an accessible animated icon and compact playlist layout', () => {
+test('music loaders share an accessible animated icon and compact playlist layout', async () => {
   for (const label of ['Loading playlists...', 'Loading songs', 'Loading recent jobs...']) {
     const html = renderToStaticMarkup(createElement(MusicLoading, { label, compact: label.includes('playlists') }));
     assert.match(html, /role="status" aria-live="polite"/);
@@ -108,6 +108,10 @@ test('music loaders share an accessible animated icon and compact playlist layou
     assert.ok(html.includes(label));
     assert.equal(html.includes('music-loading--compact'), label.includes('playlists'));
   }
+  const css = await fs.readFile(new URL('../frontend/src/styles.css', import.meta.url), 'utf8');
+  const reducedMotion = css.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/)[1];
+  assert.match(reducedMotion, /\.music-loading-record::before \{ animation-duration: 6s; \}/);
+  assert.doesNotMatch(reducedMotion, /\.music-loading-record::before[^{}]*\{[^}]*animation: none/);
 });
 
 test('Music page initially offers Load All Music while direct playlists load normally', () => {
