@@ -1176,6 +1176,7 @@ function HealthMetrics() {
         <Metric icon={<FileAudio />} label="Total media files"
           value={Number.isInteger(health.media?.totalFiles) ? health.media.totalFiles.toLocaleString() : '-'}
           detail={<>Songs and videos across all users<br />
+            Media storage: {Number.isFinite(health.media?.totalBytes) && health.media.totalBytes >= 0 ? formatBytes(health.media.totalBytes) : '-'}<br />
             {health.media?.scannedAt ? <>Last scanned: <time dateTime={health.media.scannedAt}>{new Date(health.media.scannedAt).toLocaleString()}</time></> : 'No completed scan'}
             <br />{health.media?.scanning ? 'Scanning...' : health.media?.error || 'Daily scan'}
           </>} />
@@ -1299,7 +1300,7 @@ function LoginPage({ onLogin, appLogin = false }) {
     }
   }
 
-  return <main className="auth-page">
+  return <main className={`auth-page${loginMethod === 'lan-password' ? ' lan-login-page' : ''}`}>
     <section className="auth-intro">
       <img className="auth-mark" src={appIcon} alt="ssMusic Player" width="58" height="58" />
       <p className="eyebrow">Private music workspace</p>

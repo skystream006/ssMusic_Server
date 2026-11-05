@@ -105,9 +105,12 @@
   --green: #ffffff; --yellow: #ffffff; --shadow: #061b15; --field: #12382f;
   --on-accent: #18453b;
 }
-:root[data-theme="pink"][data-theme-mode="dark"] {
+:root[data-theme="pink"][data-theme-mode="dark"], :root:has(.auth-page.lan-login-page) {
+  color-scheme: dark;
   --paper: #1b1318; --surface: #281c23; --surface-raised: #3b2833;
   --ink: #f9edf4; --muted: #c3a5b7; --line: #533848; --royal: #ee9abe;
+  --green: #8fcea9; --yellow: #dfbd73; --shadow: #000000;
+  --danger: #ff9aab; --warning: #e4bd62;
   --field: #21161c; --on-accent: #321223;
 }
 
@@ -461,6 +464,8 @@ code { font: 400 11px 'DM Mono', monospace; }
 .auth-panel label { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
 .auth-panel input { height: 46px; width: 100%; padding: 0 13px; border: 1px solid var(--line); outline: 0; color: var(--ink); background: var(--field); }
 .auth-panel input:focus { border-color: var(--royal); outline: 2px solid rgba(95, 127, 240, .22); }
+.lan-login-page .auth-panel input:focus { outline-color: color-mix(in srgb, var(--royal) 35%, transparent); }
+.lan-login-page button:focus-visible { outline: 2px solid var(--royal); outline-offset: 3px; }
 .auth-panel .notice { margin-top: 18px; line-height: 1.5; }
 .registration-shared { display: grid; gap: 10px; min-width: 0; margin: 8px 0; padding: 0; border: 0; }
 .auth-panel .registration-shared-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; color: var(--ink); font-size: 12px; text-transform: none; }
