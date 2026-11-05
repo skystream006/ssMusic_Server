@@ -544,10 +544,31 @@ function createJobPublisher(job) {
 }
 
 async function runJobCommand(job, command, args, { metadata = false, includeCommand = false, signal: jobSignal, publisher } = {}) {
-  const commandText = [command, ...args].map((value) => value.includes(' ') ? `"${value}"` : value).join(' ');
   let retried = false;
+  let cookieRetried = args.includes('--cookies') || args.includes('--cookies-from-browser');
+  const retryWithCookies = async (result) => {
+    if (cookieRetried || jobSignal.aborted || result.code === 'JOBS_RATE_LIMITED'
+      || !/(?:age[- ]restricted|sign in to confirm your age)/i.test(`${result.stdout || ''}\n${result.stderr || ''}`)) return false;
+    cookieRetried = true;
+    const cookiePath = path.resolve(process.env.YTDLP_COOKIES_PATH || path.join(process.cwd(), 'data', 'ytcookie', 'cookies.txt'));
+    const available = await fs.stat(cookiePath).then(async (stat) => {
+      if (!stat.isFile() || !stat.size) return false;
+      await fs.access(cookiePath, fs.constants.R_OK | fs.constants.W_OK);
+      return true;
+    }).catch(() => false);
+    const message = available
+      ? 'Age restriction detected. Retrying once with server-managed YouTube cookies.'
+      : 'Age restriction detected, but the server YouTube cookie file is missing, empty, or inaccessible.';
+    appendJobOutput(job, `[system]\n${message}`);
+    appendLiveJobOutput(job.id, 'system', `${message}\n`);
+    if (!available) return false;
+    args = ['--cookies', cookiePath, ...args];
+    retried = true;
+    return true;
+  };
   for (;;) {
     jobSignal.throwIfAborted();
+    const commandText = [command, ...args].map((value) => value.includes(' ') ? `"${value}"` : value).join(' ');
     job.command = commandText;
     job.updatedAt = new Date().toISOString();
     if (publisher) publisher.checkpoint();
@@ -584,6 +605,7 @@ async function runJobCommand(job, command, args, { metadata = false, includeComm
         });
       if (publisher && pendingLine) completedLine(pendingLine);
       if (!metadata || retried) recordOutput(result);
+      if (await retryWithCookies(result)) continue;
       if (publisher) publisher.checkpoint();
       else await persistJob(job);
       return result;
@@ -597,6 +619,7 @@ async function runJobCommand(job, command, args, { metadata = false, includeComm
       }
       if (!metadata || retried || jobSignal.aborted || error.code === 'JOBS_RATE_LIMITED' || commandOutput.cleared) recordOutput(error);
       if (jobSignal.aborted) throw error;
+      if (await retryWithCookies(error)) continue;
       if (error.code !== 'JOBS_RATE_LIMITED') {
         if (publisher) publisher.checkpoint();
         else await persistJob(job);

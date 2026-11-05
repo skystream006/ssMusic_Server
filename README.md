@@ -34,6 +34,21 @@ On **Jobs > Tasks > Start a download**, choose **Audio (MP3)** or **Video (MP4)*
 Standard YouTube, mobile YouTube, YouTube Music, and `youtu.be` links are accepted.
 Links containing a `list` query parameter download the complete playlist.
 
+When yt-dlp reports an age restriction, the server retries that command once with
+the Netscape-format cookie file at `data/ytcookie/cookies.txt`. Native deployments
+can override its location with `YTDLP_COOKIES_PATH`. Docker Compose mounts the host
+`data/ytcookie` folder separately from the named data volume. The folder must be
+writable because yt-dlp updates its cookie jar. Missing, empty, or inaccessible
+cookie files are reported in the job log without an authenticated retry. Normal
+commands do not use cookies; existing download archives prevent redownloading
+completed playlist items during a retry.
+
+These are server-wide credentials used for jobs submitted by any authorized user.
+Only supply cookies from an account eligible to watch the requested videos, restrict
+access to the cookie folder, and replace expired cookies. Never share or commit the
+file; `data/` is git-ignored and excluded from the Docker build context. Cookies do
+not guarantee that YouTube will allow a download.
+
 The Jobs tabs are ordered **Tasks**, **Recent Jobs**, then **Jobs Queue**.
 Tasks (`/job`) contains downloads, **Featured Tasks** (imports and admin process-output
 cleanup), and library backup status.

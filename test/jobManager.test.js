@@ -312,6 +312,48 @@ async function makeQueueFixture(t) {
   };
 }
 
+for (const scenario of ['failed download', 'successful warning', 'missing cookies', 'failed retry', 'unrelated error']) {
+  test(`age restriction cookie fallback: ${scenario}`, { timeout: 15_000 }, async (context) => {
+    const previousPath = process.env.YTDLP_COOKIES_PATH;
+    const cookiePath = path.join(fixtureDirectory, 'cookies.txt');
+    process.env.YTDLP_COOKIES_PATH = cookiePath;
+    context.after(() => {
+      if (previousPath === undefined) delete process.env.YTDLP_COOKIES_PATH;
+      else process.env.YTDLP_COOKIES_PATH = previousPath;
+    });
+    if (scenario !== 'missing cookies') await fs.writeFile(cookiePath, '# Netscape HTTP Cookie File\n');
+    const { manager, calls, nextCommand } = await makeQueueFixture(context);
+    fixtureCleanups.set(context, async () => {
+      for (const job of await manager.getJobs()) {
+        if (job.status === 'running' || job.status === 'queued') await manager.stopJob(job.id, { id: 'owner', role: 'admin' });
+      }
+    });
+    const job = await manager.createJob('https://www.youtube.com/watch?v=agefixture', { id: 'owner', role: 'user' });
+    const metadata = await nextCommand(0);
+    assert.ok(!metadata.args.includes('--cookies'));
+    metadata.finish('{"title":"Age fixture"}');
+    const download = await nextCommand(1);
+    assert.ok(!download.args.includes('--cookies'));
+    download.stderr.write(scenario === 'unrelated error'
+      ? 'ERROR: Unable to download webpage: connection timed out\n'
+      : 'WARNING: [youtube] agefixture: This video is age-restricted; some formats may be missing without authentication.\n');
+    download.finish('', scenario === 'successful warning' ? 0 : 1);
+    const shouldRetry = scenario !== 'missing cookies' && scenario !== 'unrelated error';
+    if (shouldRetry) {
+      const retry = await nextCommand(2);
+      assert.deepEqual(retry.args, ['--cookies', cookiePath, ...download.args]);
+      if (scenario === 'failed retry') retry.stderr.write('ERROR: Sign in to confirm your age\n');
+      retry.finish('Authenticated attempt\n', scenario === 'failed retry' ? 1 : 0);
+    }
+    await waitForJobToFinish(job);
+    assert.equal(calls.length, shouldRetry ? 3 : 2);
+    assert.equal(job.status, shouldRetry && scenario !== 'failed retry' ? 'completed' : 'failed');
+    if (shouldRetry) assert.match(job.output, /Retrying once with server-managed YouTube cookies/);
+    if (scenario === 'missing cookies') assert.match(job.output, /cookie file is missing, empty, or inaccessible/);
+    assert.equal(await fs.readFile(cookiePath, 'utf8').catch(() => null), scenario === 'missing cookies' ? null : '# Netscape HTTP Cookie File\n');
+  });
+}
+
 for (const access of ['owner', 'contributor', 'admin']) {
 test(`retrieve metadata allows ${access} access without downloading or replacing other tags`, { timeout: 15_000 }, async (context) => {
   const { manager, calls } = await makeQueueFixture(context);
