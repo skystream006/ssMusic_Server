@@ -103,6 +103,17 @@ export function queueSongNext(songs, selected, track) {
   return queue;
 }
 
+export function reorderPlaybackQueue(songs, source, target, after = false) {
+  const from = songs?.findIndex((track) => songKey(track) === source) ?? -1;
+  const to = songs?.findIndex((track) => songKey(track) === target) ?? -1;
+  if (from < 0 || to < 0 || from === to) return songs;
+  const queue = [...songs];
+  const [track] = queue.splice(from, 1);
+  const destination = queue.findIndex((item) => songKey(item) === target) + (after ? 1 : 0);
+  queue.splice(destination, 0, track);
+  return queue;
+}
+
 export async function loadPlaybackQueue(request, query, tracks, pagination, includeNoVocals = false) {
   if (!pagination || tracks.length === pagination.total) {
     return !includeNoVocals && tracks.some(isNoVocals) ? tracks.filter((track) => !isNoVocals(track)) : tracks;
@@ -228,18 +239,43 @@ function SongMetadataLine({ track, fallback = '' }) {
   return <small title={text}>{text}</small>;
 }
 
-export function PlaybackQueueRow({ track, number, current, user, sourceJob, request, onSelect, onMetadataSaved }) {
+export function PlaybackQueueRow({ track, number, current, user, sourceJob, request, onSelect, onMetadataSaved, onReorder, onMove }) {
   const [ratingError, setRatingError] = useState('');
   const job = track.sourceJob || track.job || sourceJob;
   const canRate = !track.readOnly && canEditSong(user, job);
   const busy = ['queued', 'running'].includes(job?.status)
     || (track.transcription || job?.transcriptions?.[track.name])?.status === 'sent';
-  return <li className={`queue-song-row${current ? ' is-current' : ''}`}>
+  const acceptQueue = (event) => {
+    const allowed = Boolean(onReorder) && event.dataTransfer.types.includes('application/x-ssmusic-queue');
+    allowDrop(event, allowed);
+    if (allowed) {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      event.currentTarget.dataset.dropPosition = event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after';
+    }
+  };
+  return <li className={`queue-song-row${current ? ' is-current' : ''}`} onDragEnter={acceptQueue} onDragOver={acceptQueue} onDragLeave={leaveDrop}
+    onDrop={(event) => {
+      if (!onReorder || !event.dataTransfer.types.includes('application/x-ssmusic-queue')) return;
+      event.preventDefault();
+      const bounds = event.currentTarget.getBoundingClientRect();
+      onReorder(event.dataTransfer.getData('application/x-ssmusic-queue'), songKey(track), event.clientY >= bounds.top + bounds.height / 2);
+    }}>
+    <div className="queue-song-main">
+    {onReorder && <button className="music-icon-button queue-drag" type="button" draggable
+      title={`Drag to reorder ${track.title || track.name}`} aria-label={`Reorder queue song ${track.title || track.name}`} aria-keyshortcuts="ArrowUp ArrowDown"
+      onKeyDown={(event) => { if (onMove && ['ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); onMove(songKey(track), event.key === 'ArrowUp' ? -1 : 1); } }}
+      onDragStart={(event) => {
+        event.currentTarget.dataset.dragging = 'true';
+        event.dataTransfer.setData('application/x-ssmusic-queue', songKey(track));
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setDragImage(event.currentTarget.closest('li'), 24, 24);
+      }}><GripVertical size={16} /></button>}
     <button className="queue-song-select" type="button" aria-label={`Play ${track.title || track.name}`}
       aria-current={current ? 'true' : undefined} onClick={() => onSelect(track)}>
       <span className="queue-track-number">{number}</span>
       <SongArtwork track={track} /><span className="queue-track-title"><strong>{track.title || track.name.split('/').at(-1)}</strong><SongMetadataLine track={track} fallback={track.playlistTitle} /></span>
     </button>
+    </div>
     {/\.mp3$/i.test(track.name) && <ListSongRating file={track} jobId={track.jobId} request={request}
       canModify={canRate} disabled={busy} onError={setRatingError} onSaved={(result) => onMetadataSaved(track, result)} />}
     {ratingError && <p className="queue-rating-error" role="alert">{ratingError}</p>}
@@ -1002,6 +1038,23 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     return result;
   }
 
+  function reorderQueue(source, target, after = false) {
+    const current = queueStateRef.current;
+    const queue = reorderPlaybackQueue(current.songs, source, target, after);
+    if (queue === current.songs) return;
+    queueStateRef.current = { ...current, songs: queue };
+    preparedNextRef.current = null;
+    setSongs(queue);
+    prepareNextTrack();
+  }
+
+  function moveQueueSong(source, direction) {
+    const queue = queueStateRef.current.songs;
+    const index = queue?.findIndex((track) => songKey(track) === source) ?? -1;
+    const target = index >= 0 ? queue[index + direction] : null;
+    if (target) reorderQueue(source, songKey(target), direction > 0);
+  }
+
   async function playLibrary(view, track = null, autoplay = true) {
     const scope = view.queueScope ?? view.selectedId;
     const includeNoVocals = Boolean(track && isNoVocals(track));
@@ -1217,7 +1270,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   return <PlaybackContext.Provider value={{ user, SongActionView, audioCompatibility, changeAudioCompatibility, preparingAudio,
     downloadPlaybackDiagnostics, retryPlayback: playMedia,
     libraryRevision, refreshLibrary: () => setLibraryRevision((value) => value + 1),
-    songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
+    songs, setSongs, reorderQueue, moveQueueSong, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, seek: seekPlayback, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
@@ -1236,7 +1289,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
 }
 
 export default function MusicPlayer({ id, request, libraryView = null, dockOnly = false }) {
-  const { user, SongActionView, preparingAudio, retryPlayback, songs, setSongs, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
+  const { user, SongActionView, preparingAudio, retryPlayback, songs, setSongs, reorderQueue, moveQueueSong, selected, setSelected, metadata, lyricError, lyricsLoaded, setLyricsViewers, playError, setPlayError,
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, seek, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
@@ -1546,6 +1599,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               {songs?.slice((queuePagination.page - 1) * queuePagination.pageSize, queuePagination.page * queuePagination.pageSize).map((track, offset) => <PlaybackQueueRow
                 key={songKey(track)} track={track} number={(queuePagination.page - 1) * queuePagination.pageSize + offset + 1}
                 current={songKey(track) === selected} user={user} request={request} onSelect={selectSong}
+                onReorder={reorderQueue} onMove={moveQueueSong}
                 sourceJob={track.sourceJob || track.job || songs.find((file) => file.jobId === track.jobId && file.sourceJob)?.sourceJob}
                 onMetadataSaved={(file, result) => updateMetadata(file.jobId, file.name, result)} />)}
             </ol>

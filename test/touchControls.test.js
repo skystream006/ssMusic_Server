@@ -105,7 +105,7 @@ test('media swipes leave buttons, sliders and native video controls alone but al
 });
 
 test('touch dragging recognizes playlist grips, names and song grips but not other controls', () => {
-  for (const selector of ['.library-entry-drag', '.library-entry-select', '.song-drag']) {
+  for (const selector of ['.library-entry-drag', '.library-entry-select', '.song-drag', '.queue-drag']) {
     const draggable = {};
     const handle = { disabled: false, closest: () => draggable };
     const event = { touches: [{}], target: { closest: (selectors) => selectors.split(', ').includes(selector) ? handle : null } };
@@ -161,6 +161,31 @@ test('song dragging scrolls both visible edges continuously and stops away from 
   scroll.onDragStart({ target: { closest: () => handle } });
   browser.document.hidden = true;
   tick(80);
+  assert.equal(frames.size, 0);
+});
+
+test('queue dragging scrolls its own container instead of the music page', () => {
+  const frames = new Map();
+  const movements = [];
+  let nextFrame = 0;
+  const surface = { isConnected: true, matches: () => true,
+    getBoundingClientRect: () => ({ top: 150, bottom: 600, left: 500, right: 1000 }),
+    scrollBy: (movement) => movements.push(movement) };
+  const handle = { disabled: false, getAttribute: () => 'true', closest: () => surface };
+  const browser = { innerHeight: 800, document: { hidden: false, querySelector: () => null },
+    requestAnimationFrame(callback) { frames.set(++nextFrame, callback); return nextFrame; },
+    cancelAnimationFrame(id) { frames.delete(id); }, scrollBy() { assert.fail('Queue drag must not scroll the page'); } };
+  const scroll = controls.createSongDragAutoScroll(browser);
+  const tick = (time) => { const [id, callback] = frames.entries().next().value; frames.delete(id); callback(time); };
+  scroll.onDragStart({ target: { closest: () => handle } });
+  scroll.onDragOver({ clientX: 600, clientY: 595 });
+  tick(0);
+  tick(16);
+  assert.ok(movements.every((movement) => movement.top > 0));
+  scroll.onDragOver({ clientX: 600, clientY: 155 });
+  tick(32);
+  assert.ok(movements.at(-1).top < 0);
+  scroll.stop();
   assert.equal(frames.size, 0);
 });
 

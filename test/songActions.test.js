@@ -21,6 +21,7 @@ let SongGroups;
 let SongArtwork;
 let findNoVocals;
 let queueSongNext;
+let reorderPlaybackQueue;
 let nextPlaybackSong;
 let nextRepeatMode;
 let replaceSongFile;
@@ -69,6 +70,7 @@ let OrganizerControl;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
+  ({ reorderPlaybackQueue } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, createPlaybackDiagnostics, publishPlaybackPosition, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ default: MusicLibrary, ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
@@ -78,6 +80,21 @@ before(async () => {
 });
 
 after(async () => { await server?.close(); });
+
+test('queue reordering preserves track identities and supports before and after destinations', () => {
+  const queue = ['First', 'Second', 'Third', 'Fourth'].map((name) => ({ jobId: 'job', name: `${name}.mp3` }));
+  const key = (track) => JSON.stringify([track.jobId, track.name]);
+  const moved = reorderPlaybackQueue(queue, key(queue[0]), key(queue[2]), true);
+  assert.deepEqual(moved, [queue[1], queue[2], queue[0], queue[3]]);
+  assert.deepEqual(reorderPlaybackQueue(moved, key(queue[0]), key(queue[1])), queue);
+  assert.deepEqual(reorderPlaybackQueue(queue, key(queue[3]), key(queue[0])), [queue[3], ...queue.slice(0, 3)]);
+  assert.equal(reorderPlaybackQueue(queue, 'missing', key(queue[0])), queue);
+  assert.equal(reorderPlaybackQueue(queue, key(queue[0]), key(queue[0])), queue);
+  const html = renderToStaticMarkup(createElement(PlaybackQueueRow, { track: queue[0], number: 1, user: { role: 'shared' },
+    request() {}, onSelect() {}, onMetadataSaved() {}, onReorder() {}, onMove() {} }));
+  assert.match(html, /class="music-icon-button queue-drag"[^>]*draggable="true"/);
+  assert.match(html, /aria-keyshortcuts="ArrowUp ArrowDown"/);
+});
 
 test('Music page initially offers Load All Music while direct playlists load normally', () => {
   const previousWindow = globalThis.window;

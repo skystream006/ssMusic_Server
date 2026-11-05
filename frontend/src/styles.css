@@ -876,6 +876,12 @@ code { font: 400 11px 'DM Mono', monospace; }
 .expanded-queue .queue-track-title strong { font-weight: 600; }
 .queue-song-row { padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 .queue-song-row.is-current { background: color-mix(in srgb, var(--royal) 10%, transparent); }
+.queue-song-row[data-drag-over="true"][data-drop-position="before"] { box-shadow: inset 0 2px var(--royal); }
+.queue-song-row[data-drag-over="true"][data-drop-position="after"] { box-shadow: inset 0 -2px var(--royal); }
+.queue-song-main { display: flex; align-items: center; min-width: 0; gap: 4px; }
+.queue-song-main .queue-song-select { flex: 1; }
+.queue-drag { flex: none; touch-action: none; cursor: grab; }
+.queue-drag:active { cursor: grabbing; }
 .queue-song-row > .song-rating-cell { display: flex; align-items: center; justify-content: flex-end; width: 100%; min-height: 44px; padding: 0 4px; }
 .queue-song-row .song-rating-inline { flex: none; width: max-content; max-width: 100%; }
 .queue-song-row .song-rating-inline button { flex: none; width: 44px; height: 44px; }

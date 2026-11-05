@@ -62,7 +62,7 @@ export function createMediaSwipeHandlers(onSwipe, getSelection = () => undefined
 
 export function findTouchDraggable(event) {
   if (event.touches.length !== 1) return;
-  const handle = event.target.closest('.song-drag, .library-entry-select, .library-entry-drag');
+  const handle = event.target.closest('.song-drag, .queue-drag, .library-entry-select, .library-entry-drag');
   const draggable = handle?.closest('[draggable="true"]');
   return handle && !handle.disabled ? draggable || undefined : undefined;
 }
@@ -84,6 +84,7 @@ export function leaveDrop(event) {
 
 export function createSongDragAutoScroll(browser = window) {
   let surface = null;
+  let scrollTarget = browser;
   let pointer = null;
   let frame = null;
   let previousTime = null;
@@ -112,7 +113,7 @@ export function createSongDragAutoScroll(browser = window) {
         && pointer.y >= top && pointer.y <= bottom) {
         const direction = pointer.y < top + edge ? -Math.min(1, (top + edge - pointer.y) / edge)
           : pointer.y > bottom - edge ? Math.min(1, (pointer.y - bottom + edge) / edge) : 0;
-        if (direction) browser.scrollBy({ top: direction * 600 * elapsed / 1000, behavior: 'instant' });
+        if (direction) scrollTarget.scrollBy({ top: direction * 600 * elapsed / 1000, behavior: 'instant' });
       }
     }
     frame = browser.requestAnimationFrame(tick);
@@ -121,9 +122,10 @@ export function createSongDragAutoScroll(browser = window) {
   return {
     onDragStart(event) {
       stop();
-      const handle = event.target.closest?.('.song-drag');
+      const handle = event.target.closest?.('.song-drag, .queue-drag');
       if (!handle || handle.disabled || handle.getAttribute('draggable') !== 'true') return;
-      surface = handle.closest('.library-songs');
+      surface = handle.closest('.playback-queue, .library-songs');
+      scrollTarget = surface?.matches?.('.playback-queue') ? surface : browser;
       if (surface) frame = browser.requestAnimationFrame(tick);
     },
     onDragOver(event) {
