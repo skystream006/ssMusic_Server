@@ -79,6 +79,30 @@ before(async () => {
 
 after(async () => { await server?.close(); });
 
+test('Music page initially offers Load All Music while direct playlists load normally', () => {
+  const previousWindow = globalThis.window;
+  const user = { id: 'owner', name: 'Owner', role: 'user' };
+  const request = () => assert.fail('Server rendering must not fetch music');
+  try {
+    for (const search of ['', '?playlist=playlist']) {
+      globalThis.window = { location: { pathname: '/', search } };
+      const html = renderToStaticMarkup(createElement(PlaybackProvider, { user, request },
+        createElement(MusicLibrary, { user, request, confirm() {} })));
+      if (search) {
+        assert.doesNotMatch(html, /Load All Music/);
+        assert.match(html, /Loading songs/);
+      } else {
+        assert.match(html, /Load All Music<\/button>/);
+        assert.doesNotMatch(html, /Loading songs|No songs yet|Track pages/);
+        assert.match(html, /aria-label="Search tracks"[^>]*disabled=""/);
+        assert.match(html, /aria-label="Sort songs"[^>]*disabled=""/);
+      }
+    }
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 test('expanded Player song actions reuse the complete library menu and read-only restrictions', () => {
   const track = { jobId: 'job', name: 'Song.mp3', downloadUrl: '/download/song',
     noVocalsVersion: { jobId: 'job', name: '[NoVocals]/Song.mp3' } };

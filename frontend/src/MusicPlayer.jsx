@@ -1462,8 +1462,8 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               onClick={() => playLibrary(libraryView)}><Play size={22} fill="currentColor" /></button>
           </header>
           <div className="songs-toolbar"><h3>Tracks</h3>
-            <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search tracks" placeholder="Search tracks" maxLength={libraryView.pagination ? 200 : undefined} value={trackSearch} onChange={(event) => (libraryView.onSearch || setSearch)(event.target.value)} /></label>
-            <label className="song-sort">Sort by<select aria-label="Sort songs" value={trackSort} disabled={libraryView.saving} onChange={(event) => libraryView.onSort(event.target.value)}>
+            <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search tracks" placeholder="Search tracks" disabled={libraryView.awaitingAllMusic} maxLength={libraryView.pagination ? 200 : undefined} value={trackSearch} onChange={(event) => (libraryView.onSearch || setSearch)(event.target.value)} /></label>
+            <label className="song-sort">Sort by<select aria-label="Sort songs" value={trackSort} disabled={libraryView.saving || libraryView.awaitingAllMusic} onChange={(event) => libraryView.onSort(event.target.value)}>
               <option value="name">Name (A-Z)</option>
               <option value="order">Order number</option>
               <option value="rating">Rating (highest first)</option>
@@ -1484,6 +1484,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
             <button className="music-icon-button" type="button" title="Clear song selection" aria-label="Clear song selection" disabled={libraryView.saving} onClick={selection.clear}><X size={18} /></button>
           </div>}
           {libraryView.pagination && <TrackPagination pagination={libraryView.pagination} position="top" />}
+          {libraryView.awaitingAllMusic && <div className="library-empty"><button className="secondary-button" type="button" onClick={libraryView.onLoadAllMusic}><ListMusic size={18} />Load All Music</button></div>}
           {libraryView.loading && <div className="loading" role="status"><RefreshCw className="spin" size={20} />Loading songs</div>}
           {!libraryView.loading && <SongGroups key={libraryView.selectedId || 'all'} tracks={visibleTracks}>{(group) => <ol className="library-song-list" aria-label={group.length && isNoVocals(group[0]) ? 'NoVocals songs' : 'Songs'}>{group.map((track) => {
             const playlistTracks = tracks.filter((item) => item.playlistId === track.playlistId);
@@ -1528,7 +1529,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
               <LibrarySongActions track={track} libraryView={libraryView} request={request} onPlayKaraoke={playKaraoke} />
             </li>;
           })}</ol>}</SongGroups>}
-          {!libraryView.loading && !libraryView.error && !visibleTracks.length && <div className="library-empty"><Music2 size={32} /><h3>{trackSearch ? 'No matching songs' : 'No songs yet'}</h3>
+          {!libraryView.awaitingAllMusic && !libraryView.loading && !libraryView.error && !visibleTracks.length && <div className="library-empty"><Music2 size={32} /><h3>{trackSearch ? 'No matching songs' : 'No songs yet'}</h3>
             {!libraryView.readOnly && !trackSearch && <button className="secondary-button compact-button" type="button" onClick={libraryView.onAdd}><Plus size={16} />Add Playlist</button>}</div>}
           {libraryView.pagination && <TrackPagination pagination={libraryView.pagination} position="bottom" />}
         </section>

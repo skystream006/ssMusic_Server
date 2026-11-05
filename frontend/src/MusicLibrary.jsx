@@ -427,6 +427,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
   const [library, setLibrary] = useState(null);
   const [actionJobResult, setActionJobResult] = useState(null);
   const [selectedId, setSelectedId] = useState(new URLSearchParams(window.location.search).get('playlist'));
+  const [allMusicLoaded, setAllMusicLoaded] = useState(false);
   const [trackResult, setTrackResult] = useState(null);
   const [trackPage, setTrackPage] = useState(1);
   const [trackPageSize, setTrackPageSize] = useState(200);
@@ -479,6 +480,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
   const editingPlaylist = jobMap.get(editingPlaylistId);
   const title = selected?.type === 'folder' ? selected.name : selectedId ? jobMap.get(selectedId)?.playlistTitle || 'Preparing playlist' : 'All music';
   const allMusic = selectedId === null;
+  const awaitingAllMusic = allMusic && !allMusicLoaded;
   const paginated = allMusic || library?.serverPagination;
   const searchPending = paginated && trackSearch !== debouncedTrackSearch;
   const tracks = trackResult?.selectedId === selectedId && trackResult.sort === trackSort && (!paginated
@@ -545,6 +547,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
       setTrackPage(1);
       return;
     }
+    if (awaitingAllMusic) return;
     if (searchPending) return;
     let active = true;
     let cancelCommit = () => {};
@@ -567,7 +570,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
       });
     });
     return () => { active = false; controller.abort(); cancelCommit(); };
-  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, trackPageSize, trackSort, debouncedTrackSearch, searchPending, paginated, owner?.id, Boolean(actionTrack)]);
+  }, [request, selectedId, library?.version, jobsRevision, refresh, trackPage, trackPageSize, trackSort, debouncedTrackSearch, searchPending, paginated, owner?.id, Boolean(actionTrack), awaitingAllMusic]);
 
   function selectEntry(id) {
     setSelectedSongs(new Set());
@@ -1103,10 +1106,11 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
     </div>}
     {!actionTrack && <div className="library-mobile-tabs" role="group" aria-label="Library view"><button type="button" aria-pressed={sidebarOpen} onClick={() => setSidebarOpen(true)}><Library size={16} />Playlists</button><button type="button" aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen(false)}><Music2 size={16} />Songs</button></div>}
     {actionTrack ? <LibrarySongActions track={menuTrack} libraryView={songActions} request={request} onPlayKaraoke={playback.playKaraoke} className="expanded-song-actions" />
-      : <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: (tracksLoading || searchPending) && !trackError,
+      : <MusicPlayer request={request} libraryView={{ sidebar, selectedId, title, type: selected?.type, tracks, readOnly, loading: !awaitingAllMusic && (tracksLoading || searchPending) && !trackError,
+      awaitingAllMusic, onLoadAllMusic: () => setAllMusicLoaded(true),
       ownerId: owner?.id, playlistPrivate: Boolean(selectedPlaylist?.private),
       sort: trackSort, onSort: (value) => { setTrackSort(value); setTrackPage(1); },
-      pagination, error: trackError, queueScope: JSON.stringify([owner?.id || user.id, selectedId || 'all', trackSort, paginated ? debouncedTrackSearch : '']),
+      pagination: awaitingAllMusic ? null : pagination, error: trackError, queueScope: JSON.stringify([owner?.id || user.id, selectedId || 'all', trackSort, paginated ? debouncedTrackSearch : '']),
       queueRevision: JSON.stringify([library?.version, jobsRevision, refresh]),
       queueQuery: new URLSearchParams({ sort: trackSort, ...(owner ? { userId: owner.id } : {}), ...(selectedId ? { entryId: selectedId } : {}), search: debouncedTrackSearch }).toString(),
       search: paginated ? trackSearch : undefined, onSearch: paginated ? setTrackSearch : undefined,

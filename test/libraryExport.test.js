@@ -59,6 +59,43 @@ test('disk export completes a readable ZIP and removes partial output on failure
   await assert.rejects(() => fs.stat(partial), { code: 'ENOENT' });
 });
 
+test('exports preserve Vietnamese filenames and UTF-8 playlist references across formats', async (context) => {
+  const { root } = await fixture(context);
+  const title = 'Nhạc Việt - Đặng Thái Sơn';
+  const names = ['Đường về quê hương.mp3', 'Tiếng hát mùa xuân.mp3'.normalize('NFD')];
+  for (const name of names) await fs.writeFile(path.join(root, name), NodeID3.write({ title }, Buffer.from('audio')));
+  const jobs = [{ id: 'vietnamese', playlistTitle: title, outputDir: root, files: names }];
+  const library = { entries: [{ id: 'vietnamese', type: 'playlist', parentId: null }], songOrder: {} };
+  for (const format of ['android', 'itunes', 'playlist']) {
+    const options = format === 'playlist' ? { format, playlistId: 'vietnamese' } : exportOptions(format, '/Music');
+    const prepared = await prepareLibraryExport(library, jobs, options);
+    const folder = format === 'playlist' ? 'Media' : 'Music';
+    assert.deepEqual(prepared.files.map((file) => file.archivePath), names.map((name, index) => `${folder}/${index + 1}-${name}`));
+    const target = path.join(root, `${format}.zip`);
+    await writeLibraryExport(target, prepared);
+    const archive = new AdmZip(await fs.readFile(target));
+    for (const file of prepared.files) {
+      const entry = archive.getEntry(file.archivePath);
+      assert.ok(entry);
+      assert.ok(entry.header.flags & 0x800, 'ZIP filenames must be marked as UTF-8');
+      assert.deepEqual(entry.getData(), await fs.readFile(file.filePath));
+    }
+    if (format === 'itunes') {
+      const content = archive.readAsText('Library.xml');
+      for (const file of prepared.files) {
+        assert.ok(content.includes(options.baseUrl + file.archivePath.split('/').map(encodeURIComponent).join('/')));
+      }
+    } else {
+      const entry = archive.getEntry(`1-${title}.m3u8`);
+      assert.ok(entry);
+      assert.ok(entry.header.flags & 0x800);
+      const content = entry.getData().toString('utf8');
+      assert.ok(content.includes(`#PLAYLIST:${title}\n`));
+      for (const file of prepared.files) assert.ok(content.includes(`\n${file.archivePath}\n`));
+    }
+  }
+});
+
 test('export format and absolute client destinations are validated and URL encoded', () => {
   for (const format of [undefined, 'zip', ['itunes'], {}]) {
     assert.throws(() => exportOptions(format, '/Music'), { statusCode: 400 });

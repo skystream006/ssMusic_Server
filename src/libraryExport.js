@@ -26,7 +26,7 @@ function integer(key, value) {
 }
 
 function safeName(value) {
-  return String(value).replace(/[^a-z0-9 _-]/gi, '_').slice(0, 80).trim() || 'Untitled';
+  return String(value).replace(/[^\p{L}\p{M}\p{N} _-]/gu, '_').slice(0, 80).trim() || 'Untitled';
 }
 
 function persistentId(value) {
