@@ -1647,7 +1647,9 @@ authenticated feature requests use native networking.
 On **Jobs**, choose **Select jobs** beside **Recent jobs** to select several rows.
 The select-all checkbox selects jobs matching the current user filter. Sorting and
 automatic refreshes preserve selection; changing the filter or leaving selection
-mode clears it. Use **Rerun selected jobs** or **Delete selected jobs**, then confirm.
+mode clears it. **Rerun selected jobs** starts immediately, skips existing files,
+and downloads missing media. Single-job reruns behave the same way.
+**Delete selected jobs** still requires confirmation.
 Every selected job must permit the action: active jobs cannot be changed, imported
 jobs cannot be rerun, and deletion requires ownership or administrator access.
 Actions run one at a time with progress shown, without leaving the list. Successful

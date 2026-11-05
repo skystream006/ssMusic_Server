@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
@@ -20,6 +21,46 @@ test('job submission sends the chosen format and metadata-only flag, defaulting 
       }
     });
     assert.deepEqual(result, { job, created: true });
+  }
+});
+
+test('rerun actions start immediately without confirmation while Stop and Delete still confirm', async () => {
+  const source = await fs.readFile(new URL('../frontend/src/main.jsx', import.meta.url), 'utf8');
+  const job = { id: 'existing', playlistTitle: 'Existing songs' };
+  for (const [signature, nextSignature, args, expectedRequests] of [
+    ['runJobAction(job, action)', 'runSelectedJobAction(action)', [job, 'rerun'], 1],
+    ['runSelectedJobAction(action)', 'clearAllProcessOutputs()', ['rerun'], 2],
+    ['rerun()', 'remove()', [], 1]
+  ]) {
+    const start = source.indexOf(`  async function ${signature}`);
+    const end = source.indexOf(`  async function ${nextSignature}`, start);
+    assert.ok(start >= 0 && end > start);
+    const requests = [];
+    let confirmations = 0;
+    const noop = () => {};
+    const bindings = {
+      job, id: job.id, jobAction: null, mutationDisabled: false, user: { id: 'owner', role: 'user' },
+      selectedJobs: [job, { id: 'second' }], canRunJobAction: () => true,
+      confirm: async () => { confirmations += 1; return false; },
+      request: async (url, options) => { requests.push({ url, options }); },
+      setJobAction: noop, setActionError: noop, setBulkResult: noop, setRerunning: noop,
+      setRevision: noop, setFileRevision: noop, selectJobs: noop, navigate: noop, playback: { removeJob: noop }
+    };
+    const name = signature.slice(0, signature.indexOf('('));
+    const handler = new Function(...Object.keys(bindings), `${source.slice(start, end)}; return ${name};`)(...Object.values(bindings));
+    await handler(...args);
+    assert.equal(confirmations, 0);
+    assert.equal(requests.length, expectedRequests);
+    for (const { url, options } of requests) {
+      assert.match(url, /^\/api\/jobs\/[^/]+\/rerun$/);
+      assert.deepEqual(options, { method: 'POST' });
+    }
+    if (name !== 'rerun') {
+      requests.length = 0;
+      for (const action of ['stop', 'delete']) await handler(...(name === 'runJobAction' ? [job, action] : [action]));
+      assert.equal(confirmations, 2);
+      assert.equal(requests.length, 0);
+    }
   }
 });
 

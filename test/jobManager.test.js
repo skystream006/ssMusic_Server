@@ -244,11 +244,13 @@ for (const { label, metadata, isPlaylist = true, downloadType = 'audio', metadat
     for (const args of calls) {
       assert.ok(!args.includes('--sleep-interval'));
       assert.ok(!args.includes('--max-sleep-interval'));
+      assert.ok(!args.includes('--force-overwrites'));
     }
     assert.deepEqual(pauses, individual && (metadata.playlist_count ?? metadata.entries?.length) > 100 ? Array.from({ length: Math.max(0, downloads - 1) }, (_, index) => index)
       .filter((index) => !alreadyDownloaded.some(({ song }) => song === index)).map((index) => index + 2) : []);
     for (const { message } of alreadyDownloaded) assert.ok(job.output.includes(message.trim()));
     for (const [index, args] of calls.slice(1).entries()) {
+      assert.ok(args.includes('--no-overwrites'));
       assert.equal(args.includes('--embed-metadata'), downloadType === 'audio');
       assert.equal(args.includes('--parse-metadata'), downloadType === 'audio');
       if (downloadType === 'audio') {
@@ -1098,6 +1100,9 @@ for (const [downloadType, allExisting, playlistCount] of [['audio', false], ['au
     await Promise.all(entries.slice(0, allExisting ? playlistCount : lastIndex).map((entry) => fs.writeFile(
       path.join(outputDir, `${specialTitles.find((special) => special.title === entry.title)?.name || entry.title}.${extension}`), NodeID3.create({ title: entry.title })
     )));
+    const originalPath = path.join(outputDir, `Track 0.${extension}`);
+    const originalBytes = await fs.readFile(originalPath);
+    const originalStat = await fs.stat(originalPath);
     if (!allExisting) {
       await fs.writeFile(path.join(outputDir, `Track ${lastIndex}.${extension}`), '');
       await fs.writeFile(path.join(outputDir, `Track ${lastIndex}.${extension}.part`), 'partial download');
@@ -1131,6 +1136,10 @@ for (const [downloadType, allExisting, playlistCount] of [['audio', false], ['au
     await waitForJobToFinish(job);
     assert.equal(job.status, 'completed');
     assert.equal(calls.length, allExisting ? 1 : 2);
+    assert.deepEqual(await fs.readFile(originalPath), originalBytes);
+    const currentStat = await fs.stat(originalPath);
+    assert.equal(currentStat.mtimeMs, originalStat.mtimeMs);
+    assert.equal(currentStat.birthtimeMs, originalStat.birthtimeMs);
     assert.equal(job.songMetadata[`Track 0.${extension}`].transcriptionLocked, true);
     assert.deepEqual(pauses, []);
     assert.deepEqual(job.commandProgress, { completed: playlistCount, total: playlistCount });

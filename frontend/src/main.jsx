@@ -406,11 +406,11 @@ function JobsPage({ tab = 'tasks' }) {
 
   async function runJobAction(job, action) {
     if (jobAction || !canRunJobAction(user, job, action)) return;
-    const message = action === 'rerun'
-      ? `Rerun ${job.playlistTitle || job.id}? Keep existing songs and download missing ones?`
-      : action === 'stop' ? `Stop ${job.playlistTitle || job.id}? Downloaded files and process output will be kept.`
-      : `Delete ${job.playlistTitle || job.id} and all of its downloaded files?`;
-    if (!await confirm({ title: action === 'rerun' ? 'Rerun job?' : action === 'stop' ? 'Stop job?' : 'Delete job?', message, action })) return;
+    if (action !== 'rerun') {
+      const message = action === 'stop' ? `Stop ${job.playlistTitle || job.id}? Downloaded files and process output will be kept.`
+        : `Delete ${job.playlistTitle || job.id} and all of its downloaded files?`;
+      if (!await confirm({ title: action === 'stop' ? 'Stop job?' : 'Delete job?', message, action })) return;
+    }
 
     setJobAction({ id: job.id, action });
     setActionError('');
@@ -436,12 +436,13 @@ function JobsPage({ tab = 'tasks' }) {
   async function runSelectedJobAction(action) {
     if (jobAction || !selectedJobs.length || !selectedJobs.every((job) => canRunJobAction(user, job, action))) return;
     const targets = [...selectedJobs];
-    const label = `${action === 'delete' ? 'Delete' : action === 'stop' ? 'Stop' : 'Rerun'} ${targets.length} selected ${targets.length === 1 ? 'job' : 'jobs'}`;
-    const message = action === 'delete'
-      ? `Delete all ${targets.length} selected jobs and all their downloaded files? This also removes their files from linked playlists and cannot be undone.`
-      : action === 'stop' ? `Stop all ${targets.length} selected jobs? Downloaded files and process output will be kept.`
-      : `Rerun all ${targets.length} selected jobs? Existing files will be kept and missing media downloaded.`;
-    if (!await confirm({ title: `${label}?`, message, action, label })) return;
+    if (action !== 'rerun') {
+      const label = `${action === 'delete' ? 'Delete' : 'Stop'} ${targets.length} selected ${targets.length === 1 ? 'job' : 'jobs'}`;
+      const message = action === 'delete'
+        ? `Delete all ${targets.length} selected jobs and all their downloaded files? This also removes their files from linked playlists and cannot be undone.`
+        : `Stop all ${targets.length} selected jobs? Downloaded files and process output will be kept.`;
+      if (!await confirm({ title: `${label}?`, message, action, label })) return;
+    }
 
     setActionError('');
     setBulkResult(null);
@@ -929,7 +930,6 @@ function JobPage({ id }) {
 
   async function rerun() {
     if (mutationDisabled) return;
-    if (!await confirm({ title: 'Rerun job?', message: `Rerun ${job.playlistTitle || job.id}? Keep existing songs and download missing ones?`, action: 'rerun' })) return;
     setRerunning(true);
     setActionError('');
     try {
