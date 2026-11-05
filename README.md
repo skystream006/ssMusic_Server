@@ -1225,6 +1225,17 @@ hostname later requires registering passkeys for the new hostname. When changing
 `HTTPS_WEB_PORT`, also update the port in `PASSKEY_ORIGIN`. Apply configuration changes
 with `docker compose up -d`.
 
+To enable password login on a specific LAN IP, set
+`DOCKER_BIND_ADDRESS=192.168.6.66`, `HTTPS_WEB_PORT=4123`, and a strong
+`LAN_ACCESS_KEY` in `.env`, then recreate the app with `docker compose up -d`.
+At `https://192.168.6.66:4123`, sign in with an existing administrator's username
+and the `LAN_ACCESS_KEY` as the password. Username matching is case-insensitive;
+only approved accounts with the admin role can log in, with full administrator access.
+Register the account through the passkey hostname first. Password login is disabled
+when the key is empty or the bind address is a wildcard (`0.0.0.0` or `::`), and
+is rejected over HTTP, other hosts/ports, and TLS-terminating proxies. Hostname-based
+passkey login is unchanged. Keep `.env` private; the key is never sent to the frontend.
+
 The `postgres_data` named volume contains accounts, sessions, jobs, songs and library
 organization. The `data` volume retains library backup ZIPs and TLS certificates;
 `output` retains media and download archives. They

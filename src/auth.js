@@ -175,6 +175,15 @@ export function requireAdmin(req, res, next) {
 
 const noLimit = (_req, _res, next) => next();
 
+function isLanLoginRequest(req) {
+  const address = process.env.DOCKER_BIND_ADDRESS;
+  const port = Number(process.env.HTTPS_WEB_PORT || 4000);
+  if (!process.env.LAN_ACCESS_KEY || !net.isIP(address || '') || ['0.0.0.0', '::'].includes(address)
+    || !req.socket.encrypted || req.socket.localPort !== port) return false;
+  const host = `${net.isIP(address) === 6 ? `[${address}]` : address}:${port}`;
+  return req.get('host') === host && (!req.get('origin') || req.get('origin') === `https://${host}`);
+}
+
 export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => null) {
   const registrationOptionsLimiter = limiters.registrationOptions || noLimit;
   const registrationVerifyLimiter = limiters.registrationVerify || noLimit;
@@ -185,6 +194,26 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
     res.set('Cache-Control', 'no-store');
     res.set('Referrer-Policy', 'no-referrer');
     next();
+  });
+
+  app.get('/api/auth/login/method', (req, res) => {
+    res.json({ method: isLanLoginRequest(req) ? 'lan-password' : 'passkey' });
+  });
+
+  app.post('/api/auth/login/lan', loginVerifyLimiter, async (req, res) => {
+    if (!isLanLoginRequest(req)) return res.status(403).json({ error: 'LAN login is not available on this address' });
+    const password = req.body?.password;
+    const expected = crypto.createHash('sha256').update(process.env.LAN_ACCESS_KEY).digest();
+    const supplied = crypto.createHash('sha256').update(typeof password === 'string' ? password : '').digest();
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim().replace(/\s+/g, ' ').toLowerCase() : '';
+    if (!crypto.timingSafeEqual(expected, supplied)) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+    const user = (await listUsers()).find((account) => account.name.toLowerCase() === name
+      && account.role === 'admin' && canUserLogin(account));
+    if (!user) return res.status(401).json({ error: 'Invalid username or password' });
+    await issueSession(req, res, user);
+    return res.json({ user });
   });
 
   app.post('/api/auth/app/token', loginVerifyLimiter, async (req, res) => {

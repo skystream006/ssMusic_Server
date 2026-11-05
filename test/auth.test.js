@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import express from 'express';
+import https from 'node:https';
+import selfsigned from 'selfsigned';
 import { isoCBOR } from '@simplewebauthn/server/helpers';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 import { readPostgresJob } from '../src/postgresCatalog.js';
@@ -69,6 +71,105 @@ async function testSecondaryPasskeyOptions(context) {
   assert.match((await invalidRPID.json()).error, /hostname, not an IP address/);
 }
 
+async function testLanPasswordLogin(context, existingAdmin) {
+  const envKeys = ['LAN_ACCESS_KEY', 'DOCKER_BIND_ADDRESS', 'HTTPS_WEB_PORT'];
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  let server;
+  let httpServer;
+  let admin;
+  let listener;
+  context.after(async () => {
+    for (const listener of [server, httpServer]) {
+      if (listener) await new Promise((resolve) => listener.close(resolve));
+    }
+    for (const key of envKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    if (listener) await store.deleteUser(listener.id, existingAdmin.id);
+    if (admin) await store.deleteUser(admin.id, existingAdmin.id);
+  });
+  process.env.LAN_ACCESS_KEY = 'test-lan-secret';
+  process.env.DOCKER_BIND_ADDRESS = '127.0.0.1';
+  const store = await import('../src/authStore.js');
+  const { attachUser, registerAuthRoutes, requireAdmin } = await import('../src/auth.js');
+  admin = await store.registerUser('LAN Owner', 'admin', { id: 'lan-admin', publicKey: Buffer.from('admin'), counter: 0 });
+  await store.updateUser(admin.id, { role: 'admin', status: 'approved' }, existingAdmin.id);
+  listener = await store.registerUser('LAN Listener', 'listener', { id: 'lan-listener', publicKey: Buffer.from('listener'), counter: 0 });
+  await store.updateUser(listener.id, { status: 'approved' }, admin.id);
+  const app = express();
+  app.set('trust proxy', true);
+  app.use(express.json(), attachUser);
+  registerAuthRoutes(app);
+  app.get('/admin-only', requireAdmin, (req, res) => res.json({ user: req.user }));
+  const certificate = await selfsigned.generate([{ name: 'commonName', value: 'localhost' }], { keySize: 2048 });
+  server = https.createServer({ key: certificate.private, cert: certificate.cert }, app).listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  const port = server.address().port;
+  process.env.HTTPS_WEB_PORT = String(port);
+  const origin = `https://127.0.0.1:${port}`;
+  const call = (route, body, headers = {}) => new Promise((resolve, reject) => {
+    const request = https.request(`${origin}${route}`, {
+      rejectUnauthorized: false, method: body === undefined ? 'GET' : 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers }
+    }, (response) => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { text += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: text ? JSON.parse(text) : null }));
+    });
+    request.on('error', reject);
+    request.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+  const credentials = { name: 'LAN Owner', password: process.env.LAN_ACCESS_KEY };
+  assert.deepEqual((await call('/api/auth/login/method')).body, { method: 'lan-password' });
+  for (const body of [{ ...credentials, name: 'Unknown Admin' }, { ...credentials, name: listener.name }, { ...credentials, password: 'wrong' }, { name: credentials.name, password: {} }, {}]) {
+    const result = await call('/api/auth/login/lan', body);
+    assert.equal(result.status, 401);
+    assert.equal(result.headers['set-cookie'], undefined);
+  }
+  for (const headers of [{ Host: `music.example.com:${port}` }, { Host: '127.0.0.1:1' }, { Origin: 'https://evil.example' }]) {
+    assert.equal((await call('/api/auth/login/lan', credentials, headers)).status, 403);
+    assert.equal((await call('/api/auth/login/method', undefined, headers)).body.method, 'passkey');
+  }
+  process.env.HTTPS_WEB_PORT = String(port + 1);
+  assert.equal((await call('/api/auth/login/lan', credentials)).status, 403);
+  process.env.HTTPS_WEB_PORT = String(port);
+  delete process.env.LAN_ACCESS_KEY;
+  assert.equal((await call('/api/auth/login/lan', credentials)).status, 403);
+  process.env.LAN_ACCESS_KEY = credentials.password;
+  httpServer = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => httpServer.once('listening', resolve));
+  const insecure = await fetch(`http://127.0.0.1:${httpServer.address().port}/api/auth/login/lan`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Host: `127.0.0.1:${port}`, 'X-Forwarded-Proto': 'https', Origin: origin },
+    body: JSON.stringify(credentials)
+  });
+  assert.equal(insecure.status, 403);
+  const loggedIn = await call('/api/auth/login/lan', credentials, { Origin: origin });
+  assert.equal(loggedIn.status, 200);
+  assert.equal(loggedIn.body.user.id, admin.id);
+  const cookie = loggedIn.headers['set-cookie'][0];
+  assert.match(cookie, /HttpOnly/);
+  assert.match(cookie, /Secure/);
+  assert.match(cookie, /SameSite=Strict/);
+  const sessionHeaders = { Cookie: cookie.split(';')[0] };
+  assert.equal((await call('/admin-only', undefined, sessionHeaders)).body.user.role, 'admin');
+  assert.equal((await call('/api/auth/me', undefined, sessionHeaders)).body.user.id, admin.id);
+  assert.equal((await call('/api/auth/logout', {}, sessionHeaders)).status, 204);
+  assert.equal((await call('/admin-only', undefined, sessionHeaders)).status, 401);
+  await store.updateUser(admin.id, { name: 'Renamed Admin' }, admin.id);
+  assert.equal((await call('/api/auth/login/lan', credentials)).status, 401);
+  const renamedLogin = await call('/api/auth/login/lan', { ...credentials, name: '  RENAMED   admin  ' });
+  assert.equal(renamedLogin.status, 200);
+  assert.equal(renamedLogin.body.user.id, admin.id);
+  await store.updateUser(listener.id, { role: 'admin' }, admin.id);
+  const secondAdmin = await call('/api/auth/login/lan', { ...credentials, name: listener.name });
+  assert.equal(secondAdmin.status, 200);
+  assert.equal(secondAdmin.body.user.id, listener.id);
+  await store.updateUser(listener.id, { status: 'revoked' }, admin.id);
+  assert.equal((await call('/api/auth/login/lan', { ...credentials, name: listener.name })).status, 401);
+}
+
 test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
   let server;
   const { directory } = await createTestDatabase(context, { beforeCleanup: async () => {
@@ -95,6 +196,8 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     method, headers: { ...headers, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
+  await context.test('LAN password login requires the configured direct HTTPS address and creates an Admin session',
+    (subcontext) => testLanPasswordLogin(subcontext, admin));
   await context.test('ExtServer accounts reject retained passkeys, cookie/Bearer sessions and PAT login', async (subcontext) => {
     const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
     const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));

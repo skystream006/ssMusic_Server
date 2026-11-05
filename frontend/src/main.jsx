@@ -1186,6 +1186,8 @@ function HealthMetrics() {
 
 function LoginPage({ onLogin, appLogin = false }) {
   const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginMethod, setLoginMethod] = useState(appLogin ? 'passkey' : null);
   const [registrationAccount, setRegistrationAccount] = useState({ role: 'user', organizerId: null });
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState(null);
@@ -1208,6 +1210,37 @@ function LoginPage({ onLogin, appLogin = false }) {
       window.history.replaceState(null, '', '/app-login');
     }
   }, [appLogin]);
+
+  useEffect(() => {
+    if (appLogin) return;
+    let canceled = false;
+    request('/api/auth/login/method').then((result) => {
+      if (!canceled) setLoginMethod(result.method);
+    }).catch((error) => {
+      if (!canceled) setMessage({ type: 'error', text: error.message });
+    });
+    return () => { canceled = true; };
+  }, [appLogin]);
+
+  async function lanLogin(event) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy('login');
+    setMessage(null);
+    try {
+      const result = await request('/api/auth/login/lan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, password })
+      });
+      setPassword('');
+      onLogin(result.user);
+    } catch (error) {
+      setPassword('');
+      setMessage({ type: 'error', text: error.message });
+    } finally {
+      setBusy('');
+    }
+  }
 
   async function login() {
     setBusy('login');
@@ -1271,10 +1304,19 @@ function LoginPage({ onLogin, appLogin = false }) {
       <img className="auth-mark" src={appIcon} alt="ssMusic Player" width="58" height="58" />
       <p className="eyebrow">Private music workspace</p>
       <h1>{appLogin ? 'ssMusic Player' : 'Open your archive.'}</h1>
-      <p>{appLogin ? 'Authorize the Android app to access your account.' : 'Your passkey stays with your password manager or device. The server stores only the public credential needed to recognize you.'}</p>
+      {loginMethod === 'passkey' && <p>{appLogin ? 'Authorize the Android app to access your account.' : 'Your passkey stays with your password manager or device. The server stores only the public credential needed to recognize you.'}</p>}
     </section>
     <section className="auth-panel" aria-labelledby="access-heading">
-      <div className="auth-panel-heading"><Fingerprint size={27} /><div><p>Secure access</p><h2 id="access-heading">{appLogin ? 'Sign in to Android app' : 'Use a passkey'}</h2></div></div>
+      <div className="auth-panel-heading"><ShieldCheck size={27} /><div><p>Secure access</p><h2 id="access-heading">{loginMethod === 'lan-password' ? 'Admin login' : appLogin ? 'Sign in to Android app' : loginMethod ? 'Use a passkey' : 'Signing in'}</h2></div></div>
+      {loginMethod === 'lan-password' ? <form onSubmit={lanLogin}>
+        <label htmlFor="lan-name">Username</label>
+        <input id="lan-name" name="username" autoComplete="username" required maxLength="64" value={name} disabled={Boolean(busy)} onChange={(event) => setName(event.target.value)} />
+        <label htmlFor="lan-password">Password</label>
+        <input id="lan-password" name="password" type="password" autoComplete="current-password" required value={password} disabled={Boolean(busy)} onChange={(event) => setPassword(event.target.value)} />
+        <button className="primary-button auth-login" disabled={Boolean(busy)} type="submit">
+          {busy === 'login' ? <RefreshCw className="spin" size={18} /> : <ShieldCheck size={18} />}Sign in
+        </button>
+      </form> : loginMethod === 'passkey' ? <>
       {redirectUrl ? <a className="primary-button auth-login" href={redirectUrl}><ExternalLink size={18} />Return to app</a> : <button className="primary-button auth-login" disabled={Boolean(busy)} onClick={login} type="button">
         {busy === 'login' ? <RefreshCw className="spin" size={18} /> : <Fingerprint size={18} />}
         {appLogin ? 'Authorize with Passkey' : 'Login with Passkey'}
@@ -1289,6 +1331,7 @@ function LoginPage({ onLogin, appLogin = false }) {
           Register with Passkey
         </button>
       </form></>}
+      </> : <RefreshCw className="spin" size={18} aria-label="Loading login" />}
       {message && <div className={`notice ${message.type}`} role="status">{message.text}</div>}
     </section>
   </main>;

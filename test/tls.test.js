@@ -7,7 +7,7 @@ import selfsigned from 'selfsigned';
 import { loadHttpsOptions } from '../src/tls.js';
 
 test('local TLS certificates use the secondary CN, preserve both hostnames and replace legacy CNs', async (context) => {
-  const keys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY', 'HTTPS_KEY_PATH', 'HTTPS_CERT_PATH'];
+  const keys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY', 'HTTPS_KEY_PATH', 'HTTPS_CERT_PATH', 'DOCKER_BIND_ADDRESS'];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   context.after(() => {
     for (const key of keys) {
@@ -29,9 +29,11 @@ test('local TLS certificates use the secondary CN, preserve both hostnames and r
   assert.equal(new X509Certificate(first.cert).toLegacyObject().subject.CN, 'buytdlp.duckdns.org');
   process.env.PASSKEY_RP_ID_SECONDARY = '192-168-6-66.sslip.io';
   process.env.PASSKEY_ORIGIN_SECONDARY = 'https://192-168-6-66.sslip.io:4123';
+  process.env.DOCKER_BIND_ADDRESS = '192.168.6.66';
   const second = await loadHttpsOptions();
   assert.notEqual(second.cert, first.cert);
   const certificate = new X509Certificate(second.cert);
+  assert.ok(certificate.checkIP('192.168.6.66'));
   assert.equal(certificate.toLegacyObject().subject.CN, '192-168-6-66.sslip.io');
   for (const host of ['buytdlp.duckdns.org', '192-168-6-66.sslip.io', 'localhost']) assert.ok(certificate.checkHost(host));
   assert.equal((await loadHttpsOptions()).cert, second.cert);
@@ -48,6 +50,7 @@ test('local TLS certificates use the secondary CN, preserve both hostnames and r
   const migrated = await loadHttpsOptions();
   assert.notEqual(migrated.cert, legacy.cert);
   const migratedCertificate = new X509Certificate(migrated.cert);
+  assert.ok(migratedCertificate.checkIP('192.168.6.66'));
   assert.equal(migratedCertificate.toLegacyObject().subject.CN, '192-168-6-66.sslip.io');
   assert.ok(migratedCertificate.checkHost('buytdlp.duckdns.org'));
   assert.ok(migratedCertificate.checkHost('192-168-6-66.sslip.io'));
