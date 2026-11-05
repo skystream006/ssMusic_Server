@@ -889,7 +889,7 @@ async function runDownloadCommands(job, command, args, songs, signal, publisher)
       publisher?.enqueue(path.resolve(job.outputDir, existingFile));
       result = { stdout: message, stderr: '' };
     } else {
-      if (index > 0 && !skipNextDelay) await sleep(10_000, undefined, { signal });
+      if (job.isPlaylist && job.playlistSongCount > 100 && index > 0 && !skipNextDelay) await sleep(10_000, undefined, { signal });
       try {
         result = await runJobCommand(job, command, [...args, url], { includeCommand: songs.length > 1, signal, publisher });
       } catch (error) {
@@ -978,21 +978,20 @@ async function executeJobWork(job, signal) {
     `thumbnail:${path.join(job.outputDir, '.thumbnails', '%(title)s.%(ext)s')}`
   ];
 
-  const individualSongs = job.isPlaylist && job.playlistSongCount > 100;
-  const songs = individualSongs ? sourceMetadata.playlistSongs : [{ url: job.url }];
-  if (individualSongs && !job.metadataOnly) {
-    job.commandProgress = { completed: 0, total: job.playlistSongCount };
+  const songs = job.isPlaylist ? sourceMetadata?.playlistSongs || [] : [{ url: job.url, title: sourceMetadata?.playlistTitle }];
+  if (!job.metadataOnly) {
+    job.commandProgress = { completed: 0, total: job.playlistSongCount ?? songs.length };
   } else {
     delete job.commandProgress;
   }
-  const publisher = individualSongs && !job.metadataOnly ? createJobPublisher(job) : null;
+  const publisher = !job.metadataOnly ? createJobPublisher(job) : null;
   if (publisher) {
     jobExecutions.get(job.id).publisher = publisher;
     args.push('--print', `after_move:${completedFilePrefix}%(filepath)j`, '--no-quiet', '--no-simulate');
   }
-  args.push(job.isPlaylist && !individualSongs ? '--yes-playlist' : '--no-playlist');
+  args.push('--no-playlist');
 
-  job.command = job.metadataOnly || individualSongs ? null : [ytDlpPath, ...args, job.url]
+  job.command = job.metadataOnly || job.isPlaylist ? null : [ytDlpPath, ...args, job.url]
     .map((value) => (value.includes(' ') ? `"${value}"` : value))
     .join(' ');
 

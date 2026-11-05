@@ -119,9 +119,10 @@ Unmatched or ambiguous files stay unchanged and are reported in process output;
 per-song failures do not stop the other songs. Stop cancels either phase.
 
 Before a playlist download starts, its metadata is checked for the total item
-count and song list. Playlists with more than 100 items run a separate yt-dlp
-command with `--no-playlist` for each media item, in playlist order, normally with a
-10-second wait between items. Before each individual command, the server checks
+count and song list. All download jobs run a separate yt-dlp command with
+`--no-playlist` for each media item, in playlist order. Playlists with more than
+100 items normally wait 10 seconds between commands; playlists with 100 or fewer
+items do not wait. Before each individual command, the server checks
 the job's output folder for a nonempty finished MP3 (audio) or MP4 (video) matching
 the playlist entry's title, including yt-dlp's default filename substitutions.
 A matching file skips both the command and its wait, advances the progress
@@ -137,19 +138,18 @@ in stdout or stderr (case-insensitive), the next song starts without that wait.
 Later commands without that message retain the normal delay. This applies to
 audio and video; commands share
 the job's output folder, download archive, and format options. No yt-dlp
-`--sleep-interval` or `--max-sleep-interval` flags are added. If a large playlist's
+`--sleep-interval` or `--max-sleep-interval` flags are added. If a playlist's
 song list cannot be retrieved, the job fails instead of downloading it as one
-playlist-wide command. Playlists with 100 or fewer items keep the normal
-single-command behavior. Metadata-only jobs do not download songs or wait
+playlist-wide command. Metadata-only jobs do not download songs or wait
 between them.
 
-Large-playlist status badges show **Commands: completed / total** in Recent Jobs,
+Download status badges show **Commands: completed / total** in Recent Jobs,
 job details, and Jobs Queue. The counter advances once per processed playlist entry,
 including local-file skips and finished command failures, but not during cooldown retries. The total is the
 reported playlist item count, not the downloaded-file count. Progress is saved as
 `commandProgress: { completed, total }` and resets on an explicit manual rerun.
 
-For per-item large playlists, completed MP3/MP4 files are published while later
+For all download jobs, completed MP3/MP4 files are published while later
 items are still downloading. yt-dlp's `after_move` notification identifies the
 final file after conversion or merging; locally skipped files are also eligible.
 An ordered background publisher batches pending files, reads their metadata, and
@@ -163,7 +163,6 @@ unreported, wrong-format, and out-of-folder files are not published. Completion
 and Stop wait for accepted files and their artwork work to drain; publication
 errors are recorded and prevent a false successful result. A cooldown pauses
 yt-dlp but does not pause publication of files that have already finished.
-Playlists using the normal single-command path retain end-of-job publication.
 
 Administrators can track the running job and waiting jobs under **Jobs > Jobs
 Queue** (`/admin/jobs-queue`), refreshed every two seconds. The admin-only
@@ -180,7 +179,7 @@ and marks the job **Stopped**. Downloaded files, the archive, progress counter,
 last command, and accumulated process output are retained. The next queued job
 can start once any server cooldown or maintenance gate permits. Stopping a job
 does not lift a server cooldown or cancel imports, transcription, or maintenance.
-For per-item large playlists, unfinished files remain on disk but are not added
+For all download jobs, unfinished files remain on disk but are not added
 to the library; completed files accepted by the publisher remain available.
 Contributors and shared accounts cannot stop jobs; private-job protections remain
 in effect. A stopped job can be explicitly rerun or deleted using the normal controls.

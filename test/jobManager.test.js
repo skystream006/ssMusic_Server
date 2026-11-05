@@ -77,7 +77,9 @@ const timer = setInterval(() => {
     process.exitCode = config.exitCode || 0;
   } else {
     const output = args[args.indexOf('--output') + 1];
-    fs.writeFileSync(path.join(path.dirname(output), 'Filename fallback.mp3'), '');
+    const filePath = path.join(path.dirname(output), 'Filename fallback.mp3');
+    fs.writeFileSync(filePath, 'downloaded audio');
+    process.stdout.write('[ssmusic:file] ' + JSON.stringify(filePath) + '\\n');
   }
 }, 10);
 `;
@@ -139,7 +141,7 @@ for (const { label, url, isPlaylist } of [
 
     await manager.setJobTitle(job.id, 'My custom collection', owner);
     await fs.writeFile(configPath, JSON.stringify({
-      output: JSON.stringify({ title: 'Changed source title', playlist_count: 15 })
+      output: JSON.stringify({ title: 'Changed source title', playlist_count: 15, entries: [{ id: 'one' }] })
     }));
     await fs.rm(file('download-started'));
     await fs.rm(file('download-release'));
@@ -158,9 +160,10 @@ for (const { label, url, isPlaylist } of [
     assert.equal(calls.length, 4);
     for (const [index, args] of calls.entries()) {
       assert.equal(args.includes('--dump-single-json'), index % 2 === 0);
-      assert.ok(args.includes(isPlaylist ? '--yes-playlist' : '--no-playlist'));
-      assert.ok(!args.includes(isPlaylist ? '--no-playlist' : '--yes-playlist'));
-      assert.equal(args.at(-1), expectedUrl);
+      const playlistLookup = isPlaylist && index % 2 === 0;
+      assert.ok(args.includes(playlistLookup ? '--yes-playlist' : '--no-playlist'));
+      assert.ok(!args.includes(playlistLookup ? '--no-playlist' : '--yes-playlist'));
+      assert.equal(args.at(-1), isPlaylist && !playlistLookup ? 'https://www.youtube.com/watch?v=one' : expectedUrl);
     }
   });
 }
@@ -171,7 +174,8 @@ const largePlaylistEntries = Array.from({ length: 101 }, (_, index) => ({
 
 for (const { label, metadata, isPlaylist = true, downloadType = 'audio', metadataOnly = false, individual = false,
   failures = [], alreadyDownloaded = [], expectedStatus = 'completed' } of [
-  { label: '100-item playlist', metadata: { playlist_count: 100, entries: largePlaylistEntries.slice(0, 100) } },
+  { label: 'one-item playlist', metadata: { playlist_count: 1, entries: largePlaylistEntries.slice(0, 1) }, individual: true },
+  { label: '100-item playlist', metadata: { playlist_count: 100, entries: largePlaylistEntries.slice(0, 100) }, individual: true },
   { label: '101-item playlist', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true },
   { label: 'already-downloaded songs skip pacing', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true,
     alreadyDownloaded: [
@@ -181,12 +185,14 @@ for (const { label, metadata, isPlaylist = true, downloadType = 'audio', metadat
       { song: 100, stream: 'stderr', message: '[download] Last song.mp3 has already been downloaded\n' }
     ] },
   { label: 'entry-count fallback', metadata: { entries: largePlaylistEntries }, individual: true },
+  { label: 'small entry-count fallback', metadata: { entries: largePlaylistEntries.slice(0, 2) }, individual: true },
   { label: 'reported total includes unavailable entries', metadata: { playlist_count: 102, entries: largePlaylistEntries }, individual: true },
-  { label: 'unknown playlist count', metadata: {} },
+  { label: 'unknown playlist count', metadata: {}, individual: true, expectedStatus: 'failed' },
   { label: 'single video', metadata: { playlist_count: 101 }, isPlaylist: false },
   { label: 'large video playlist', metadata: { playlist_count: 101, entries: largePlaylistEntries }, downloadType: 'video', individual: true },
   { label: 'metadata-only playlist', metadata: { playlist_count: 101, entries: largePlaylistEntries }, metadataOnly: true },
   { label: 'missing song list', metadata: { playlist_count: 101 }, individual: true, expectedStatus: 'failed' },
+  { label: 'small missing song list', metadata: { playlist_count: 100 }, individual: true, expectedStatus: 'failed' },
   { label: 'private video failure', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true,
     failures: [{ song: 1, stderr: 'ERROR: Private video\n', exitCode: 1 }], expectedStatus: 'partially_completed' },
   { label: 'mixed download failures', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true,
@@ -231,15 +237,15 @@ for (const { label, metadata, isPlaylist = true, downloadType = 'audio', metadat
       })));
     }
     const downloads = metadataOnly ? 0 : individual ? metadata.entries?.length || 0 : 1;
-    assert.deepEqual(job.commandProgress, individual && !metadataOnly
-      ? { completed: downloads, total: metadata.playlist_count ?? metadata.entries.length } : undefined);
+    assert.deepEqual(job.commandProgress, !metadataOnly
+      ? { completed: downloads, total: isPlaylist ? metadata.playlist_count ?? metadata.entries?.length ?? 0 : 1 } : undefined);
     assert.equal(calls.length, downloads + 1);
     assert.ok(calls[0].includes('--dump-single-json'));
     for (const args of calls) {
       assert.ok(!args.includes('--sleep-interval'));
       assert.ok(!args.includes('--max-sleep-interval'));
     }
-    assert.deepEqual(pauses, individual ? Array.from({ length: Math.max(0, downloads - 1) }, (_, index) => index)
+    assert.deepEqual(pauses, individual && (metadata.playlist_count ?? metadata.entries?.length) > 100 ? Array.from({ length: Math.max(0, downloads - 1) }, (_, index) => index)
       .filter((index) => !alreadyDownloaded.some(({ song }) => song === index)).map((index) => index + 2) : []);
     for (const { message } of alreadyDownloaded) assert.ok(job.output.includes(message.trim()));
     for (const [index, args] of calls.slice(1).entries()) {
@@ -286,7 +292,7 @@ async function makeQueueFixture(t) {
     active += 1;
     maxActive = Math.max(maxActive, active);
     let closed = false;
-    const finish = (output = '{"title":"Collection","playlist_count":100}', code = 0) => {
+    const finish = (output = '{"title":"Collection","playlist_count":100,"entries":[{"id":"fixture-song"}]}', code = 0) => {
       if (closed) return;
       closed = true;
       active -= 1;
@@ -826,7 +832,8 @@ for (const phase of ['download', 'cooldown']) {
   });
 }
 
-test('large playlist publishes completed files while the next download runs without indexing unfinished files', { timeout: 15_000 }, async (context) => {
+for (const playlistCount of [3, 101]) {
+test(`large playlist publishes completed files while the next download runs without indexing unfinished files (${playlistCount} items)`, { timeout: 15_000 }, async (context) => {
   const delayMock = context.mock.method(timers, 'setTimeout', async () => {});
   context.after(() => { delayMock.mock.restore(); syncBuiltinESMExports(); });
   const { manager, nextCommand } = await makeQueueFixture(context);
@@ -844,7 +851,7 @@ test('large playlist publishes completed files while the next download runs with
     releaseIndex();
     if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
   });
-  (await nextCommand(0)).finish(JSON.stringify({ title: 'Publish progressively', playlist_count: 101, entries: largePlaylistEntries }));
+  (await nextCommand(0)).finish(JSON.stringify({ title: 'Publish progressively', playlist_count: playlistCount, entries: largePlaylistEntries.slice(0, playlistCount) }));
   const first = await nextCommand(1);
   const firstPath = path.join(job.outputDir, 'First finished.mp3');
   await fs.writeFile(firstPath, NodeID3.create({ title: 'First indexed title', artist: 'Progressive artist' }));
@@ -917,12 +924,13 @@ test('large playlist publishes completed files while the next download runs with
   assert.equal(tracks.files[0].name, 'First finished.mp3');
   assert.deepEqual((await manager.getJob(job.id)).files, ['First finished.mp3']);
   assert.equal(job.status, 'running');
-  assert.deepEqual(job.commandProgress, { completed: 2, total: 101 });
+  assert.deepEqual(job.commandProgress, { completed: 2, total: playlistCount });
   assert.equal((await openDatabase().prepare('SELECT status FROM jobs WHERE id = $1').get(job.id)).status, 'running');
   await manager.stopJob(job.id, owner);
   assert.equal(job.status, 'stopped');
   assert.deepEqual(job.files, ['First finished.mp3']);
 });
+}
 
 test('large video playlist publishes completed MP4 files before its next command finishes', { timeout: 15_000 }, async (context) => {
   const ffmpegPath = process.env.FFMPEG_PATH;
@@ -1060,8 +1068,9 @@ test('large playlist surfaces background index failures and releases the next qu
   assert.equal(waiting.status, 'completed');
 });
 
-for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['video', false], ['video', true]]) {
-  test(`large playlist skips existing local files before spawning commands (${downloadType}, ${allExisting ? 'all existing' : 'missing final song'})`, { timeout: 15_000 }, async (context) => {
+for (const [downloadType, allExisting, playlistCount] of [['audio', false], ['audio', true], ['video', false], ['video', true]]
+  .flatMap((options) => [100, 101].map((count) => [...options, count]))) {
+  test(`large playlist skips existing local files before spawning commands (${downloadType}, ${allExisting ? 'all existing' : 'missing final song'}, ${playlistCount} items)`, { timeout: 15_000 }, async (context) => {
     const extension = downloadType === 'video' ? 'mp4' : 'mp3';
     const ffmpegPath = process.env.FFMPEG_PATH;
     if (downloadType === 'video') {
@@ -1077,7 +1086,8 @@ for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['
     const { manager, calls, nextCommand } = await makeQueueFixture(context);
     const owner = { id: 'owner', role: 'user' };
     const outputDir = path.join(fixtureDirectory, 'local-duplicates');
-    const entries = largePlaylistEntries.map((entry, index) => ({ ...entry, title: `Track ${index}` }));
+    const entries = largePlaylistEntries.slice(0, playlistCount).map((entry, index) => ({ ...entry, title: `Track ${index}` }));
+    const lastIndex = playlistCount - 1;
     await fs.mkdir(outputDir);
     const specialTitles = [
       { title: 'Artist / Song: "Live"?', name: 'Artist \u29f8 Song\uff1a \uff02Live\uff02\uff1f' },
@@ -1085,14 +1095,14 @@ for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['
       { title: '\n_Caf\u00e9 \u6771\u4eac\n\nLive-\n', name: 'Caf\u00e9 \u6771\u4eac Live' }
     ];
     for (const [index, { title }] of specialTitles.entries()) entries[index + 10].title = title;
-    await Promise.all(entries.slice(0, allExisting ? 101 : 100).map((entry) => fs.writeFile(
+    await Promise.all(entries.slice(0, allExisting ? playlistCount : lastIndex).map((entry) => fs.writeFile(
       path.join(outputDir, `${specialTitles.find((special) => special.title === entry.title)?.name || entry.title}.${extension}`), NodeID3.create({ title: entry.title })
     )));
     if (!allExisting) {
-      await fs.writeFile(path.join(outputDir, `Track 100.${extension}`), '');
-      await fs.writeFile(path.join(outputDir, `Track 100.${extension}.part`), 'partial download');
-      await fs.writeFile(path.join(outputDir, `Track 100.${downloadType === 'video' ? 'mp3' : 'mp4'}`), 'wrong media type');
-      await fs.writeFile(path.join(outputDir, 'Track 100.jpg'), 'thumbnail');
+      await fs.writeFile(path.join(outputDir, `Track ${lastIndex}.${extension}`), '');
+      await fs.writeFile(path.join(outputDir, `Track ${lastIndex}.${extension}.part`), 'partial download');
+      await fs.writeFile(path.join(outputDir, `Track ${lastIndex}.${downloadType === 'video' ? 'mp3' : 'mp4'}`), 'wrong media type');
+      await fs.writeFile(path.join(outputDir, `Track ${lastIndex}.jpg`), 'thumbnail');
     }
     const now = new Date().toISOString();
     await writeJob(openDatabase(), {
@@ -1105,13 +1115,13 @@ for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['
     fixtureCleanups.set(context, async () => {
       if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
     });
-    (await nextCommand(0)).finish(JSON.stringify({ title: 'Local duplicates', playlist_count: 101, entries }));
+    (await nextCommand(0)).finish(JSON.stringify({ title: 'Local duplicates', playlist_count: playlistCount, entries }));
     if (!allExisting) {
       const download = await nextCommand(1);
-      assert.equal(download.args.at(-1), entries[100].url);
-      assert.deepEqual(job.commandProgress, { completed: 100, total: 101 });
-      await fs.writeFile(path.join(outputDir, `Track 100.${extension}`), NodeID3.create({ title: 'Track 100' }));
-      download.finish(`[ssmusic:file] ${JSON.stringify(path.join(outputDir, `Track 100.${extension}`))}\nDownloaded missing Track 100\n`);
+      assert.equal(download.args.at(-1), entries[lastIndex].url);
+      assert.deepEqual(job.commandProgress, { completed: lastIndex, total: playlistCount });
+      await fs.writeFile(path.join(outputDir, `Track ${lastIndex}.${extension}`), NodeID3.create({ title: `Track ${lastIndex}` }));
+      download.finish(`[ssmusic:file] ${JSON.stringify(path.join(outputDir, `Track ${lastIndex}.${extension}`))}\nDownloaded missing Track ${lastIndex}\n`);
     } else {
       for (let attempt = 0; job.status === 'running' && calls.length === 1 && attempt < 500; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1123,12 +1133,12 @@ for (const [downloadType, allExisting] of [['audio', false], ['audio', true], ['
     assert.equal(calls.length, allExisting ? 1 : 2);
     assert.equal(job.songMetadata[`Track 0.${extension}`].transcriptionLocked, true);
     assert.deepEqual(pauses, []);
-    assert.deepEqual(job.commandProgress, { completed: 101, total: 101 });
+    assert.deepEqual(job.commandProgress, { completed: playlistCount, total: playlistCount });
     assert.ok(job.output.includes(`Skipping existing file: Track 0.${extension}`));
-    assert.ok(job.output.includes(`Skipping existing file: Track 99.${extension}`));
+    assert.ok(job.output.includes(`Skipping existing file: Track ${lastIndex - 1}.${extension}`));
     for (const { name } of specialTitles) assert.ok(job.output.includes(`Skipping existing file: ${name}.${extension}`));
     const saved = JSON.parse((await openDatabase().prepare('SELECT data FROM jobs WHERE id = $1').get(job.id)).data);
-    assert.deepEqual(saved.commandProgress, { completed: 101, total: 101 });
+    assert.deepEqual(saved.commandProgress, { completed: playlistCount, total: playlistCount });
     assert.ok(saved.output.includes(`Skipping existing file: Track 0.${extension}`));
   });
 }
@@ -1742,7 +1752,8 @@ test('job queue runs metadata and downloads one at a time, updates positions, an
   assert.equal(second.status, 'completed');
   assert.equal(rerun.status, 'completed');
   assert.deepEqual(manager.getJobQueue(), { running: null, queued: [] });
-  assert.deepEqual(calls.map(({ args }) => args.at(-1)), [first.url, first.url, second.url, third.url, first.url, first.url]);
+  const songUrl = 'https://www.youtube.com/watch?v=fixture-song';
+  assert.deepEqual(calls.map(({ args }) => args.at(-1)), [first.url, songUrl, second.url, third.url, first.url, songUrl]);
   assert.equal(maxActive(), 1);
 });
 
@@ -2073,7 +2084,7 @@ for (const isPlaylist of [false, true]) {
     { label: 'blank title', output: '{"title":"  "}' },
     { label: 'non-string title', output: '{"title":42}' }
   ]) {
-    test(`${isPlaylist ? 'playlist' : 'video'} ${label} still downloads and falls back to the filename`, {
+    test(`${isPlaylist ? 'playlist' : 'video'} ${label} ${isPlaylist ? 'fails without enumerated songs' : 'still downloads and falls back to the filename'}`, {
       skip: process.platform === 'win32' && 'requires POSIX executable test fixtures'
     }, async (t) => {
       const { manager, file } = await makeMetadataFixture(t, { output, exitCode });
@@ -2081,6 +2092,14 @@ for (const isPlaylist of [false, true]) {
         ? 'https://music.youtube.com/playlist?list=fallback'
         : 'https://music.youtube.com/watch?v=fallback');
       await fs.writeFile(file('metadata-release'), '');
+      if (isPlaylist) {
+        await waitForJobToFinish(job);
+        assert.equal(job.status, 'failed');
+        assert.match(job.error, /Unable to enumerate playlist items/);
+        assert.deepEqual(job.files, []);
+        assert.equal(await fs.stat(file('download-started')).catch(() => null), null);
+        return;
+      }
       await waitForFile(file('download-started'));
       assert.equal(job.playlistTitle, null);
       assert.match(job.folderName, /^song_[0-9a-f-]{36}$/);
@@ -2103,7 +2122,12 @@ for (const isPlaylist of [false, true]) {
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
       process.nextTick(() => {
-        child.stdout.end(JSON.stringify({ title: 'My collection', playlist_count: 12 }));
+        if (args.includes('--dump-single-json')) {
+          child.stdout.end(JSON.stringify({ title: 'My collection', playlist_count: 12, entries: [{ id: 'own-song' }] }));
+        } else {
+          const filePath = path.join(path.dirname(args[args.indexOf('--output') + 1]), 'My own song.mp3');
+          child.stdout.end(`[ssmusic:file] ${JSON.stringify(filePath)}\n`);
+        }
         child.emit('close', 0);
       });
       return child;
@@ -2270,6 +2294,10 @@ for (const downloadType of ['audio', 'video']) {
                 await fs.writeFile(path.join(outputDir, 'Uncovered.mp3'), payload);
               }
             }
+            for (const completedName of downloadType === 'audio' ? ['Custom.mp3', name, 'Uncovered.mp3'] : [name]) {
+              child.stdout.write(`[ssmusic:file] ${JSON.stringify(path.join(outputDir, completedName))}\n`);
+            }
+            child.stdout.end();
           }
           child.emit('close', 0);
         } catch (error) { child.emit('error', error); }
