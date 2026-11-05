@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ArrowRightLeft, CalendarClock, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, Lock, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Save, Search, Share2, Trash2, X } from 'lucide-react';
 import MusicPlayer, { LibrarySongActions, replaceSongFile, usePlayback } from './MusicPlayer.jsx';
+import MusicLoading from './MusicLoading.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
 import { getPlaylistIds, jobPlaylistId, songKey } from '../../src/library.js';
@@ -1076,7 +1077,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
       <button className="music-icon-button" type="button" title="Clear playlist selection" aria-label="Clear playlist selection" disabled={saving} onClick={() => setSelectedPlaylists(new Set())}><X size={18} /></button>
     </div>}
     <button className={`all-music ${selectedId === null ? 'is-selected' : ''}`} type="button" aria-current={selectedId === null ? 'true' : undefined} onClick={() => selectEntry(null)}><Library size={18} /><span>All music</span><small>{library?.songCount ?? 0}</small></button>
-    <div className="library-tree-scroll">{!library && !error ? <p className="music-empty" role="status">Loading playlists...</p> : renderEntries()}
+    <div className="library-tree-scroll">{!library && !error ? <MusicLoading label="Loading playlists..." compact /> : renderEntries()}
       {library && !entries.length && <p className="music-empty">No playlists yet.</p>}
       {!reordering && search && !entries.some(matches) && <p className="music-empty">No matching playlists.</p>}</div>
   </aside>;

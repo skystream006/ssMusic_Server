@@ -51,6 +51,7 @@ import './styles.css';
 import appIcon from './assets/ic_launcher.png';
 import MusicPlayer, { PlaybackProvider, PlaybackSettings, SongArtwork, usePlayback } from './MusicPlayer.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
+import MusicLoading from './MusicLoading.jsx';
 import PublicMedia, { PublicPlaylist } from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
 import AdminJobQueue from './AdminJobQueue.jsx';
@@ -631,6 +632,7 @@ function JobsPage({ tab = 'tasks' }) {
           </div>
         </div>
         {loadError && <div className="notice error"><CircleAlert size={16} />{loadError}</div>}
+        {!jobs && !loadError && <MusicLoading label="Loading recent jobs..." />}
         {actionError && <div className="notice error" role="alert"><CircleAlert size={16} />{actionError}</div>}
         {playlistMessage && <div className="notice success" role="status"><Check size={16} />{playlistMessage}</div>}
         {bulkResult && <div className={`notice ${bulkResult.failures.length ? 'error' : 'success'} job-bulk-result`} role={bulkResult.failures.length ? 'alert' : 'status'}>

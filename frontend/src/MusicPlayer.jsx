@@ -9,6 +9,7 @@ import { mediaType } from '../../src/media.js';
 import { buildLyricsUpdate, formatSyltForEdit } from './lyricsEditing.js';
 import { createMediaSourcePlayback, getMediaSourceDescriptor } from './mediaSourcePlayback.js';
 import LyricTimeline from './LyricTimeline.jsx';
+import MusicLoading from './MusicLoading.jsx';
 import { Film, Minimize2 } from 'lucide-react';
 export { findNoVocals, isNoVocals } from '../../src/library.js';
 
@@ -1538,7 +1539,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           </div>}
           {libraryView.pagination && <TrackPagination pagination={libraryView.pagination} position="top" />}
           {libraryView.awaitingAllMusic && <div className="library-empty"><button className="secondary-button" type="button" onClick={libraryView.onLoadAllMusic}><ListMusic size={18} />Load All Music</button></div>}
-          {libraryView.loading && <div className="loading" role="status"><RefreshCw className="spin" size={20} />Loading songs</div>}
+          {libraryView.loading && <MusicLoading label="Loading songs" />}
           {!libraryView.loading && <SongGroups key={libraryView.selectedId || 'all'} tracks={visibleTracks}>{(group) => <ol className="library-song-list" aria-label={group.length && isNoVocals(group[0]) ? 'NoVocals songs' : 'Songs'}>{group.map((track) => {
             const playlistTracks = tracks.filter((item) => item.playlistId === track.playlistId);
             const trackIndex = playlistTracks.findIndex((item) => songKey(item) === songKey(track));
@@ -1645,7 +1646,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
       {songs && <span>{songs.length} songs</span>}
     </header>
     {loadError && <div className="notice error" role="alert">{loadError}</div>}
-    {!songs && !loadError && <div className="loading"><RefreshCw className="spin" />Loading songs</div>}
+    {!songs && !loadError && <MusicLoading label="Loading songs" />}
     {songs?.length === 0 && <div className="empty-files"><Music2 size={24} />No songs available.</div>}
     {song && <>
       <section className="now-playing" aria-label="Now playing">

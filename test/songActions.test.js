@@ -41,6 +41,7 @@ let canChangePlaylistPrivacy;
 let getFilePrivacy;
 let MusicPlayer;
 let MusicLibrary;
+let MusicLoading;
 let LibrarySongActions;
 let NowPlayingPanel;
 let PlaybackQueueRow;
@@ -70,6 +71,7 @@ let OrganizerControl;
 
 before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
+  ({ default: MusicLoading } = await server.ssrLoadModule('/src/MusicLoading.jsx'));
   ({ reorderPlaybackQueue } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
   ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, createPlaybackDiagnostics, publishPlaybackPosition, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
@@ -94,6 +96,18 @@ test('queue reordering preserves track identities and supports before and after 
     request() {}, onSelect() {}, onMetadataSaved() {}, onReorder() {}, onMove() {} }));
   assert.match(html, /class="music-icon-button queue-drag"[^>]*draggable="true"/);
   assert.match(html, /aria-keyshortcuts="ArrowUp ArrowDown"/);
+});
+
+test('music loaders share an accessible animated icon and compact playlist layout', () => {
+  for (const label of ['Loading playlists...', 'Loading songs', 'Loading recent jobs...']) {
+    const html = renderToStaticMarkup(createElement(MusicLoading, { label, compact: label.includes('playlists') }));
+    assert.match(html, /role="status" aria-live="polite"/);
+    assert.match(html, /music-loading-art" aria-hidden="true"/);
+    assert.match(html, /music-loading-record/);
+    assert.match(html, /lucide-music-2/);
+    assert.ok(html.includes(label));
+    assert.equal(html.includes('music-loading--compact'), label.includes('playlists'));
+  }
 });
 
 test('Music page initially offers Load All Music while direct playlists load normally', () => {
