@@ -120,6 +120,50 @@ test('touch dragging recognizes playlist grips, names and song grips but not oth
   assert.equal(controls.findTouchDraggable({ touches: [{}, {}] }), undefined);
 });
 
+test('song dragging scrolls both visible edges continuously and stops away from the list or on cancellation', () => {
+  const frames = new Map();
+  const movements = [];
+  let nextFrame = 0;
+  const surface = { isConnected: true, getBoundingClientRect: () => ({ top: -200, bottom: 2400, left: 300, right: 1000 }) };
+  const handle = { disabled: false, getAttribute: () => 'true', closest: () => surface };
+  const browser = {
+    innerHeight: 800,
+    document: { hidden: false, querySelector: (selector) => ({ getBoundingClientRect: () => selector === '.topbar' ? { bottom: 70 } : { top: 650 } }) },
+    requestAnimationFrame(callback) { frames.set(++nextFrame, callback); return nextFrame; },
+    cancelAnimationFrame(id) { frames.delete(id); },
+    scrollBy(movement) { movements.push(movement); }
+  };
+  const scroll = controls.createSongDragAutoScroll(browser);
+  const tick = (time) => { const [id, callback] = frames.entries().next().value; frames.delete(id); callback(time); };
+  scroll.onDragStart({ target: { closest: () => handle } });
+  scroll.onDragOver({ clientX: 500, clientY: 75 });
+  tick(0);
+  tick(16);
+  assert.equal(movements.length, 2);
+  assert.ok(movements.every((movement) => movement.top < 0 && movement.behavior === 'instant'));
+  scroll.onDragOver({ clientX: 500, clientY: 645 });
+  tick(32);
+  tick(48);
+  assert.ok(movements.slice(2).every((movement) => movement.top > 0));
+  for (const [clientX, clientY] of [[500, 350], [200, 645], [500, 700], [500, 20]]) {
+    scroll.onDragOver({ clientX, clientY });
+    tick(64);
+  }
+  assert.equal(movements.length, 4);
+  scroll.stop();
+  assert.equal(frames.size, 0);
+  scroll.onDragStart({ target: { closest: () => null } });
+  assert.equal(frames.size, 0);
+  handle.disabled = true;
+  scroll.onDragStart({ target: { closest: () => handle } });
+  assert.equal(frames.size, 0);
+  handle.disabled = false;
+  scroll.onDragStart({ target: { closest: () => handle } });
+  browser.document.hidden = true;
+  tick(80);
+  assert.equal(frames.size, 0);
+});
+
 test('drop targets accept allowed drags and remove insertion markers when leaving the row', () => {
   const target = { dataset: {}, contains: (element) => element === 'child' };
   let prevented = false;

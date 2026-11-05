@@ -82,6 +82,57 @@ export function leaveDrop(event) {
   }
 }
 
+export function createSongDragAutoScroll(browser = window) {
+  let surface = null;
+  let pointer = null;
+  let frame = null;
+  let previousTime = null;
+
+  function stop() {
+    if (frame !== null) browser.cancelAnimationFrame(frame);
+    surface = null;
+    pointer = null;
+    frame = null;
+    previousTime = null;
+  }
+
+  function tick(time) {
+    frame = null;
+    if (!surface?.isConnected || browser.document.hidden) { stop(); return; }
+    const elapsed = previousTime === null ? 16 : Math.min(50, time - previousTime);
+    previousTime = time;
+    if (pointer) {
+      const bounds = surface.getBoundingClientRect();
+      const topbar = browser.document.querySelector('.topbar')?.getBoundingClientRect();
+      const dock = browser.document.querySelector('.player-dock')?.getBoundingClientRect();
+      const top = Math.max(0, bounds.top, topbar?.bottom || 0);
+      const bottom = Math.min(browser.innerHeight, bounds.bottom, dock?.top ?? browser.innerHeight);
+      const edge = Math.min(64, (bottom - top) / 3);
+      if (edge > 0 && pointer.x >= bounds.left && pointer.x <= bounds.right
+        && pointer.y >= top && pointer.y <= bottom) {
+        const direction = pointer.y < top + edge ? -Math.min(1, (top + edge - pointer.y) / edge)
+          : pointer.y > bottom - edge ? Math.min(1, (pointer.y - bottom + edge) / edge) : 0;
+        if (direction) browser.scrollBy({ top: direction * 600 * elapsed / 1000, behavior: 'instant' });
+      }
+    }
+    frame = browser.requestAnimationFrame(tick);
+  }
+
+  return {
+    onDragStart(event) {
+      stop();
+      const handle = event.target.closest?.('.song-drag');
+      if (!handle || handle.disabled || handle.getAttribute('draggable') !== 'true') return;
+      surface = handle.closest('.library-songs');
+      if (surface) frame = browser.requestAnimationFrame(tick);
+    },
+    onDragOver(event) {
+      if (surface) pointer = { x: event.clientX, y: event.clientY };
+    },
+    stop
+  };
+}
+
 export function initializeTouchControls() {
   dragDrop.polyfill({
     forceApply: true,
@@ -90,7 +141,13 @@ export function initializeTouchControls() {
     dragImageTranslateOverride: scroll.scrollBehaviourDragImageTranslateOverride
   });
   window.addEventListener('touchmove', () => {}, { passive: false });
+  const songScroll = createSongDragAutoScroll();
+  document.addEventListener('dragstart', songScroll.onDragStart, true);
+  document.addEventListener('dragover', songScroll.onDragOver, true);
+  window.addEventListener('blur', songScroll.stop);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) songScroll.stop(); });
   const clearDrag = () => {
+    songScroll.stop();
     document.querySelectorAll('[data-drag-over], [data-dragging]').forEach((element) => {
       delete element.dataset.dragOver;
       delete element.dataset.dragging;
