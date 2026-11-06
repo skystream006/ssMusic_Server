@@ -44,12 +44,27 @@ export async function retrieveYoutubeArtwork(thumbnailUrl, signal = new AbortCon
         || !(thumbnail.hostname.endsWith('.ytimg.com') || thumbnail.hostname === 'img.youtube.com')) {
         throw new Error('Unsupported YouTube thumbnail URL');
       }
-      const imageBuffer = await fetchBounded(thumbnail, 3 * 1024 * 1024, signal);
-      const type = await fileTypeFromBuffer(imageBuffer);
-      if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(type?.mime)) {
-        throw new Error('Unsupported YouTube thumbnail image');
+      const match = thumbnail.pathname.match(/^\/(vi|vi_webp)\/([A-Za-z0-9_-]{11})\/[^/]+\.(jpg|webp)$/);
+      const candidates = match ? ['maxresdefault', 'sddefault'].map((name) => {
+        const candidate = new URL(thumbnail);
+        candidate.pathname = `/${match[1]}/${match[2]}/${name}.${match[3]}`;
+        return candidate.href;
+      }) : [];
+      for (const candidate of new Set([...candidates, thumbnail.href])) {
+        try {
+          const imageBuffer = await fetchBounded(candidate, 3 * 1024 * 1024, signal);
+          const type = await fileTypeFromBuffer(imageBuffer);
+          if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(type?.mime)) {
+            throw new Error('Unsupported YouTube thumbnail image');
+          }
+          image = { mime: type.mime, imageBuffer };
+          warning = null;
+          break;
+        } catch (error) {
+          signal.throwIfAborted();
+          warning = error.message;
+        }
       }
-      image = { mime: type.mime, imageBuffer };
     } catch (error) {
       signal.throwIfAborted();
       warning = error.message;

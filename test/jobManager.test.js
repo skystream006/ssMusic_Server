@@ -513,7 +513,10 @@ test('retrieve metadata matches playlist songs, embeds artwork and leaves unmatc
   assert.equal(job.songMetadata['Second.mp3'].artist, 'Second channel');
   assert.equal(job.songMetadata['First.mp3'].rating, 4);
   assert.equal(job.songMetadata['First.mp3'].title, 'Keep title');
-  assert.equal((await readSongArtwork(path.join(outputDir, 'First.mp3'))).mime, 'image/avif');
+  const artwork = await readSongArtwork(path.join(outputDir, 'First.mp3'));
+  assert.equal(artwork.mime, 'image/png');
+  assert.deepEqual(artwork.imageBuffer, Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
   for (const name of ['Unmatched.mp3', 'Unavailable.mp3', '[NoVocals]/First.mp3']) {
     assert.deepEqual(await fs.readFile(path.join(outputDir, name)), original);
   }
@@ -704,13 +707,13 @@ test('playlist metadata matches translated titles using oEmbed before updating d
   assert.equal(job.status, 'completed', job.error);
   assert.equal(job.songMetadata[fileName].artist, 'J97');
   assert.equal(job.songMetadata[fileName].title, 'Keep edited title');
-  assert.equal((await readSongArtwork(filePath)).mime, 'image/avif');
+  assert.equal((await readSongArtwork(filePath)).mime, 'image/png');
   assert.deepEqual(NodeID3.removeTagsFromBuffer(await fs.readFile(filePath)), audio);
   assert.match(job.output, /Matched by oEmbed title/);
   assert.match(job.output, /HTTP 404/);
   assert.equal(requests.filter((url) => new URL(url).pathname === '/oembed').length, 3);
   assert.deepEqual(requests.filter((url) => new URL(url).hostname === 'i.ytimg.com'),
-    ['https://i.ytimg.com/vi/red9YvYlPWg/hqdefault.jpg']);
+    ['https://i.ytimg.com/vi/red9YvYlPWg/maxresdefault.jpg']);
 });
 
 for (const matching of ['fallback', 'direct collision', 'embedded URL']) {
@@ -2330,8 +2333,8 @@ for (const downloadType of ['audio', 'video']) {
     const downloaded = await fs.readFile(filePath);
     if (downloadType === 'audio') {
       const image = await readSongArtwork(filePath);
-      assert.equal(image.mime, 'image/avif');
-      assert.equal((await fileTypeFromBuffer(image.imageBuffer)).mime, 'image/avif');
+      assert.equal(image.mime, 'image/png');
+      assert.deepEqual(image.imageBuffer, source);
       assert.deepEqual(NodeID3.removeTagsFromBuffer(downloaded), payload);
       const tags = NodeID3.read(downloaded);
       assert.equal(tags.title, 'Original title');

@@ -110,7 +110,11 @@ Once enumeration finishes, the queue slot is released. Artist and artwork retrie
 then uses YouTube oEmbed independently of other downloads or yt-dlp cooldowns, with
 no API key. Single-song jobs use an embedded video URL or their job URL directly,
 without enumeration or queuing. oEmbed supplies the channel name as artist and a
-thumbnail that is converted to AVIF. Audio, lyrics, ratings, and other tags are kept.
+thumbnail URL. Artwork retrieval tries YouTube's maximum-resolution image first,
+then standard definition, then the supplied thumbnail if higher-resolution images
+are unavailable or invalid. Supported images up to 3 MB are embedded at their source
+resolution and format; separate 192 by 192 AVIF thumbnails serve library browsing.
+Audio, lyrics, ratings, and other tags are kept.
 The retrieval dialog accepts an artist prefix and postfix (including any desired
 spaces), and lets you overwrite metadata or skip entire files with nonblank
 artist tags. Overwrite is the default. Skipped files keep their artwork and all
@@ -227,11 +231,15 @@ prefer this source cover and fall back to a video frame if it is unavailable or
 cannot be decoded. The source covers remain available for cache regeneration but
 are not listed as downloadable media files.
 
-For audio downloads, the AVIF image is also embedded as the MP3's front-cover
-album art before its metadata is indexed. Existing embedded covers, other tags,
+For audio downloads, the supported source image (up to 3 MB) is embedded unchanged
+as the MP3's front-cover album art, retaining its resolution and format rather than
+embedding the small browsing thumbnail. Existing embedded covers, other tags,
 lyrics, and audio content are preserved, including on reruns. Missing or invalid
 cover art does not prevent media processing. Metadata-only jobs do not fetch artwork;
 files skipped by the download archive retain their existing covers.
+Use Retrieve Metadata with overwrite enabled to refresh previously embedded
+low-resolution covers. Available quality depends on the source video thumbnail,
+which is not necessarily the official album cover.
 
 ## Playlist and file privacy
 

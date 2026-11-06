@@ -11,7 +11,7 @@ import { isSongFile, replaceTranscribedFiles, requestTranscription, validateTran
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongArtwork, readSongMetadata, readSongSourceUrl, readSongSummary, updateSongMetadata } from './music.js';
 import { retrieveYoutubeArtwork, retrieveYoutubeMetadata } from './youtubeMetadata.js';
-import { encodeThumbnail, readDownloadedArtwork, refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
+import { readDownloadedArtwork, refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
 import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
 import { assertPrivacyEnabled, attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
@@ -179,8 +179,7 @@ async function embedDownloadedArtwork(job, names = job.files || []) {
       if (await readSongArtwork(filePath)) continue;
       const image = await readDownloadedArtwork(filePath);
       if (!image) continue;
-      const artwork = await encodeThumbnail(image);
-      await updateSongMetadata(filePath, { artwork: `data:image/avif;base64,${artwork.toString('base64')}` });
+      await updateSongMetadata(filePath, { artwork: `data:${image.mime};base64,${image.imageBuffer.toString('base64')}` });
     } catch (error) { console.warn(`Unable to embed downloaded artwork for ${name}: ${error.message}`); }
   }
 }
@@ -1340,7 +1339,7 @@ async function retrieveJobMetadataWork(job, signal, { artistPrefix = '', artistP
         : await retrieveYoutubeMetadata(sourceUrl, signal);
       const changes = {};
       if (artist) changes.artist = `${artistPrefix}${artist}${artistPostfix}`;
-      if (image) changes.artwork = `data:image/avif;base64,${(await encodeThumbnail(image)).toString('base64')}`;
+      if (image) changes.artwork = `data:${image.mime};base64,${image.imageBuffer.toString('base64')}`;
       signal.throwIfAborted();
       if (!Object.keys(changes).length) throw new Error(warning || 'No artist or artwork was returned by oEmbed');
       await updateSongMetadata(filePath, changes, { includeLyrics: false });

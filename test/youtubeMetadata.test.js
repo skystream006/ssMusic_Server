@@ -45,6 +45,7 @@ test('oEmbed retrieves channel and thumbnail directly with bounded, nonredirecti
   assert.equal(result.warning, null);
   assert.equal(calls[0].url.origin + calls[0].url.pathname, 'https://www.youtube.com/oembed');
   assert.equal(calls[0].url.searchParams.get('url'), 'https://www.youtube.com/watch?v=abcdefghijk');
+  assert.equal(calls[1].url.href, 'https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg');
   for (const call of calls) {
     assert.equal(call.options.redirect, 'error');
     assert.ok(call.options.signal instanceof AbortSignal);
@@ -66,7 +67,51 @@ test('oEmbed title lookups defer artwork until a source has been matched', async
   const artwork = await retrieveYoutubeArtwork(metadata.thumbnailUrl);
   assert.deepEqual(artwork.image, { mime: 'image/png', imageBuffer: png });
   assert.equal(calls.length, 2);
-  assert.equal(calls[1], metadata.thumbnailUrl);
+  assert.equal(calls[1], 'https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg');
+});
+
+test('artwork falls back through standard definition to the supplied thumbnail', async (context) => {
+  const calls = [];
+  const fetchMock = context.mock.method(globalThis, 'fetch', async (url) => {
+    calls.push(String(url));
+    return new URL(url).pathname.endsWith('/maxresdefault.jpg')
+      ? new Response('', { status: 404 }) : new Response(png);
+  });
+  const original = 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg';
+  assert.deepEqual((await retrieveYoutubeArtwork(original)).image, { mime: 'image/png', imageBuffer: png });
+  assert.deepEqual(calls, [original.replace('hqdefault', 'maxresdefault'), original.replace('hqdefault', 'sddefault')]);
+  calls.length = 0;
+  fetchMock.mock.mockImplementation(async (url) => {
+    calls.push(String(url));
+    return String(url) === original ? new Response(png) : new Response('not an image');
+  });
+  const result = await retrieveYoutubeArtwork(original);
+  assert.deepEqual(result.image, { mime: 'image/png', imageBuffer: png });
+  assert.equal(result.warning, null);
+  assert.deepEqual(calls, [original.replace('hqdefault', 'maxresdefault'), original.replace('hqdefault', 'sddefault'), original]);
+});
+
+test('artwork fallback retains size limits and stops immediately on cancellation', async (context) => {
+  const calls = [];
+  const controller = new AbortController();
+  const fetchMock = context.mock.method(globalThis, 'fetch', async (url) => {
+    calls.push(String(url));
+    return new URL(url).pathname.endsWith('/maxresdefault.webp')
+      ? new Response(png, { headers: { 'Content-Length': String(3 * 1024 * 1024 + 1) } })
+      : new Response(png);
+  });
+  const original = 'https://i.ytimg.com/vi_webp/abcdefghijk/hqdefault.webp';
+  assert.deepEqual((await retrieveYoutubeArtwork(original)).image, { mime: 'image/png', imageBuffer: png });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1], original.replace('hqdefault', 'sddefault'));
+  calls.length = 0;
+  fetchMock.mock.mockImplementation(async (url) => {
+    calls.push(String(url));
+    controller.abort();
+    throw controller.signal.reason;
+  });
+  await assert.rejects(retrieveYoutubeArtwork(original, controller.signal), { name: 'AbortError' });
+  assert.equal(calls.length, 1);
 });
 
 test('oEmbed rejects invalid sources and unsafe artwork URLs without fetching them', async (context) => {
