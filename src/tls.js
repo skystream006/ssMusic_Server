@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { X509Certificate } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
+import { createSecureContext } from 'node:tls';
 import selfsigned from 'selfsigned';
 
 function certificateName(value) {
@@ -28,8 +29,6 @@ export async function loadHttpsOptions() {
   }
 
   const certificateDirectory = path.resolve(process.cwd(), 'data', 'tls');
-  const keyPath = path.join(certificateDirectory, 'server-key.pem');
-  const certPath = path.join(certificateDirectory, 'server-cert.pem');
   const host = certificateName(process.env.PASSKEY_RP_ID_SECONDARY || process.env.PASSKEY_RP_ID);
   const names = [...new Set([
     host,
@@ -39,6 +38,29 @@ export async function loadHttpsOptions() {
     ...[process.env.DOCKER_BIND_ADDRESS].filter((address) => net.isIP(address || '') && !['0.0.0.0', '::'].includes(address)),
     'localhost', '127.0.0.1', '::1'
   ])];
+  const options = await loadLocalCertificate(certificateDirectory, 'server', host, names);
+  if (!process.env.PASSKEY_RP_ID_TERTIARY) return options;
+
+  const tertiaryHost = certificateName(process.env.PASSKEY_RP_ID_TERTIARY);
+  const tertiaryNames = [...new Set([
+    tertiaryHost,
+    ...(process.env.PASSKEY_ORIGIN_TERTIARY ? [new URL(process.env.PASSKEY_ORIGIN_TERTIARY).hostname] : [])
+  ])];
+  const tertiaryOptions = await loadLocalCertificate(certificateDirectory, 'server-tertiary', tertiaryHost, tertiaryNames);
+  const defaultContext = createSecureContext(options);
+  const tertiaryContext = createSecureContext(tertiaryOptions);
+  const tertiaryServerNames = new Set(tertiaryNames.map((name) => name.toLowerCase()));
+  return {
+    ...options,
+    SNICallback(servername, callback) {
+      callback(null, tertiaryServerNames.has(servername.toLowerCase()) ? tertiaryContext : defaultContext);
+    }
+  };
+}
+
+async function loadLocalCertificate(certificateDirectory, prefix, host, names) {
+  const keyPath = path.join(certificateDirectory, `${prefix}-key.pem`);
+  const certPath = path.join(certificateDirectory, `${prefix}-cert.pem`);
   try {
     const [key, cert] = await Promise.all([fs.readFile(keyPath), fs.readFile(certPath)]);
     const certificate = new X509Certificate(cert);

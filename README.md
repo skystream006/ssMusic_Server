@@ -1600,11 +1600,17 @@ pair must be provided together, and each RP ID must be a hostname, not a raw IP 
 Tertiary settings do not require secondary settings.
 
 Rebuild/recreate the Docker container after changing these settings (for example,
-`docker compose up -d --build`). Generated local certificates cover all configured
-RP IDs and origin hostnames, using the secondary hostname as their common name when
-configured. An older generated certificate is replaced if needed; trust the replacement
-on each client before using passkeys. Custom certificates are not changed and must
-already cover the local hostname.
+`docker compose up -d --build`). The default generated local certificate covers all
+configured RP IDs and origin hostnames, using the secondary hostname as its common name
+when configured. Tertiary access uses a separate generated certificate with
+`PASSKEY_RP_ID_TERTIARY` as its common name, saved as `data/tls/server-tertiary-cert.pem`
+and `data/tls/server-tertiary-key.pem`. TLS SNI selects that certificate for the tertiary
+origin hostname or RP ID; primary, secondary, unknown, and non-SNI connections retain
+the default certificate. Older generated certificates are replaced if needed; trust
+the certificate presented on each origin before using passkeys.
+Custom certificates configured through `HTTPS_KEY_PATH` and `HTTPS_CERT_PATH` are not
+changed: one custom certificate is still served for all hostnames and must cover them.
+If a reverse proxy terminates HTTPS, certificate selection must be configured there.
 
 Passkeys are scoped to their RP ID: an existing public-hostname passkey cannot be used
 on an unrelated local hostname. To sign in to the same account locally, use **User settings >
