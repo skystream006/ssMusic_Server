@@ -196,6 +196,11 @@ for (const { label, metadata, isPlaylist = true, downloadType = 'audio', metadat
   { label: 'small missing song list', metadata: { playlist_count: 100 }, individual: true, expectedStatus: 'failed' },
   { label: 'private video failure', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true,
     failures: [{ song: 1, stderr: 'ERROR: Private video\n', exitCode: 1 }], expectedStatus: 'partially_completed' },
+  { label: 'forbidden video data failure', metadata: { entries: largePlaylistEntries.slice(0, 2) }, individual: true,
+    failures: [{ song: 1, stderr: 'ERROR: unable to download video data: HTTP Error 403: Forbidden\r\n', exitCode: 1 }], expectedStatus: 'partially_completed' },
+  { label: 'forbidden video data and unrelated failure', metadata: { entries: largePlaylistEntries.slice(0, 2) }, individual: true,
+    failures: [{ song: 0, stderr: 'ERROR: Unable to download webpage\n', exitCode: 1 },
+      { song: 1, stderr: 'ERROR: unable to download video data: HTTP Error 403: Forbidden\n', exitCode: 1 }], expectedStatus: 'failed' },
   { label: 'mixed download failures', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true,
     failures: [{ song: 1, exitCode: 1 }, { song: 2, stderr: 'ERROR: Private video\n', exitCode: 1 }], expectedStatus: 'failed' },
   { label: 'ignored download error', metadata: { playlist_count: 101, entries: largePlaylistEntries }, individual: true,
@@ -273,7 +278,7 @@ for (const { label, metadata, isPlaylist = true, downloadType = 'audio', metadat
     if (!metadataOnly && !downloads) assert.match(job.output, /Unable to enumerate playlist items/);
     if (expectedStatus === 'partially_completed') {
       assert.equal(job.error, null);
-      assert.match(job.output, /WARNING: Private video/);
+      assert.match(job.output, /WARNING: (?:Private video|unable to download video data: HTTP Error 403: Forbidden)/);
     }
     if (expectedStatus === 'failed') assert.ok(job.error);
   });
@@ -2628,6 +2633,28 @@ test('unavailable video errors are warnings in either output stream without hidi
   }
 });
 
+test('forbidden video data errors are warnings without hiding unrelated HTTP errors', async () => {
+  const { classifyCommandOutput } = await import(`../src/jobManager.js?forbidden=${Date.now()}`);
+  const forbidden = 'ERROR: unable to download video data: HTTP Error 403: Forbidden';
+  for (const stream of ['stdout', 'stderr']) {
+    const classification = classifyCommandOutput({ [stream]: `\r\n${forbidden}\r\n` });
+    assert.equal(classification.hasPrivateVideoWarning, true);
+    assert.equal(classification.hasNonPrivateError, false);
+    assert.equal(classification[stream], `\n${forbidden.replace('ERROR:', 'WARNING:')}\n`);
+
+    for (const other of [
+      'ERROR: Unable to download webpage: HTTP Error 403: Forbidden',
+      'ERROR: unable to download video data: HTTP Error 500: Internal Server Error'
+    ]) {
+      const mixed = classifyCommandOutput({ [stream]: `${forbidden}\n${other}` });
+      assert.equal(mixed.hasPrivateVideoWarning, true);
+      assert.equal(mixed.hasNonPrivateError, true);
+      assert.ok(mixed[stream].includes(other));
+      assert.equal(classifyCommandOutput({ [stream]: other }).hasPrivateVideoWarning, false);
+    }
+  }
+});
+
 test('removed video errors and YouTube Music redirects do not hide unrelated errors', async () => {
   const { classifyCommandOutput } = await import(`../src/jobManager.js?removed=${Date.now()}`);
   const redirect = 'WARNING: [youtube:tab] YouTube Music is not directly supported. Redirecting to https://www.youtube.com/playlist?list=PLby3nsn6k9vZtZ67xilzjnsuWIuCuQiqb';
@@ -2816,6 +2843,7 @@ test('persisted unavailable video failures are recovered unless unrelated errors
     { id: 'warning', status: 'warning', output: 'WARNING: [youtube] abc: Video unavailable' },
     { id: 'removed-with-redirect', status: 'failed', output: "WARNING: [youtube:tab] YouTube Music is not directly supported. Redirecting to https://www.youtube.com/playlist?list=PLby3nsn6k9vZtZ67xilzjnsuWIuCuQiqb\nERROR: [youtube] ogy9AawxX0c: This video has been removed for violating YouTube's Terms of Service" },
     { id: 'private-and-unavailable', status: 'failed', output: 'ERROR: [youtube] abc: Video unavailable\nERROR: [youtube] def: Private video' },
+    { id: 'forbidden-video-data', status: 'failed', output: '[stderr] \r\nERROR: unable to download video data: HTTP Error 403: Forbidden' },
     { id: 'mixed', status: 'failed', output: 'WARNING: [youtube] abc: Video unavailable\nERROR: Unable to download webpage' }
   ];
   for (const record of records) {

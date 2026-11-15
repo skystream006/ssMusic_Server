@@ -85,7 +85,7 @@ function rateLimitJobs() {
   const reason = Object.assign(new Error(getJobRateLimit().message), { code: 'JOBS_RATE_LIMITED' });
   for (const controller of activeJobControllers.values()) controller.abort(reason);
 }
-const privateVideoPattern = /\b(?:private video|video is private|video unavailable|this video has been removed for violating|YouTube Music is not directly supported\. Redirecting to)\b/i;
+const privateVideoPattern = /\b(?:private video|video is private|video unavailable|this video has been removed for violating|YouTube Music is not directly supported\. Redirecting to|unable to download video data: HTTP Error 403: Forbidden)\b/i;
 
 // Non-null while a maintenance update (yt-dlp -U / deno upgrade) is running.
 // Jobs about to start wait on this promise so they queue behind the update.

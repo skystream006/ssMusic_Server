@@ -155,18 +155,21 @@ export function LinkedSongVideo({ song, mediaRef, clock, artwork }) {
 
 export function drawCircularWaveform(context, samples, size) {
   const center = size / 2;
+  const radius = size * 0.25;
+  const spikes = Math.min(128, samples.length);
   context.beginPath();
-  for (let index = 0; index < samples.length; index++) {
-    const angle = index / samples.length * Math.PI * 2 - Math.PI / 2;
-    // Taper the seam so the first and last samples join without a radial jump.
-    const taper = Math.min(1, index / 16, (samples.length - 1 - index) / 16);
-    const radius = size * (0.28 + Math.max(-1, Math.min(1, samples[index])) * taper * 0.12);
-    const x = center + Math.cos(angle) * radius;
-    const y = center + Math.sin(angle) * radius;
-    if (index === 0) context.moveTo(x, y);
-    else context.lineTo(x, y);
+  for (let index = 0; index < spikes; index++) {
+    const start = Math.floor(index * samples.length / spikes);
+    const end = Math.floor((index + 1) * samples.length / spikes);
+    let peak = 0;
+    for (let sample = start; sample < end; sample++) peak = Math.max(peak, Math.abs(samples[sample]));
+    const angle = index / spikes * Math.PI * 2 - Math.PI / 2;
+    const x = Math.cos(angle);
+    const y = Math.sin(angle);
+    const tip = radius + size * (0.01 + Math.min(1, peak) * 0.12);
+    context.moveTo(center + x * radius, center + y * radius);
+    context.lineTo(center + x * tip, center + y * tip);
   }
-  context.closePath();
   context.stroke();
 }
 
@@ -187,8 +190,8 @@ export function CircularWaveform({ analyser, playing }) {
       else samples.fill(0);
       context.clearRect(0, 0, size, size);
       context.strokeStyle = color;
-      context.lineWidth = 2;
-      context.lineJoin = 'round';
+      context.lineWidth = Math.max(1, size / 240);
+      context.lineCap = 'round';
       drawCircularWaveform(context, samples, size);
     }
     function tick() {
@@ -224,9 +227,9 @@ export function CircularWaveform({ analyser, playing }) {
   }, [analyser, playing]);
 
   return <div className="expanded-artwork circular-waveform">
-    <canvas ref={canvasRef} role="img" aria-label="Circular audio waveform" />
+    <canvas ref={canvasRef} role="img" aria-label="Circular spike audio waveform" />
     <Radio className="circular-waveform-icon" size={44} aria-hidden="true" />
-    <span className="circular-waveform-label" role={error ? 'alert' : 'status'}>{error || (!analyser ? 'Preparing visualizer...' : playing ? 'Circular waveform' : 'Paused')}</span>
+    <span className="circular-waveform-label" role={error ? 'alert' : 'status'}>{error || (!analyser ? 'Preparing visualizer...' : playing ? 'Circular spikes' : 'Paused')}</span>
   </div>;
 }
 

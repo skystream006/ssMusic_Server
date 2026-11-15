@@ -141,10 +141,11 @@ the song after its last playlist link also deletes its video; moving/linking
 the song or replacing its audio with the same source retains the video.
 
 The player offers **Album art**, **Audio visualizer**, and **Video** display
-buttons. The visualizer wraps the live audio waveform around a circle instead
-of animating expanding pulses. It rests when paused and shows a still waveform
-when reduced motion is enabled. Video becomes available after the linked download completes;
-it follows the song's play/pause, seeking, and playback speed while muted, so
+buttons. The visualizer draws individual spikes around a circle, with each
+spike's length driven by the peak amplitude of its audio samples. It rests when
+paused and shows still spikes when reduced motion is enabled. Video becomes
+available after the linked download completes; it follows the song's play/pause,
+seeking, and playback speed while muted, so
 switching displays never replaces or restarts the song audio. Video streaming
 inherits the song's privacy and shared-library permissions.
 
@@ -1762,6 +1763,7 @@ Jobs are persisted in PostgreSQL and restored after server restarts. Jobs show
 queued/running/completed/partially completed/failed/stopped status; any active job interrupted by a restart
 is restored as failed so it can be rerun safely.
 Private or unavailable videos skipped by yt-dlp produce a partially completed job rather than a failed job.
+This includes `unable to download video data: HTTP Error 403: Forbidden`; unrelated errors still cause a failed job.
 Downloaded files are written under `./output/<job-folder>/` and can be downloaded from the job details page.
 Use **Download all** on a job with files to download its songs as a ZIP archive.
 Job details include the command and complete captured stdout and stderr output.

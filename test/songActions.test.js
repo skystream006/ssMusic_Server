@@ -107,7 +107,7 @@ test('song video downloads are offered only for authorized audio files with a sa
   assert.match(failed, /not added to a playlist/);
 });
 
-test('player display switches between artwork, circular waveform, and only completed linked videos', () => {
+test('player display switches between artwork, circular spikes, and only completed linked videos', () => {
   const song = { jobId: 'job', name: 'Song.mp3', title: 'Song' };
   const render = (mode, track = song, extra = {}) => renderToStaticMarkup(createElement(PlayerDisplay, {
     song: track, mode, onModeChange() {}, mediaRef: { current: null }, clock: {}, playing: false, ...extra
@@ -116,7 +116,7 @@ test('player display switches between artwork, circular waveform, and only compl
   assert.match(art, /aria-label="Album art"[^>]*aria-pressed="true"/);
   assert.doesNotMatch(art, /<video|<canvas/);
   const waveform = render('visualizer');
-  assert.match(waveform, /<canvas[^>]*aria-label="Circular audio waveform"/);
+  assert.match(waveform, /<canvas[^>]*aria-label="Circular spike audio waveform"/);
   assert.match(waveform, /aria-label="Audio visualizer"[^>]*aria-pressed="true"/);
   for (const status of ['queued', 'running', 'failed', 'stopped', undefined]) {
     const html = render('video', { ...song, linkedVideo: { status, streamUrl: '/linked.mp4' } });
@@ -204,30 +204,41 @@ test('linked video cancels pending playback safely and reports genuine play fail
   stop();
 });
 
-test('circular waveform traces signed audio samples rather than a single pulsing radius', () => {
+test('circular waveform draws independent radial spikes from positive and negative audio peaks', () => {
   const size = 240;
   const trace = (samples) => {
-    const points = [];
-    let closed = false;
-    let strokes = 0;
+    const segments = [];
+    let start = null;
     drawCircularWaveform({
-      beginPath() {}, moveTo(x, y) { points.push([x, y]); }, lineTo(x, y) { points.push([x, y]); },
-      closePath() { closed = true; }, stroke() { strokes++; }
+      beginPath() {}, moveTo(x, y) { start = [x - size / 2, y - size / 2]; },
+      lineTo(x, y) {
+        assert.ok(start, 'each spike starts independently instead of joining neighboring tips');
+        const tip = [x - size / 2, y - size / 2];
+        assert.ok(Math.abs(start[0] * tip[1] - start[1] * tip[0]) < 1e-8, 'spikes point radially outward');
+        const inner = Math.hypot(...start);
+        const outer = Math.hypot(...tip);
+        assert.ok(outer > inner && outer < size / 2, 'spikes remain visible and inside the canvas');
+        segments.push({ radius: inner, length: outer - inner });
+        start = null;
+      },
+      closePath() { assert.fail('spike tips must not form a continuous waveform'); }, stroke() {}
     }, samples, size);
-    assert.equal(closed, true);
-    assert.equal(strokes, 1);
-    return points.map(([x, y]) => Math.hypot(x - size / 2, y - size / 2));
+    return segments;
   };
-  const silence = trace(new Float32Array(128));
-  assert.ok(silence.every((radius) => Math.abs(radius - silence[0]) < 1e-10));
-  const samples = Float32Array.from({ length: 128 }, (_, index) => Math.sin(index / 128 * Math.PI * 2) * 0.75);
+  const samples = new Float32Array(2048);
+  const silence = trace(samples);
+  assert.ok(silence.length > 1 && silence.length < samples.length);
+  assert.ok(silence.every((spike) => Math.abs(spike.length - silence[0].length) < 1e-10));
+  samples[7] = 0.75;
+  samples[1033] = -0.75;
   const waveform = trace(samples);
-  assert.ok(waveform[32] > silence[32], 'positive samples move outside the resting circle');
-  assert.ok(waveform[96] < silence[96], 'negative samples move inside the resting circle');
-  assert.notDeepEqual(waveform, trace(samples.map((sample) => -sample)), 'equal-energy signals retain their different waveforms');
-  const clipped = trace(Float32Array.from({ length: 128 }, (_, index) => index % 2 ? 4 : -4));
-  assert.ok(clipped.every((radius) => radius > 0 && radius < size / 2), 'loud samples stay inside the canvas');
-  assert.ok(Math.abs(clipped[0] - clipped.at(-1)) < 1e-10, 'the circular seam has no amplitude jump');
+  const opposite = waveform.length / 2;
+  assert.ok(waveform[0].length > silence[0].length, 'transients between angular sample positions are retained');
+  assert.ok(waveform[opposite].length > silence[opposite].length, 'negative peaks also drive spikes');
+  assert.ok(waveform.every((spike, index) => Math.abs(spike.radius - silence[index].radius) < 1e-10));
+  assert.ok(waveform.every((spike, index) => index === 0 || index === opposite
+    || Math.abs(spike.length - silence[index].length) < 1e-10), 'only the corresponding spikes react');
+  trace(Float32Array.from({ length: 2048 }, (_, index) => index % 2 ? 4 : -4));
 });
 
 test('audio analyser reuses its audio source without interrupting output', async () => {
