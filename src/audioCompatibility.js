@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { mediaType } from './media.js';
+import { serveAdaptiveVideo } from './videoCache.js';
 
 const version = 'aac-lc-192k-faststart-v1';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
@@ -143,6 +144,7 @@ export function createMediaStreamHandler(resolveFile, cache = compatibilityAudio
   return async (req, res) => {
     try {
       const format = req.query.format;
+      if (format === 'hls') return await serveAdaptiveVideo(req, res, resolveFile);
       if (format !== undefined && format !== 'aac') throw failure('Unsupported playback format', 400);
       if (req.query.mse !== undefined && (req.query.mse !== '1' || format !== 'aac')) throw failure('Invalid MediaSource format', 400);
       const source = await resolveFile(req);

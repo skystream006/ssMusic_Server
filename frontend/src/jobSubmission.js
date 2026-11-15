@@ -1,4 +1,9 @@
 export async function submitJobUrl(url, { request, user, confirm, library = false, metadataOnly = false, downloadType = 'audio' }) {
+  if (downloadType === 'video' && !await confirm({
+    title: 'Video job',
+    message: "Video jobs should be used for movies or series. For song videos, run an Audio job and individually use 'Retrieve song video' to maintain audio rating and metadata features.",
+    action: 'video', label: 'Continue'
+  })) return null;
   try {
     const job = await request('/api/jobs', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url.trim(), metadataOnly, downloadType })

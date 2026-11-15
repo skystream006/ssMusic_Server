@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, Download, Headphones, LibraryBig, ListMusic, Maximize2, Music2, Play, RefreshCw, SkipBack, SkipForward, X } from 'lucide-react';
 import LyricTimeline from './LyricTimeline.jsx';
+import AdaptiveVideo from './AdaptiveVideo.jsx';
 import { mediaType } from '../../src/media.js';
 import { individualPlaylistNames } from '../../src/library.js';
 import { sortSelectOptions } from './selectOptions.js';
@@ -172,7 +173,7 @@ export function PublicMediaView({
   const Container = embedded ? 'section' : 'main';
   const Heading = embedded ? 'h2' : 'h1';
   const isVideo = mediaType(media?.name) === 'video';
-  const MediaElement = isVideo ? 'video' : 'audio';
+  const MediaElement = isVideo ? AdaptiveVideo : 'audio';
   const title = displayText(media?.title, displayText(media?.name, 'Shared media'));
   const knownDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   const position = Math.min(knownDuration, Math.max(0, Number.isFinite(elapsed) ? elapsed : 0));

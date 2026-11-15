@@ -11,6 +11,7 @@ test('job submission sends the chosen format and metadata-only flag, defaulting 
     const job = { id: 'created' };
     const result = await submitJobUrl(' https://youtu.be/video ', {
       downloadType, metadataOnly: true,
+      confirm: async () => { assert.equal(downloadType, 'video'); return true; },
       request: async (url, options) => {
         assert.equal(url, '/api/jobs');
         assert.equal(options.method, 'POST');
@@ -21,6 +22,32 @@ test('job submission sends the chosen format and metadata-only flag, defaulting 
       }
     });
     assert.deepEqual(result, { job, created: true });
+  }
+});
+
+test('video submission waits for Continue and cancellation never sends a job request', async () => {
+  for (const accepted of [true, false]) {
+    const confirmation = Promise.withResolvers();
+    const requests = [];
+    const job = { id: 'video-job' };
+    const pending = submitJobUrl(' https://youtu.be/video ', {
+      downloadType: 'video',
+      confirm: (options) => {
+        assert.deepEqual(options, {
+          title: 'Video job',
+          message: "Video jobs should be used for movies or series. For song videos, run an Audio job and individually use 'Retrieve song video' to maintain audio rating and metadata features.",
+          action: 'video', label: 'Continue'
+        });
+        return confirmation.promise;
+      },
+      request: async (url, options) => { requests.push({ url, options }); return job; }
+    });
+    await Promise.resolve();
+    assert.equal(requests.length, 0);
+    confirmation.resolve(accepted);
+    assert.deepEqual(await pending, accepted ? { job, created: true } : null);
+    assert.equal(requests.length, accepted ? 1 : 0);
+    if (accepted) assert.equal(JSON.parse(requests[0].options.body).downloadType, 'video');
   }
 });
 

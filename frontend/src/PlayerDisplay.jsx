@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Disc3, Film, Radio, RefreshCw } from 'lucide-react';
+import { adaptiveVideoSource, attachAdaptiveVideo } from './adaptiveVideo.js';
 
 export function createAudioAnalyser(browser = globalThis) {
   let context = null;
@@ -129,24 +130,28 @@ export function LinkedSongVideo({ song, mediaRef, clock, artwork }) {
   const videoRef = useRef(null);
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
+  const [preparing, setPreparing] = useState(false);
   const source = song.linkedVideo.streamUrl;
   useEffect(() => {
     const audio = mediaRef.current;
     const video = videoRef.current;
     setError('');
-    video.src = source;
     if (!audio) { setError('Select a song before playing its linked video.'); return; }
+    const playback = attachAdaptiveVideo(video, adaptiveVideoSource(source, window.location.href), {
+      onStatus: setPreparing, onError: (failure) => setError(failure.message)
+    });
+    playback.ready.catch((failure) => setError(failure.message));
     const stop = synchronizeSongVideo(audio, video, clock, { onError: setError });
     return () => {
       stop();
-      video.removeAttribute('src');
-      video.load();
+      playback.destroy();
     };
   }, [source, song.jobId, song.name, mediaRef, clock, retry]);
 
   return <>
     <div className="expanded-video linked-song-video"><video ref={videoRef} muted playsInline preload="metadata"
       poster={artwork || undefined} aria-label={`Video for ${song.title || song.name}`} /></div>
+    {preparing && <p role="status">Preparing adaptive video...</p>}
     {error && <div className="notice error" role="alert"><span>{error}</span>
       <button className="music-icon-button" type="button" title="Retry linked video" aria-label="Retry linked video"
         onClick={() => setRetry((value) => value + 1)}><RefreshCw size={18} /></button></div>}
@@ -242,7 +247,7 @@ export default function PlayerDisplay({ song, artwork, mode, onModeChange, media
   return <>
     <div className="player-display-modes" role="group" aria-label="Player display">
       {modes.map(({ id, label, Icon }) => <button key={id} type="button" aria-label={label}
-        title={id === 'video' && !hasVideo ? 'Download this song\'s video from its action menu first' : label}
+        title={id === 'video' && !hasVideo ? 'Retrieve this song\'s video from its action menu first' : label}
         aria-pressed={display === id} disabled={id === 'video' && !hasVideo} onClick={() => onModeChange(id)}>
         <Icon size={18} /><span>{label}</span></button>)}
     </div>

@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { openDatabase } from './database.js';
 import { getFilePath, isFileInsideJobFolder, isValidJobFileName } from './jobManager.js';
 import { isPlayableFile } from './media.js';
+import { createMediaStreamHandler } from './audioCompatibility.js';
 import { readSongMetadata } from './music.js';
 import { individualPlaylistNames } from './library.js';
 import { addSharedLibrarySong } from './libraryStore.js';
@@ -297,6 +298,9 @@ export function publicMediaRouter() {
     }
     for (const action of ['stream', 'download']) {
       router.get(`${source.route}/${action}`, async (req, res) => {
+        if (action === 'stream' && req.query.format === 'hls') {
+          return createMediaStreamHandler(async (request) => (await source.resolve(request)).filePath)(req, res);
+        }
         try {
           const song = await source.resolve(req);
           const options = { cacheControl: false, lastModified: false };

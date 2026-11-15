@@ -34,6 +34,11 @@ On **Jobs > Tasks > Start a download**, choose **Audio (MP3)** or **Video (MP4)*
 Standard YouTube, mobile YouTube, YouTube Music, and `youtu.be` links are accepted.
 Links containing a `list` query parameter download the complete playlist.
 
+Submitting **Video (MP4)** first opens a **Continue / Cancel** confirmation:
+video jobs are intended for movies or series. For song videos, submit an Audio job
+and use **Retrieve song video** individually to retain audio ratings and metadata
+features. Cancel leaves the form unchanged and does not submit a job.
+
 When yt-dlp reports an age restriction, the server retries that command once with
 the Netscape-format cookie file at `data/ytcookie/cookies.txt`. Native deployments
 can override its location with `YTDLP_COOKIES_PATH`. Docker Compose mounts the host
@@ -77,6 +82,39 @@ Video jobs download video with audio, preferring MP4/M4A streams, and use FFmpeg
 to merge or remux the result to MP4. Reruns keep the original format. The same URL
 can have separate audio and video jobs; duplicates within a format offer the
 existing job's normal rerun or details action.
+
+### Adaptive video playback cache
+
+The web player uses adaptive HLS for standalone videos, linked music videos, and
+publicly shared videos. On first playback, FFmpeg generates aligned four-second
+H.264/AAC segments at 480p (without upscaling) and at the source resolution.
+The source-resolution rendition is re-encoded for browser compatibility, not a
+bit-for-bit copy. Original media and downloads are unchanged. Browsers select
+between renditions automatically according to bandwidth and player size.
+
+Generated renditions are stored in `data/playback-video`, including in the existing
+Docker data volume. Each video cache expires after **seven days without playback**;
+playlist and segment requests refresh its inactivity clock. Cleanup runs at startup
+and hourly, skips in-flight reads/generation, and removes expired renditions.
+Changed source files get a new cache revision. No cache directories are exposed
+statically: every playlist and segment retains the source's authorization or public
+share checks, including share expiry/revocation.
+
+First playback shows **Preparing adaptive video...** until both renditions are
+ready; subsequent playback reuses them across server restarts. One video is encoded
+at a time, with a bounded waiting queue. FFmpeg must support `libx264` and AAC;
+native installations use `FFMPEG_PATH` as for audio compatibility. Allow disk space
+for both renditions and temporary generation output: the seven-day policy is not a
+disk-size cap. Browsers use hls.js with MediaSource where supported, and native
+HLS otherwise.
+
+The **Health** page shows current video-cache disk usage, the number of cached
+videos, and preparing/queued conversions. Usage includes both renditions and any
+temporary generation files, with temporary bytes also shown separately. Disk
+usage is rescanned at most every 30 seconds; checking health does not refresh
+the cache's playback inactivity clock. The authenticated `GET /api/health`
+response includes these aggregate values under `videoCache`, without media names
+or paths.
 
 `POST /api/jobs` accepts `downloadType: "audio"` (default) or `"video"`, for example
 `{ "url": "https://www.youtube.com/watch?v=VIDEO_ID", "downloadType": "video" }`.
@@ -132,7 +170,7 @@ URLs already saved. Process output reports how many songs have a video URL.
 **Edit song metadata** and **View song metadata** show the saved, read-only
 **YouTube video URL**, with a link to open it. A media rerun is not required.
 
-For a song with a saved URL, its owner can choose **Download song video** in the
+For a song with a saved URL, its owner can choose **Retrieve song video** in the
 row action menu. The MP4 is linked to that song, not added to a playlist or the
 playback queue. It uses the existing yt-dlp queue, cookie retry, cooldown, and
 Stop controls; other changes to the source job wait until it finishes. Failed

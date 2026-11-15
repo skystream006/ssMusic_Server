@@ -1,6 +1,7 @@
 param(
 	[switch]$NoPull,
-	[string]$cm
+	[switch]$cm
+	# [string]$cm
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,12 +19,14 @@ try {
 		git pull --ff-only
 		if ($LASTEXITCODE -ne 0) { throw 'git pull failed; no Docker services were changed.' }
 		if ($PSBoundParameters.ContainsKey('cm')) {
-			git add .
-			if ($LASTEXITCODE -ne 0) { throw 'git add failed; no Docker services were changed.' }
-			git commit -am $cm
-			if ($LASTEXITCODE -ne 0) { throw 'git commit failed; no Docker services were changed.' }
-			git push
-			if ($LASTEXITCODE -ne 0) { throw 'git push failed; no Docker services were changed.' }
+			# Run github copilot prompt to auto generate commit message and push
+			copilot -p "Add all the change and push a commit with message description of the recent changes" --allow-all
+			# git add .
+			# if ($LASTEXITCODE -ne 0) { throw 'git add failed; no Docker services were changed.' }
+			# git commit -am $cm
+			# if ($LASTEXITCODE -ne 0) { throw 'git commit failed; no Docker services were changed.' }
+			# git push
+			# if ($LASTEXITCODE -ne 0) { throw 'git push failed; no Docker services were changed.' }
 		}
 		
 	}

@@ -43,8 +43,8 @@ export function SongActions({ name, className, children, file, jobId, request, c
       aria-label={`Linked Playlists ${file.name}`} aria-haspopup="dialog" onClick={() => setPlaylistLinks({ file: { ...file }, jobId: jobId || file.jobId })}><ListMusic size={18} /></button>
   );
   if (canDownloadVideo && mediaType(file?.name) === 'audio' && file.videoUrl && request) actions.push(
-    <button key="song-video" className="music-icon-button" type="button" title="Download song video"
-      aria-label={`Download video for ${file.name}`} aria-haspopup="dialog"
+    <button key="song-video" className="music-icon-button" type="button" title="Retrieve song video"
+      aria-label={`Retrieve video for ${file.name}`} aria-haspopup="dialog"
       disabled={videoDisabled && !['queued', 'running'].includes(file.linkedVideo?.status)}
       onClick={() => setVideoDialog({ file: { ...file }, jobId: jobId || file.jobId, onSaved: onVideoSaved })}><Film size={18} /></button>
   );
@@ -165,20 +165,20 @@ export function SongVideoDialog({ file, jobId, request, onSaved, onClose }) {
 
   return <dialog ref={dialogRef} className="confirmation-dialog" aria-labelledby={headingId}
     onCancel={(event) => { event.preventDefault(); if (!savingRef.current) onClose(); }}>
-    <h2 id={headingId}>Download song video</h2>
+    <h2 id={headingId}>Retrieve song video</h2>
     <p className="metadata-filename">{file.title || file.name}</p>
     <p>The video is saved with this song, not added to a playlist.</p>
     <p><a href={result.videoUrl} target="_blank" rel="noopener noreferrer">View source video <ExternalLink size={15} /></a></p>
-    <p role="status">{status === 'queued' ? 'Video download queued. You can close this dialog.'
-      : status === 'running' ? 'Downloading video. You can close this dialog.'
+    <p role="status">{status === 'queued' ? 'Video retrieval queued. You can close this dialog.'
+      : status === 'running' ? 'Retrieving video. You can close this dialog.'
         : status === 'completed' ? 'Video ready. Select Video in the player.'
-          : status === 'stopped' ? 'Video download stopped.' : 'Download the video to watch it with this song.'}</p>
+          : status === 'stopped' ? 'Video retrieval stopped.' : 'Retrieve the video to watch it with this song.'}</p>
     {(error || result.linkedVideo?.error) && <p className="notice error" role="alert">{error || result.linkedVideo.error}</p>}
     <div className="dialog-actions">
       <button className="secondary-button" type="button" disabled={saving} onClick={onClose}>Close</button>
       <button className="primary-button" type="button" disabled={saving || pending} onClick={download}>
         {saving || pending ? <RefreshCw className="spin" size={17} /> : <Film size={17} />}
-        {pending ? 'Downloading...' : status === 'failed' || status === 'stopped' ? 'Retry download' : 'Download video'}
+        {pending ? 'Retrieving...' : status === 'failed' || status === 'stopped' ? 'Retry retrieval' : 'Retrieve video'}
       </button>
     </div>
   </dialog>;
@@ -580,7 +580,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
           {videoUrl && <a className="music-icon-button" href={videoUrl} target="_blank" rel="noopener noreferrer"
             title="Open source video" aria-label="Open source video"><ExternalLink size={18} /></a>}
         </div>
-        <small id={`${headingId}-video-help`}>Saved by YouTube downloads or Retrieve Metadata. Used by Download song video.</small>
+        <small id={`${headingId}-video-help`}>Saved by YouTube downloads or Retrieve Metadata. Used by Retrieve song video.</small>
       </div>
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="dialog-actions"><button className="secondary-button" type="button" disabled={saving || readingImage} onClick={onClose}>{readOnly ? 'Close' : 'Cancel'}</button>

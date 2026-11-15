@@ -94,16 +94,18 @@ test('song video downloads are offered only for authorized audio files with a sa
   const render = (file, options = {}) => renderToStaticMarkup(createElement(SongActions, {
     name: file.name, file, jobId: 'job', request() {}, canDownloadVideo: true, ...options
   }));
-  assert.match(render(song), /aria-label="Download video for Song.mp3"/);
-  assert.match(render(song, { videoDisabled: true }), /aria-label="Download video for Song.mp3"[^>]*disabled=""/);
+  assert.match(render(song), /title="Retrieve song video"/);
+  assert.match(render(song), /aria-label="Retrieve video for Song.mp3"/);
+  assert.match(render(song, { videoDisabled: true }), /aria-label="Retrieve video for Song.mp3"[^>]*disabled=""/);
   for (const file of [{ ...song, videoUrl: null }, { ...song, name: 'Video.mp4' }, { ...song, name: 'Notes.txt' }]) {
-    assert.doesNotMatch(render(file), /Download video for/);
+    assert.doesNotMatch(render(file), /Retrieve video for/);
   }
-  assert.doesNotMatch(render(song, { canDownloadVideo: false }), /Download video for/);
+  assert.doesNotMatch(render(song, { canDownloadVideo: false }), /Retrieve video for/);
   const failed = renderToStaticMarkup(createElement(SongVideoDialog, { file: { ...song,
     linkedVideo: { status: 'failed', error: 'Video unavailable' } }, jobId: 'job', request() {}, onClose() {} }));
   assert.match(failed, /role="alert">Video unavailable/);
-  assert.match(failed, /Retry download/);
+  assert.match(failed, /<h2[^>]*>Retrieve song video<\/h2>/);
+  assert.match(failed, /Retry retrieval/);
   assert.match(failed, /not added to a playlist/);
 });
 
@@ -611,7 +613,7 @@ test('all browsers use native audio elements and optional AAC URLs preserve sour
   assert.equal(compatible.searchParams.get('format'), 'aac');
   assert.equal(compatible.searchParams.get('userId'), 'owner');
   assert.equal(compatible.searchParams.get('v'), '123');
-  assert.equal(getPlaybackSource({ ...track, name: 'Movie.mp4' }, true), track.streamUrl);
+  assert.equal(new URL(getPlaybackSource({ ...track, name: 'Movie.mp4' }, true), 'https://music.example').searchParams.get('format'), 'hls');
   assert.equal(getPlaybackSource({ ...track, streamUrl: 'blob:https://music.example/test' }, true), 'blob:https://music.example/test');
   assert.equal(getPlaybackSource({ ...track, streamUrl: 'https://music.example/api/jobs/job/stream/Song.mp3' }, true), 'https://music.example/api/jobs/job/stream/Song.mp3?format=aac');
 });
@@ -719,6 +721,29 @@ test('continuous playback bounds stall recovery and keeps interruption intent se
   media.paused = true;
   assert.equal(transport.intent, false);
   assert.equal(timer, null);
+});
+
+test('continuous video playback waits for HLS preparation and ignores cancelled autoplay', async () => {
+  let plays = 0;
+  const gate = Promise.withResolvers();
+  const media = { src: '', paused: true, currentTime: 0, duration: 120, getAttribute() { return this.src; },
+    canPlayType: () => 'maybe', removeAttribute() { this.src = ''; }, load() {},
+    async play() { plays++; this.paused = false; } };
+  const statuses = [];
+  const transport = createContinuousPlayback(() => media, {
+    browser: { fetch: () => gate.promise, clearTimeout, setTimeout },
+    onVideoStatus: (value) => statuses.push(value)
+  });
+  const pending = transport.load('/api/jobs/job/stream/Video.mp4?format=hls', true);
+  assert.equal(plays, 0);
+  transport.cancel();
+  gate.resolve(new Response('#EXTM3U'));
+  await pending;
+  assert.equal(plays, 0);
+  await transport.play();
+  assert.equal(plays, 1);
+  assert.equal(statuses.at(-1), false);
+  transport.dispose();
 });
 
 test('continuous playback clears stall recovery on progress and ignores callbacks from an old source', async () => {

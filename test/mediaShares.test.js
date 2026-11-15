@@ -13,6 +13,7 @@ import NodeID3 from 'node-id3';
 import { openDatabase, writeJob } from '../src/database.js';
 import { readPostgresJob } from '../src/postgresCatalog.js';
 import { readSongMetadata, readSongSummary } from '../src/music.js';
+import { createVideoCache } from '../src/videoCache.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
 test('song shares are persistent, narrowly scoped, read-only public capabilities', { timeout: 120_000 }, async (context) => {
@@ -523,6 +524,32 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
       assert.equal(revoked.status, 204, revoked.text);
       await unavailable(token);
     }
+  });
+  await context.test('public HLS resources retain song-scoped capability checks after caching and revocation', async () => {
+    const hlsJob = await seedJob('hls-public', users.Owner, ['Video.mp4']);
+    const cache = createVideoCache({ root: path.join(directory, 'data', 'playback-video'), async encode(_source, target) {
+      await fs.mkdir(path.join(target, '480p'));
+      await fs.writeFile(path.join(target, 'master.m3u8'), '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\n480p/index.m3u8\n');
+      await fs.writeFile(path.join(target, '480p', 'index.m3u8'), '#EXTM3U\n#EXTINF:4,\nsegment-000000.ts\n#EXT-X-ENDLIST\n');
+      await fs.writeFile(path.join(target, '480p', 'segment-000000.ts'), 'cached public video');
+    } });
+    const prepared = await cache.acquire(path.join(hlsJob.outputDir, 'Video.mp4'));
+    await prepared.done;
+    prepared.release();
+    const token = await share(credentials.Owner[0], hlsJob.id, 'Video.mp4');
+    const route = `${mediaPath(token)}/stream?format=hls`;
+    const response = await call(route);
+    assert.equal(response.status, 200, response.text);
+    const variant = response.text.split('\n').find((line) => line && !line.startsWith('#'));
+    assert.ok(variant.startsWith(`${mediaPath(token)}/stream?`));
+    const playlist = await call(variant);
+    const segment = playlist.text.split('\n').find((line) => line && !line.startsWith('#'));
+    assert.equal((await call(segment)).text, 'cached public video');
+    assert.equal((await call(segment, 'HEAD')).status, 200);
+    await call(`/api/admin/media-shares/${hash(token)}`, 'DELETE', credentials.Admin[0]);
+    assert.equal((await call(route)).status, 404);
+    assert.equal((await call(variant)).status, 404);
+    assert.equal((await call(segment)).status, 404);
   });
   await context.test('streaming, ranges, HEAD and attachment downloads work for nested song names', async () => {
     const token = await share(credentials.Owner[0], job.id, nestedName);

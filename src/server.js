@@ -15,6 +15,7 @@ import { readSongMetadata, readSongSummary } from './music.js';
 import { readSongVideo, songVideoMetadata } from './songVideos.js';
 import { readSongThumbnail } from './artworkThumbnails.js';
 import { createMediaStreamHandler } from './audioCompatibility.js';
+import { startVideoCacheMaintenance, videoCache } from './videoCache.js';
 import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
 import { findNoVocals, individualPlaylistId, orderFiles, reconcileLibrary, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setLibraryPlaylistPrivacy, setTheme, transferLibrarySongs } from './libraryStore.js';
@@ -102,6 +103,7 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
+      workerSrc: ["'self'", 'blob:'],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
       imgSrc: ["'self'", 'data:'],
@@ -118,7 +120,9 @@ app.use(helmet({
 app.use(['/api/public', '/share'], mediaShareHeaders);
 app.use('/api', (req, res, next) => {
   const artwork = ['GET', 'HEAD'].includes(req.method) && /^\/jobs\/[^/]+\/artwork\/[^/]+\/?$/i.test(req.path);
-  const streaming = ['GET', 'HEAD'].includes(req.method) && /^\/jobs\/[^/]+\/stream\/[^/]+\/?$/i.test(req.path);
+  const streaming = ['GET', 'HEAD'].includes(req.method)
+    && (/^\/jobs\/[^/]+\/(?:stream|video)\/[^/]+\/?$/i.test(req.path)
+      || /^\/public\/(?:media\/[^/]+|playlists\/[^/]+\/tracks\/[^/]+)\/stream\/?$/i.test(req.path));
   return (streaming ? mediaLimiter : artwork ? artworkLimiter : apiLimiter)(req, res, next);
 });
 app.use('/api/public', publicMediaRouter());
@@ -891,10 +895,10 @@ app.delete('/api/jobs/:id', async (req, res) => {
 
 app.get('/api/health', async (_req, res) => {
   try {
-    const data = await getSystemHealth();
+    const [data, videoCacheStatus] = await Promise.all([getSystemHealth(), videoCache.getStatus()]);
     const { totalFiles, totalBytes, scannedAt, scanning, error } = mediaCount.getStatus();
     res.set('Cache-Control', 'no-store');
-    return res.json({ ...data, media: { totalFiles, totalBytes, scannedAt, scanning, error } });
+    return res.json({ ...data, videoCache: videoCacheStatus, media: { totalFiles, totalBytes, scannedAt, scanning, error } });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
@@ -958,3 +962,4 @@ protectServer(https.createServer(httpsOptions, app)).listen(httpsPort, () => {
 
 scheduleDailyMaintenance(3, 0);
 scheduleLibraryBackups(libraryBackups);
+startVideoCacheMaintenance();

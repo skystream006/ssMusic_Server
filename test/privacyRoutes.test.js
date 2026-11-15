@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import fs from 'node:fs/promises';
 import https from 'node:https';
 import net from 'node:net';
@@ -164,6 +165,47 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       outputDir, files: [name], privateFiles: [name], initiatedBy: { id: users.Admin.id }, createdAt: now, playlistTitle: 'Alias' });
     assert.equal((await call(route, headers.Owner)).status, 404, 'same-output aliases cannot bypass source privacy');
     assert.equal((await call(statusRoute, headers.Owner, 'POST')).status, 403);
+  });
+
+  await context.test('adaptive video manifests and cached segments inherit standalone and linked song privacy', async (subcontext) => {
+    if (!canGenerateVideo) { subcontext.skip('FFmpeg is not installed'); return; }
+    const id = 'hls-linked';
+    const name = 'Song.mp3';
+    const outputDir = path.join(outputRoot, id);
+    await fs.mkdir(path.join(outputDir, '.videos'), { recursive: true });
+    await fs.writeFile(path.join(outputDir, name), 'audio');
+    await fs.copyFile(path.join(outputRoot, 'playlist', 'clip.mp4'), songVideoPath(outputDir, id, name));
+    const sourceUrl = 'https://www.youtube.com/watch?v=abcdefghijk';
+    await writeJob(database, { id, url: sourceUrl, status: 'completed', isPlaylist: true, outputDir, files: [name],
+      createdAt: new Date().toISOString(), playlistTitle: 'HLS linked', initiatedBy: { id: users.Owner.id },
+      songMetadata: { [name]: { videoUrl: sourceUrl, linkedVideo: { sourceUrl, status: 'completed' } } } });
+    subcontext.after(() => call(`/api/jobs/${id}`, headers.Owner, 'DELETE'));
+    for (const [jobId, file, route] of [
+      ['playlist', 'clip.mp4', '/api/jobs/playlist/stream/clip.mp4'],
+      [id, name, `/api/jobs/${id}/video/${name}`]
+    ]) {
+      const url = `${route}?format=hls&userId=${users.Owner.id}`;
+      assert.equal((await call(url, {})).status, 401);
+      let response = await call(url);
+      for (let attempt = 0; response.status === 202 && attempt < 50; attempt++) {
+        await delay(100);
+        response = await call(url);
+      }
+      assert.equal(response.status, 200, response.text);
+      const variant = response.text.split('\n').find((line) => line && !line.startsWith('#'));
+      const playlist = await call(variant);
+      const segment = playlist.text.split('\n').find((line) => line && !line.startsWith('#'));
+      assert.equal((await call(segment, keyHeaders, 'HEAD')).status, 200);
+      assert.equal((await call(segment, { ...headers.Reader, Range: 'bytes=0-9' })).status, 206);
+      const privacyRoute = `/api/jobs/${jobId}/files/${file}/privacy`;
+      assert.equal((await call(privacyRoute, headers.Owner, 'PATCH', { private: true })).status, 200);
+      for (const auth of [headers.Admin, headers.Linked, headers.Reader, keyHeaders]) {
+        assert.ok([403, 404].includes((await call(url, auth)).status));
+        assert.ok([403, 404].includes((await call(segment, auth)).status));
+      }
+      assert.equal((await call(segment)).status, 200);
+      assert.equal((await call(privacyRoute, headers.Owner, 'PATCH', { private: false })).status, 200);
+    }
   });
 
   await context.test('AAC streams support repeated ranges and preserve source privacy for cached audio', async (subcontext) => {

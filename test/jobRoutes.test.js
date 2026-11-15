@@ -143,7 +143,7 @@ test('MP3 lyrics edit and clear SYLT and USLT independently without changing aud
   assert.deepEqual(await fs.readFile(filePath), unchanged);
 });
 
-test('job storage totals and process output cleanup enforce HTTP permissions', { timeout: 30_000 }, async (context) => {
+test('job storage, video cache health and process output cleanup enforce HTTP permissions', { timeout: 30_000 }, async (context) => {
   let server;
   async function stopServer() {
     if (server && server.exitCode === null && server.signalCode === null) {
@@ -211,7 +211,20 @@ test('job storage totals and process output cleanup enforce HTTP permissions', {
     request.setTimeout(5000, () => request.destroy(new Error('HTTP test request timed out')));
     request.end();
   });
+  const cachedVideo = path.join(directory, 'data', 'playback-video', 'a'.repeat(64));
+  await fs.mkdir(path.join(cachedVideo, '480p'), { recursive: true });
+  await fs.writeFile(path.join(cachedVideo, 'master.m3u8'), '#EXTM3U\n');
+  await fs.writeFile(path.join(cachedVideo, '480p', 'segment-000000.ts'), Buffer.alloc(20));
   await startServer();
+  assert.equal((await call('/api/health')).status, 401);
+  assert.equal((await call('/api/health', credentials.Reader[0])).status, 403);
+  const cacheHealth = await call('/api/health', credentials.Other[0]);
+  assert.equal(cacheHealth.status, 200);
+  assert.equal(cacheHealth.headers['cache-control'], 'no-store');
+  assert.deepEqual(cacheHealth.body.videoCache, {
+    totalVideos: 1, totalBytes: 28, temporaryBytes: 0, preparing: 0, scannedAt: cacheHealth.body.videoCache.scannedAt
+  });
+  assert.ok(Number.isFinite(Date.parse(cacheHealth.body.videoCache.scannedAt)));
   for (const name of ['Admin', 'Owner', 'Other']) {
     const response = await call('/api/jobs', credentials[name][0]);
     assert.equal(response.status, 200);

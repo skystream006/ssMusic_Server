@@ -247,7 +247,7 @@ test('public videos use responsive native video controls and public download lin
     assert.match(video, /controls=""/);
     assert.match(video, /preload="metadata"/);
     assert.match(video, /playsInline=""/i);
-    assert.match(video, /src="\/api\/public\/media\/token\/stream"/);
+    assert.match(video, /data-adaptive-source="\/api\/public\/media\/token\/stream\?format=hls"/);
     assert.match(video, /aria-label="Video player for Evening song"/);
     assert.doesNotMatch(video, /autoplay/i);
     assert.doesNotMatch(html, /<audio\b/);

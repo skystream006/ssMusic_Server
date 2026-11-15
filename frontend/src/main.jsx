@@ -15,6 +15,7 @@ import {
   Disc3,
   ExternalLink,
   FileAudio,
+  Film,
   Fingerprint,
   HardDrive,
   KeyRound,
@@ -82,7 +83,7 @@ function ConfirmationDialog({ title, message, action, label, onAnswer }) {
   const [artistPrefix, setArtistPrefix] = useState('');
   const [artistPostfix, setArtistPostfix] = useState('');
   const [existingArtist, setExistingArtist] = useState('overwrite');
-  const ActionIcon = action === 'delete' ? Trash2 : action === 'stop' ? Square : action === 'rerun' ? RotateCcw : action === 'metadata' ? RefreshCw : ExternalLink;
+  const ActionIcon = action === 'delete' ? Trash2 : action === 'stop' ? Square : action === 'rerun' ? RotateCcw : action === 'metadata' ? RefreshCw : action === 'video' ? Film : ExternalLink;
   const actionLabel = label || (action === 'delete' ? 'Delete job' : action === 'stop' ? 'Stop job' : action === 'rerun' ? 'Rerun job' : 'Open details');
 
   useEffect(() => {
@@ -1178,6 +1179,14 @@ function HealthMetrics() {
         <Metric icon={<Activity />} label="CPU usage" value={`${health.cpu.usagePercent.toFixed(1)}%`} detail="Current processor load" percent={health.cpu.usagePercent} />
         <Metric icon={<MemoryStick />} label="Memory" value={formatBytes(health.memory.usedBytes)} detail={`${formatBytes(health.memory.totalBytes)} total`} percent={memoryPercent} />
         <Metric icon={<HardDrive />} label="Storage used" value={`${diskPercent.toFixed(1)}%`} detail={`${formatBytes(health.storage.freeBytes)} free of ${formatBytes(health.storage.totalBytes)}`} percent={diskPercent} />
+        <Metric icon={<HardDrive />} label="Video cache"
+          value={Number.isFinite(health.videoCache?.totalBytes) ? formatBytes(health.videoCache.totalBytes) : '-'}
+          detail={<>Cached videos: {Number.isInteger(health.videoCache?.totalVideos) ? health.videoCache.totalVideos.toLocaleString() : '-'} (480p + original resolution)<br />
+            Preparing/queued: {Number.isInteger(health.videoCache?.preparing) ? health.videoCache.preparing.toLocaleString() : '-'}<br />
+            {health.videoCache?.temporaryBytes > 0 && <>Temporary files: {formatBytes(health.videoCache.temporaryBytes)} (included above)<br /></>}
+            Expires after 7 days of inactivity<br />
+            {health.videoCache?.scannedAt ? <>Last scanned: <time dateTime={health.videoCache.scannedAt}>{new Date(health.videoCache.scannedAt).toLocaleString()}</time></> : 'No completed scan'}
+          </>} />
         <Metric icon={<Network />} label="Network in" value={`${formatBytes(health.network.rxSec)}/s`} detail={`${formatBytes(health.network.rxBytes)} received`} />
         <Metric icon={<Network />} label="Network out" value={`${formatBytes(health.network.txSec)}/s`} detail={`${formatBytes(health.network.txBytes)} sent`} />
         <Metric icon={<Mic />} label="Transcription service" value={health.transcription?.status === 'active' ? <span className="transcription-active">Active</span> : <span className="transcription-inactive">Inactive</span>} detail={health.transcription?.status === 'active' ? null : health.transcription?.message || 'Status unavailable'} />
