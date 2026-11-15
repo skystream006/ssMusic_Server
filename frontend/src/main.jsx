@@ -62,7 +62,7 @@ import { LibraryAccessList, LinkedUsers, OrganizedSharedUsers, OrganizerControl,
 import ImportMusic from './ImportMusic.jsx';
 import JobPlaylistDialog from './JobPlaylistDialog.jsx';
 import LiveJobOutput from './LiveJobOutput.jsx';
-import { PasskeyNameForm, PasskeyOriginDialog, SecondaryPasskeyEnrollment } from './PasskeyEnrollment.jsx';
+import { CrossOriginPasskeyEnrollment, PasskeyNameForm, PasskeyOriginDialog } from './PasskeyEnrollment.jsx';
 import { submitJobUrl } from './jobSubmission.js';
 import { jobSortColumns, sortJobs } from './jobSorting.js';
 import { sortSelectOptions } from './selectOptions.js';
@@ -1418,7 +1418,7 @@ function UserSettingsPage({ userId }) {
   const [secret, setSecret] = useState(null);
   const [passkeyMessage, setPasskeyMessage] = useState(null);
   const [passkeyOrigins, setPasskeyOrigins] = useState(null);
-  const [secondaryEnrollment, setSecondaryEnrollment] = useState(false);
+  const [crossOriginEnrollment, setCrossOriginEnrollment] = useState(false);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const { confirm, dialog } = useConfirmation();
@@ -1447,14 +1447,14 @@ function UserSettingsPage({ userId }) {
   useEffect(() => { load(); }, [endpoint]);
 
   useEffect(() => {
-    if (!secondaryEnrollment) return;
+    if (!crossOriginEnrollment) return;
     const refresh = () => {
       request('/api/auth/passkeys').then(updatePasskeys)
         .catch((refreshError) => setPasskeyMessage({ type: 'error', text: refreshError.message }));
     };
     window.addEventListener('focus', refresh);
     return () => window.removeEventListener('focus', refresh);
-  }, [secondaryEnrollment]);
+  }, [crossOriginEnrollment]);
 
   async function saveAccess(changes) {
     if (busy) return;
@@ -1495,22 +1495,23 @@ function UserSettingsPage({ userId }) {
       setPasskeyMessage({ type: 'warning', text: 'Continue Add passkey in User settings on the main origin. Sign in there if needed.' });
       return;
     }
-    const popup = origin === 'secondary' ? window.open('about:blank', '_blank') : null;
-    if (origin === 'secondary' && !popup) {
-      setPasskeyMessage({ type: 'error', text: 'Allow pop-ups to add a passkey for the secondary origin.' });
+    const crossOrigin = origin === 'secondary' || origin === 'tertiary';
+    const popup = crossOrigin ? window.open('about:blank', '_blank') : null;
+    if (crossOrigin && !popup) {
+      setPasskeyMessage({ type: 'error', text: `Allow pop-ups to add a passkey for the ${origin} origin.` });
       return;
     }
     if (popup) popup.opener = null;
     setBusy('passkey');
     setPasskeyMessage(null);
     try {
-      if (origin === 'secondary') {
-        const result = await request('/api/auth/passkeys/secondary', {
+      if (crossOrigin) {
+        const result = await request(`/api/auth/passkeys/${origin}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
         });
         popup.location.replace(result.url);
-        setSecondaryEnrollment(true);
-        setPasskeyMessage({ type: 'warning', text: 'Complete passkey setup in the secondary-origin window, then return here to refresh your passkeys.' });
+        setCrossOriginEnrollment(true);
+        setPasskeyMessage({ type: 'warning', text: `Complete passkey setup in the ${origin}-origin window, then return here to refresh your passkeys.` });
         return;
       }
       const ceremony = await request('/api/auth/passkeys/options', {
@@ -1966,5 +1967,5 @@ const publicMediaMatch = window.location.pathname.match(/^\/share\/([^/]+)\/?$/)
 createRoot(document.getElementById('root')).render(<StrictMode>{publicPlaylistMatch
   ? <PublicPlaylist key={publicPlaylistMatch[1]} token={publicPlaylistMatch[1]} request={request} /> : publicMediaMatch
   ? <PublicMedia token={publicMediaMatch[1]} request={request} />
-  : window.location.pathname === '/passkey-enrollment' ? <SecondaryPasskeyEnrollment request={request} />
+  : window.location.pathname === '/passkey-enrollment' ? <CrossOriginPasskeyEnrollment request={request} />
   : window.location.pathname === '/app-login' ? <LoginPage appLogin /> : <App />}</StrictMode>);

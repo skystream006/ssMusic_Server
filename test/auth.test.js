@@ -13,13 +13,15 @@ import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
 import { readPostgresJob } from '../src/postgresCatalog.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
-async function testSecondaryPasskeyOptions(context) {
-  const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
+async function testAdditionalOriginPasskeyOptions(context) {
+  const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY', 'PASSKEY_RP_ID_TERTIARY', 'PASSKEY_ORIGIN_TERTIARY'];
   const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
   process.env.PASSKEY_RP_ID = 'music.example.com';
   process.env.PASSKEY_ORIGIN = 'https://music.example.com';
   process.env.PASSKEY_RP_ID_SECONDARY = '192-168-6-66.sslip.io';
   process.env.PASSKEY_ORIGIN_SECONDARY = 'https://192-168-6-66.sslip.io:4123';
+  process.env.PASSKEY_RP_ID_TERTIARY = 'third.example.com';
+  process.env.PASSKEY_ORIGIN_TERTIARY = 'https://third.example.com:4123';
   const { registerAuthRoutes } = await import('../src/auth.js');
   const app = express();
   app.use(express.json());
@@ -38,7 +40,9 @@ async function testSecondaryPasskeyOptions(context) {
     [undefined, process.env.PASSKEY_RP_ID],
     [process.env.PASSKEY_ORIGIN, process.env.PASSKEY_RP_ID],
     [process.env.PASSKEY_ORIGIN_SECONDARY, process.env.PASSKEY_RP_ID_SECONDARY],
+    [process.env.PASSKEY_ORIGIN_TERTIARY, process.env.PASSKEY_RP_ID_TERTIARY],
     ['https://192-168-6-66.sslip.io:4124', process.env.PASSKEY_RP_ID],
+    ['https://third.example.com:4124', process.env.PASSKEY_RP_ID],
     ['https://untrusted.example', process.env.PASSKEY_RP_ID]
   ]) {
     for (const flow of ['register', 'login']) {
@@ -56,7 +60,7 @@ async function testSecondaryPasskeyOptions(context) {
       if (flow === 'register') assert.equal(options.rp.name, 'ssMusic');
     }
   }
-  for (const missingKey of ['PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY']) {
+  for (const missingKey of envKeys.slice(2)) {
     const value = process.env[missingKey];
     delete process.env[missingKey];
     const response = await fetch(`${base}/api/auth/login/options`, { method: 'POST' });
@@ -64,12 +68,30 @@ async function testSecondaryPasskeyOptions(context) {
     assert.match((await response.json()).error, /Set both/);
     process.env[missingKey] = value;
   }
-  process.env.PASSKEY_RP_ID_SECONDARY = '192.168.6.66';
-  const invalidRPID = await fetch(`${base}/api/auth/login/options`, {
-    method: 'POST', headers: { Origin: process.env.PASSKEY_ORIGIN_SECONDARY }
+  for (const suffix of ['SECONDARY', 'TERTIARY']) {
+    const key = `PASSKEY_RP_ID_${suffix}`;
+    const value = process.env[key];
+    process.env[key] = '192.168.6.66';
+    const invalidRPID = await fetch(`${base}/api/auth/login/options`, {
+      method: 'POST', headers: { Origin: process.env[`PASSKEY_ORIGIN_${suffix}`] }
+    });
+    assert.equal(invalidRPID.status, 500);
+    assert.match((await invalidRPID.json()).error, /hostname, not an IP address/);
+    process.env[key] = value;
+  }
+  delete process.env.PASSKEY_RP_ID_SECONDARY;
+  delete process.env.PASSKEY_ORIGIN_SECONDARY;
+  process.env.PASSKEY_RP_ID_TERTIARY = 'third.example.com';
+  const tertiaryOnly = await fetch(`${base}/api/auth/login/options`, {
+    method: 'POST', headers: { Origin: process.env.PASSKEY_ORIGIN_TERTIARY }
   });
-  assert.equal(invalidRPID.status, 500);
-  assert.match((await invalidRPID.json()).error, /hostname, not an IP address/);
+  assert.equal(tertiaryOnly.status, 200);
+  const pending = await tertiaryOnly.json();
+  assert.equal(pending.options.rpId, 'third.example.com');
+  await fetch(`${base}/api/auth/login/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestId: pending.requestId })
+  });
 }
 
 async function testLanPasswordLogin(context, existingAdmin) {
@@ -448,10 +470,10 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     await store.deletePrivateAccessToken(admin.id, adminToken.id);
   });
 
-  await context.test('passkey options select the configured secondary browser origin', testSecondaryPasskeyOptions);
+  await context.test('passkey options select the configured secondary and tertiary browser origins', testAdditionalOriginPasskeyOptions);
 
   await context.test('approved users add multiple account-bound passkeys and log in with each', async (passkeyContext) => {
-    const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
+    const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY', 'PASSKEY_RP_ID_TERTIARY', 'PASSKEY_ORIGIN_TERTIARY'];
     const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
     const rpID = 'music.example.com';
     const origin = `https://${rpID}`;
@@ -459,6 +481,8 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
     process.env.PASSKEY_ORIGIN = origin;
     process.env.PASSKEY_RP_ID_SECONDARY = 'local.example.com';
     process.env.PASSKEY_ORIGIN_SECONDARY = 'https://local.example.com:4123';
+    process.env.PASSKEY_RP_ID_TERTIARY = 'third.example.com';
+    process.env.PASSKEY_ORIGIN_TERTIARY = 'https://third.example.com:4123';
     passkeyContext.after(() => {
       for (const key of envKeys) {
         if (originalEnv[key] === undefined) delete process.env[key];
@@ -497,7 +521,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       };
     }
 
-    await passkeyContext.test('secondary enrollment requires a one-use, origin-bound grant from a live original session', async (secondaryContext) => {
+    async function testCrossOriginEnrollment(secondaryContext, target) {
       app.set('trust proxy', 1);
       secondaryContext.after(() => app.set('trust proxy', false));
       const call = (route, method = 'GET', headers = {}, body) => new Promise((resolve, reject) => {
@@ -514,40 +538,60 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
         request.on('error', reject);
         request.end(body === undefined ? undefined : JSON.stringify(body));
       });
-      const secondaryOrigin = process.env.PASSKEY_ORIGIN_SECONDARY;
-      const secondaryRPID = process.env.PASSKEY_RP_ID_SECONDARY;
+      const secondaryOrigin = process.env[`PASSKEY_ORIGIN_${target.toUpperCase()}`];
+      const secondaryRPID = process.env[`PASSKEY_RP_ID_${target.toUpperCase()}`];
+      const endpoint = `/api/auth/passkeys/${target}`;
+      const other = target === 'secondary' ? 'tertiary' : 'secondary';
+      const otherOrigin = process.env[`PASSKEY_ORIGIN_${other.toUpperCase()}`];
       const originHeaders = (value) => ({
         Host: new URL(value).host, Origin: value, 'X-Forwarded-Proto': 'https'
       });
       const ownerHandle = crypto.randomBytes(32).toString('base64url');
-      const owner = await store.registerUser('Secondary owner', ownerHandle, authenticator().credential);
+      const owner = await store.registerUser(`${target} owner`, ownerHandle, authenticator().credential);
       await store.updateUser(owner.id, { status: 'approved' }, admin.id);
       secondaryContext.after(() => store.deleteUser(owner.id, admin.id));
       const session = await store.createSession(owner.id);
       const sourceHeaders = { ...originHeaders(origin), Cookie: `ssmusic_session=${session.token}` };
       const targetHeaders = originHeaders(secondaryOrigin);
+      const origins = await call('/api/auth/passkeys/origins', 'GET', sourceHeaders);
+      assert.equal(origins.status, 200);
+      assert.deepEqual(await origins.json(), {
+        primary: origin,
+        secondary: process.env.PASSKEY_ORIGIN_SECONDARY,
+        tertiary: process.env.PASSKEY_ORIGIN_TERTIARY
+      });
+      delete process.env[`PASSKEY_RP_ID_${target.toUpperCase()}`];
+      delete process.env[`PASSKEY_ORIGIN_${target.toUpperCase()}`];
+      try {
+        const unconfigured = await call('/api/auth/passkeys/origins', 'GET', sourceHeaders);
+        assert.equal((await unconfigured.json())[target], null);
+        assert.equal((await call(endpoint, 'POST', sourceHeaders)).status, 400);
+      } finally {
+        process.env[`PASSKEY_RP_ID_${target.toUpperCase()}`] = secondaryRPID;
+        process.env[`PASSKEY_ORIGIN_${target.toUpperCase()}`] = secondaryOrigin;
+      }
       const pat = await store.createPrivateAccessToken(owner.id, 'No secondary enrollment');
       const mint = async (headers = sourceHeaders) => {
-        const result = await call('/api/auth/passkeys/secondary', 'POST', headers, { userId: admin.id, name: '  Local   phone  ' });
+        const result = await call(endpoint, 'POST', headers, { userId: admin.id, name: '  Local   phone  ' });
         assert.equal(result.status, 201);
         assert.equal(result.headers.get('cache-control'), 'no-store');
         const url = new URL((await result.json()).url);
         assert.equal(url.origin, secondaryOrigin);
         assert.equal(url.pathname, '/passkey-enrollment');
-        assert.equal(url.search, '');
+        assert.equal(url.search, target === 'secondary' ? '' : '?origin=tertiary');
         return url.hash.slice(1);
       };
       const options = (token, headers = targetHeaders) =>
-        call('/api/auth/passkeys/secondary/options', 'POST', headers, { token, userId: admin.id });
+        call(`${endpoint}/options`, 'POST', headers, { token, userId: admin.id });
       const finish = (ceremony, response, headers = targetHeaders) =>
-        call('/api/auth/passkeys/secondary/verify', 'POST', headers, { requestId: ceremony.requestId, response, userId: admin.id, name: 'Ignored override' });
+        call(`${endpoint}/verify`, 'POST', headers, { requestId: ceremony.requestId, response, userId: admin.id, name: 'Ignored override' });
       for (const headers of [{}, { ...originHeaders(origin), 'X-PAT': pat.token }]) {
-        assert.equal((await call('/api/auth/passkeys/secondary', 'POST', headers)).status, 401);
+        assert.equal((await call(endpoint, 'POST', headers)).status, 401);
       }
-      assert.equal((await call('/api/auth/passkeys/secondary', 'POST', { ...sourceHeaders, Origin: 'https://evil.example' })).status, 403);
-      assert.equal((await call('/api/auth/passkeys/secondary', 'POST', { Cookie: sourceHeaders.Cookie })).status, 403);
+      assert.equal((await call(endpoint, 'POST', { ...sourceHeaders, Origin: 'https://evil.example' })).status, 403);
+      assert.equal((await call(endpoint, 'POST', { Cookie: sourceHeaders.Cookie })).status, 403);
       for (const name of [123, {}, 'x'.repeat(65)]) {
-        assert.equal((await call('/api/auth/passkeys/secondary', 'POST', sourceHeaders, { name })).status, 400);
+        assert.equal((await call(endpoint, 'POST', sourceHeaders, { name })).status, 400);
       }
       for (const headers of [targetHeaders, { ...targetHeaders, Cookie: sourceHeaders.Cookie }, { ...targetHeaders, 'X-PAT': pat.token }]) {
         const missing = await options(undefined, headers);
@@ -557,6 +601,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.equal((await options('invalid')).status, 400);
       const token = await mint();
       assert.equal((await options(token, originHeaders(origin))).status, 403);
+      assert.equal((await options(token, originHeaders(otherOrigin))).status, 403);
       assert.equal((await options(token, { Origin: secondaryOrigin })).status, 403);
       const response = await options(token, { ...targetHeaders, ...userHeaders });
       assert.equal(response.status, 200);
@@ -565,6 +610,8 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.equal(ceremony.options.user.id, ownerHandle);
       assert.equal(ceremony.options.rp.id, secondaryRPID);
       assert.equal((await options(token)).status, 400);
+      const wrongEndpointToken = await mint();
+      assert.equal((await call(`/api/auth/passkeys/${other}/options`, 'POST', originHeaders(otherOrigin), { token: wrongEndpointToken })).status, 400);
       const key = authenticator();
       const attestation = key.register(ceremony.options, secondaryOrigin, secondaryRPID);
       assert.equal((await finish(ceremony, attestation, originHeaders(origin))).status, 403);
@@ -589,6 +636,11 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       });
       assert.equal(loggedIn.status, 200);
       assert.equal((await loggedIn.json()).user.id, owner.id);
+
+      const alternateSource = { ...originHeaders(otherOrigin), Cookie: sourceHeaders.Cookie };
+      const alternate = await (await options(await mint(alternateSource))).json();
+      const alternateKey = authenticator();
+      assert.equal((await finish(alternate, alternateKey.register(alternate.options, secondaryOrigin, secondaryRPID))).status, 201);
 
       for (const wrong of ['origin', 'rpID', 'verification']) {
         const invalid = await (await options(await mint())).json();
@@ -622,7 +674,12 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       await store.updateUser(owner.id, { status: 'revoked' }, admin.id);
       assert.equal((await options(revoked)).status, 403);
       assert.equal((await finish(revokedCeremony, attestation)).status, 403);
-    });
+    }
+
+    for (const target of ['secondary', 'tertiary']) {
+      await passkeyContext.test(`${target} enrollment requires a one-use, origin-bound grant from a live original session`,
+        (subcontext) => testCrossOriginEnrollment(subcontext, target));
+    }
 
     await passkeyContext.test('Shared passkey signup binds account type and organizer and revalidates approval', async () => {
       const key = authenticator();

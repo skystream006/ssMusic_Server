@@ -63,14 +63,19 @@ function getWebAuthnOrigins(req) {
     rpID: process.env.PASSKEY_RP_ID || req.hostname,
     origin: process.env.PASSKEY_ORIGIN || `${req.protocol}://${req.get('host')}`
   };
-  const secondary = {
-    rpID: process.env.PASSKEY_RP_ID_SECONDARY,
-    origin: process.env.PASSKEY_ORIGIN_SECONDARY
-  };
-  if (Boolean(secondary.rpID) !== Boolean(secondary.origin)) {
-    throw Object.assign(new Error('Set both PASSKEY_RP_ID_SECONDARY and PASSKEY_ORIGIN_SECONDARY'), { statusCode: 500 });
+  const origins = { primary };
+  for (const name of ['secondary', 'tertiary']) {
+    const suffix = name.toUpperCase();
+    const config = {
+      rpID: process.env[`PASSKEY_RP_ID_${suffix}`],
+      origin: process.env[`PASSKEY_ORIGIN_${suffix}`]
+    };
+    if (Boolean(config.rpID) !== Boolean(config.origin)) {
+      throw Object.assign(new Error(`Set both PASSKEY_RP_ID_${suffix} and PASSKEY_ORIGIN_${suffix}`), { statusCode: 500 });
+    }
+    origins[name] = config;
   }
-  return { primary, secondary };
+  return origins;
 }
 
 function getWebAuthnConfig(req) {
@@ -78,9 +83,9 @@ function getWebAuthnConfig(req) {
   if (!['web', 'browser-app'].includes(client)) {
     throw Object.assign(new Error('Use web passkey login or the browser-app flow'), { statusCode: 400 });
   }
-  const { primary, secondary } = getWebAuthnOrigins(req);
+  const { primary, secondary, tertiary } = getWebAuthnOrigins(req);
   const requestOrigin = req.get('origin') || `${req.protocol}://${req.get('host')}`;
-  const { rpID, origin } = secondary.origin && requestOrigin === secondary.origin ? secondary : primary;
+  const { rpID, origin } = [secondary, tertiary].find((config) => config.origin && requestOrigin === config.origin) || primary;
   if (net.isIP(rpID)) {
     const error = new Error('Passkey RP ID must be a hostname, not an IP address');
     error.statusCode = 500;
@@ -89,11 +94,11 @@ function getWebAuthnConfig(req) {
   return { rpID, origin };
 }
 
-function requireEnrollmentOrigin(req, secondaryOnly = false) {
-  const { primary, secondary } = getWebAuthnOrigins(req);
+function requireEnrollmentOrigin(req, target) {
+  const origins = getWebAuthnOrigins(req);
   const origin = req.get('origin');
   if (!origin || origin !== `${req.protocol}://${req.get('host')}`
-    || (secondaryOnly ? origin !== secondary.origin : ![primary.origin, secondary.origin].includes(origin))) {
+    || (target ? origin !== origins[target].origin : !Object.values(origins).some((config) => config.origin === origin))) {
     throw Object.assign(new Error('Passkey enrollment is not allowed on this origin'), { statusCode: 403 });
   }
   return getWebAuthnConfig(req);
@@ -422,61 +427,65 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
 
   app.get('/api/auth/passkeys/origins', requireSession, (req, res) => {
     try {
-      const { primary, secondary } = getWebAuthnOrigins(req);
-      return res.json({ primary: primary.origin, secondary: secondary.origin || null });
+      const { primary, secondary, tertiary } = getWebAuthnOrigins(req);
+      return res.json({ primary: primary.origin, secondary: secondary.origin || null, tertiary: tertiary.origin || null });
     } catch (error) { return sendError(res, error); }
   });
 
-  app.post('/api/auth/passkeys/secondary', requireSession, registrationOptionsLimiter, (req, res) => {
-    try {
-      requireEnrollmentOrigin(req);
-      const { secondary } = getWebAuthnOrigins(req);
-      if (!secondary.origin) return res.status(400).json({ error: 'Secondary passkey origin is not configured' });
-      if (req.user.role === 'shared') return res.status(403).json({ error: 'Shared accounts cannot add passkeys' });
-      const target = new URL(secondary.origin);
-      if (target.origin !== secondary.origin || target.protocol !== 'https:' || net.isIP(secondary.rpID)) {
-        return res.status(500).json({ error: 'Secondary passkeys require an HTTPS origin and a hostname RP ID' });
-      }
-      const token = rememberChallenge({
-        type: 'secondary-enrollment',
-        passkeyName: normalizePasskeyName(req.body?.name),
-        userId: req.user.id,
-        userUpdatedAt: req.user.updatedAt,
-        sessionToken: getSessionToken(req),
-        ...secondary
-      }, req.ip);
-      return res.status(201).json({ url: `${secondary.origin}/passkey-enrollment#${token}` });
-    } catch (error) { return sendError(res, error); }
-  });
+  for (const name of ['secondary', 'tertiary']) {
+    const label = name[0].toUpperCase() + name.slice(1);
+    app.post(`/api/auth/passkeys/${name}`, requireSession, registrationOptionsLimiter, (req, res) => {
+      try {
+        requireEnrollmentOrigin(req);
+        const config = getWebAuthnOrigins(req)[name];
+        if (!config.origin) return res.status(400).json({ error: `${label} passkey origin is not configured` });
+        if (req.user.role === 'shared') return res.status(403).json({ error: 'Shared accounts cannot add passkeys' });
+        const target = new URL(config.origin);
+        if (target.origin !== config.origin || target.protocol !== 'https:' || net.isIP(config.rpID)) {
+          return res.status(500).json({ error: `${label} passkeys require an HTTPS origin and a hostname RP ID` });
+        }
+        const token = rememberChallenge({
+          type: `${name}-enrollment`,
+          passkeyName: normalizePasskeyName(req.body?.name),
+          userId: req.user.id,
+          userUpdatedAt: req.user.updatedAt,
+          sessionToken: getSessionToken(req),
+          ...config
+        }, req.ip);
+        const query = name === 'secondary' ? '' : `?origin=${name}`;
+        return res.status(201).json({ url: `${config.origin}/passkey-enrollment${query}#${token}` });
+      } catch (error) { return sendError(res, error); }
+    });
 
-  app.post('/api/auth/passkeys/secondary/options', registrationOptionsLimiter, async (req, res) => {
-    try {
-      const config = requireEnrollmentOrigin(req, true);
-      const grant = takeChallenge(req.body?.token, 'secondary-enrollment');
-      if (grant.origin !== config.origin || grant.rpID !== config.rpID) {
-        return res.status(403).json({ error: 'The secondary passkey configuration changed. Start Add passkey again.' });
-      }
-      const user = await enrollmentUser(grant);
-      const options = await additionalPasskeyOptions(user, config);
-      const requestId = rememberChallenge({
-        ...grant, type: 'secondary-passkey', challenge: options.challenge
-      }, req.ip, grant.expiresAt - Date.now());
-      return res.json({ requestId, options });
-    } catch (error) { return sendError(res, error); }
-  });
+    app.post(`/api/auth/passkeys/${name}/options`, registrationOptionsLimiter, async (req, res) => {
+      try {
+        const config = requireEnrollmentOrigin(req, name);
+        const grant = takeChallenge(req.body?.token, `${name}-enrollment`);
+        if (grant.origin !== config.origin || grant.rpID !== config.rpID) {
+          return res.status(403).json({ error: `The ${name} passkey configuration changed. Start Add passkey again.` });
+        }
+        const user = await enrollmentUser(grant);
+        const options = await additionalPasskeyOptions(user, config);
+        const requestId = rememberChallenge({
+          ...grant, type: `${name}-passkey`, challenge: options.challenge
+        }, req.ip, grant.expiresAt - Date.now());
+        return res.json({ requestId, options });
+      } catch (error) { return sendError(res, error); }
+    });
 
-  app.post('/api/auth/passkeys/secondary/verify', registrationVerifyLimiter, async (req, res) => {
-    try {
-      const config = requireEnrollmentOrigin(req, true);
-      const challenge = takeChallenge(req.body?.requestId, 'secondary-passkey');
-      if (challenge.origin !== config.origin || challenge.rpID !== config.rpID) {
-        return res.status(403).json({ error: 'The secondary passkey configuration changed. Start Add passkey again.' });
-      }
-      await enrollmentUser(challenge);
-      await verifyAdditionalPasskey(challenge, req.body?.response);
-      return res.status(201).json({ added: true });
-    } catch (error) { return sendError(res, error); }
-  });
+    app.post(`/api/auth/passkeys/${name}/verify`, registrationVerifyLimiter, async (req, res) => {
+      try {
+        const config = requireEnrollmentOrigin(req, name);
+        const challenge = takeChallenge(req.body?.requestId, `${name}-passkey`);
+        if (challenge.origin !== config.origin || challenge.rpID !== config.rpID) {
+          return res.status(403).json({ error: `The ${name} passkey configuration changed. Start Add passkey again.` });
+        }
+        await enrollmentUser(challenge);
+        await verifyAdditionalPasskey(challenge, req.body?.response);
+        return res.status(201).json({ added: true });
+      } catch (error) { return sendError(res, error); }
+    });
+  }
 
   app.delete('/api/auth/passkeys/:credentialId', requireSession, async (req, res) => {
     try {

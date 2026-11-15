@@ -7,7 +7,7 @@ import selfsigned from 'selfsigned';
 import { loadHttpsOptions } from '../src/tls.js';
 
 test('local TLS certificates use the secondary CN, preserve both hostnames and replace legacy CNs', async (context) => {
-  const keys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY', 'HTTPS_KEY_PATH', 'HTTPS_CERT_PATH', 'DOCKER_BIND_ADDRESS'];
+  const keys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY', 'PASSKEY_RP_ID_TERTIARY', 'PASSKEY_ORIGIN_TERTIARY', 'HTTPS_KEY_PATH', 'HTTPS_CERT_PATH', 'DOCKER_BIND_ADDRESS'];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   context.after(() => {
     for (const key of keys) {
@@ -56,10 +56,21 @@ test('local TLS certificates use the secondary CN, preserve both hostnames and r
   assert.ok(migratedCertificate.checkHost('192-168-6-66.sslip.io'));
   assert.equal((await loadHttpsOptions()).cert, migrated.cert);
   assert.equal(writes.mock.callCount(), 6);
+  process.env.PASSKEY_RP_ID_TERTIARY = 'third.example.com';
+  process.env.PASSKEY_ORIGIN_TERTIARY = 'https://player.third.example.com:4123';
+  const third = await loadHttpsOptions();
+  assert.notEqual(third.cert, migrated.cert);
+  const thirdCertificate = new X509Certificate(third.cert);
+  for (const host of ['buytdlp.duckdns.org', '192-168-6-66.sslip.io', 'third.example.com', 'player.third.example.com']) {
+    assert.ok(thirdCertificate.checkHost(host));
+  }
+  assert.equal(thirdCertificate.toLegacyObject().subject.CN, '192-168-6-66.sslip.io');
+  assert.equal((await loadHttpsOptions()).cert, third.cert);
+  assert.equal(writes.mock.callCount(), 8);
   process.env.HTTPS_KEY_PATH = 'custom-key.pem';
   process.env.HTTPS_CERT_PATH = 'custom-cert.pem';
   files.set(path.resolve('custom-key.pem'), 'custom key');
   files.set(path.resolve('custom-cert.pem'), 'custom cert');
   assert.deepEqual(await loadHttpsOptions(), { key: 'custom key', cert: 'custom cert' });
-  assert.equal(writes.mock.callCount(), 6);
+  assert.equal(writes.mock.callCount(), 8);
 });

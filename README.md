@@ -23,7 +23,7 @@ when upgrading. Before moving a Docker checkout to a differently named folder,
 set `COMPOSE_PROJECT_NAME` in `.env` to the original project name shown by
 `docker compose ls`. This keeps the same `data`, `output`, and `postgres_data`
 volumes instead of selecting a fresh database or empty media library.
-Keep `PASSKEY_RP_ID`, `PASSKEY_ORIGIN`, and any secondary passkey settings
+Keep `PASSKEY_RP_ID`, `PASSKEY_ORIGIN`, and any secondary or tertiary passkey settings
 unchanged: existing passkeys are bound to those hostnames and origins, not the
 application or repository name. No account or media data migration is required.
 
@@ -1253,8 +1253,8 @@ For frontend development, run `npm run dev` while the API server is running.
 Vite proxies `/api` to the configured local `HTTPS_WEB_PORT` (4000 by default).
 Set `DEV_API_TARGET` to override the development API URL. Certificate verification
 is relaxed only for loopback development API targets; remote targets are verified.
-Passkey login still requires an origin matching the server's `PASSKEY_ORIGIN` or
-`PASSKEY_ORIGIN_SECONDARY`.
+Passkey login still requires an origin matching the server's `PASSKEY_ORIGIN`,
+`PASSKEY_ORIGIN_SECONDARY`, or `PASSKEY_ORIGIN_TERTIARY`.
 To override either listener from the command line:
 
 ```bash
@@ -1484,16 +1484,16 @@ Approved users and administrators can add more passkeys from **User settings > P
 Add passkey** while signed in. Each new passkey belongs to the existing account, keeping
 the same approval, permissions, and library; existing passkeys continue to work. Repeat
 with another device, password manager, or security key as needed. **Add passkey** asks
-whether to use the main or secondary origin. The secondary choice opens
-`PASSKEY_ORIGIN_SECONDARY` in another window to enroll a passkey for the same account,
+whether to use the main, secondary, or tertiary origin. The secondary and tertiary choices open
+`PASSKEY_ORIGIN_SECONDARY` or `PASSKEY_ORIGIN_TERTIARY` in another window to enroll a passkey for the same account,
 without signing in on that origin first. Allow pop-ups and trust that origin's HTTPS
 certificate. Choose **Create passkey** in the new window, then return to settings;
 the passkey list refreshes when the original window regains focus. If already on the
-secondary origin, choosing main opens main-origin settings (sign in there if needed).
-The secondary choice is disabled when no secondary origin is configured.
+secondary or tertiary origin, choosing main opens main-origin settings (sign in there if needed).
+Each additional-origin choice is disabled when that origin is not configured.
 
 Give each passkey an optional name (up to 64 characters) during registration or in
-the **Add passkey** dialog, including secondary-origin enrollment. Names are saved
+the **Add passkey** dialog, including secondary- and tertiary-origin enrollment. Names are saved
 on the server for identifying credentials; they do not rename the key in your
 device or password manager. In the passkey list, edit **Passkey name** and choose
 **Save name** to rename an existing key. Clearing the name restores the credential-ID
@@ -1531,8 +1531,8 @@ Passkey management requires a passkey session, not a PAT:
     returns the updated user and passkey list with `201`. Requests are single-use, expire
     after five minutes, and are bound to the account, origin, and RP ID. Duplicate
     credentials are rejected.
-- `GET /api/auth/passkeys/origins` returns `{ "primary": "...", "secondary": "..." }`;
-    `secondary` is `null` when not configured.
+- `GET /api/auth/passkeys/origins` returns `{ "primary": "...", "secondary": "...", "tertiary": "..." }`;
+    `secondary` and `tertiary` are independently `null` when not configured.
 - `POST /api/auth/passkeys/secondary` requires the initiating user's cookie or Bearer
     session and an exact configured browser origin. It accepts an optional
     `{ "name": "Local phone" }` bound to the handoff. It returns a secondary-origin
@@ -1547,6 +1547,11 @@ Passkey management requires a passkey session, not a PAT:
     handoff expires five minutes after initiation. Logging out the initiating session or
     changing the account invalidates pending enrollment. User IDs supplied by callers
     cannot change the destination account; unrelated secondary-origin sessions are ignored.
+- `POST /api/auth/passkeys/tertiary`, `/api/auth/passkeys/tertiary/options`, and
+    `/api/auth/passkeys/tertiary/verify` provide the same handoff for the configured
+    tertiary origin, with the same session, expiry, and origin restrictions.
+    Tertiary enrollment URLs use `/passkey-enrollment?origin=tertiary#<credential>`;
+    existing secondary enrollment URLs remain unchanged.
 
 Passkeys work on `localhost` without TLS, but other hosts require HTTPS. The server creates
 `data/tls/server-key.pem` and `data/tls/server-cert.pem` when certificate paths are omitted.
@@ -1580,14 +1585,22 @@ PASSKEY_RP_ID_SECONDARY=192-168-6-66.sslip.io
 PASSKEY_ORIGIN_SECONDARY=https://192-168-6-66.sslip.io:4123
 ```
 
-Open the exact secondary HTTPS URL, including its port. Registration and login select
-the secondary RP ID only when the browser origin matches `PASSKEY_ORIGIN_SECONDARY`;
-other requests retain the primary configuration. Each challenge remains bound to the
-selected origin and RP ID. Both secondary settings must be provided together, and
-the RP ID must be a hostname, not a raw IP address.
+For a third browser hostname, optionally configure:
+
+```dotenv
+PASSKEY_RP_ID_TERTIARY=music-third.example.com
+PASSKEY_ORIGIN_TERTIARY=https://music-third.example.com:4123
+```
+
+Open the exact configured HTTPS URL, including its port. Registration and login select
+the secondary or tertiary RP ID only when the browser origin matches its corresponding
+`PASSKEY_ORIGIN_SECONDARY` or `PASSKEY_ORIGIN_TERTIARY`; other requests retain the primary
+configuration. Each challenge remains bound to the selected origin and RP ID. Each optional
+pair must be provided together, and each RP ID must be a hostname, not a raw IP address.
+Tertiary settings do not require secondary settings.
 
 Rebuild/recreate the Docker container after changing these settings (for example,
-`docker compose up -d --build`). Generated local certificates cover both configured
+`docker compose up -d --build`). Generated local certificates cover all configured
 RP IDs and origin hostnames, using the secondary hostname as their common name when
 configured. An older generated certificate is replaced if needed; trust the replacement
 on each client before using passkeys. Custom certificates are not changed and must
@@ -1595,7 +1608,7 @@ already cover the local hostname.
 
 Passkeys are scoped to their RP ID: an existing public-hostname passkey cannot be used
 on an unrelated local hostname. To sign in to the same account locally, use **User settings >
-Passkeys > Add passkey > Secondary origin** while signed in on the main origin.
+Passkeys > Add passkey > Secondary origin** (or **Tertiary origin**) while signed in on the main origin.
 This registers a separate local-hostname credential on the existing approved account.
 To use the existing account and passkey locally, keep the public HTTPS hostname and
 resolve it to the server's LAN address using local DNS, with a trusted certificate.

@@ -33,8 +33,8 @@ export async function loadHttpsOptions() {
   const host = certificateName(process.env.PASSKEY_RP_ID_SECONDARY || process.env.PASSKEY_RP_ID);
   const names = [...new Set([
     host,
-    ...[process.env.PASSKEY_RP_ID, process.env.PASSKEY_RP_ID_SECONDARY].filter(Boolean).map(certificateName),
-    ...[process.env.PASSKEY_ORIGIN, process.env.PASSKEY_ORIGIN_SECONDARY].filter(Boolean)
+    ...[process.env.PASSKEY_RP_ID, process.env.PASSKEY_RP_ID_SECONDARY, process.env.PASSKEY_RP_ID_TERTIARY].filter(Boolean).map(certificateName),
+    ...[process.env.PASSKEY_ORIGIN, process.env.PASSKEY_ORIGIN_SECONDARY, process.env.PASSKEY_ORIGIN_TERTIARY].filter(Boolean)
       .map((origin) => new URL(origin).hostname.replace(/^\[|\]$/g, '')),
     ...[process.env.DOCKER_BIND_ADDRESS].filter((address) => net.isIP(address || '') && !['0.0.0.0', '::'].includes(address)),
     'localhost', '127.0.0.1', '::1'
