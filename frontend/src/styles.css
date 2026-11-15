@@ -748,7 +748,11 @@ code { font: 400 11px 'DM Mono', monospace; }
 .metadata-artwork > div:last-child { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .metadata-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .metadata-inputs label { display: grid; gap: 6px; font-size: 12px; }
-.metadata-inputs input { width: 100%; min-width: 0; height: 40px; padding: 0 10px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 4px; }
+.metadata-inputs input, .metadata-video-source input { width: 100%; min-width: 0; height: 40px; padding: 0 10px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 4px; }
+.metadata-video-source { display: grid; gap: 6px; margin: 20px 0; font-size: 12px; }
+.metadata-video-source > div { display: flex; align-items: center; gap: 8px; }
+.metadata-video-source .music-icon-button { width: 44px; height: 44px; flex: none; }
+.metadata-video-source small { color: var(--muted); }
 .retrieve-metadata-dialog .existing-artist-option { grid-column: 1 / -1; }
 .retrieve-metadata-dialog select { width: 100%; min-width: 0; height: 44px; padding: 0 10px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 4px; }
 .retrieve-metadata-dialog :is(input, select) { font-size: 16px; }
@@ -866,10 +870,10 @@ code { font: 400 11px 'DM Mono', monospace; }
 .player-display-modes button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); font: 600 12px 'Manrope', sans-serif; cursor: pointer; }
 .player-display-modes button[aria-pressed="true"] { color: var(--royal); border-color: var(--royal); background: color-mix(in srgb, var(--royal) 10%, var(--surface)); }
 .player-display-modes button:disabled { opacity: .45; cursor: not-allowed; }
-.radio-pulse { position: relative; background: radial-gradient(circle, color-mix(in srgb, var(--royal) 15%, var(--surface)), var(--surface) 70%); }
-.radio-pulse canvas { position: absolute; inset: 0; width: 100%; height: 100%; color: var(--royal); }
-.radio-pulse-icon { width: 14%; height: 14%; }
-.radio-pulse-label { position: absolute; bottom: 7%; max-width: 90%; color: var(--muted); font: 11px 'DM Mono', monospace; }
+.circular-waveform { position: relative; background: radial-gradient(circle, color-mix(in srgb, var(--royal) 15%, var(--surface)), var(--surface) 70%); }
+.circular-waveform canvas { position: absolute; inset: 0; width: 100%; height: 100%; color: var(--royal); }
+.circular-waveform-icon { width: 14%; height: 14%; }
+.circular-waveform-label { position: absolute; bottom: 7%; max-width: 90%; color: var(--muted); font: 11px 'DM Mono', monospace; }
 .job-player-display { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
 .job-player-display :is(.expanded-artwork, .expanded-video) { width: 100%; }
 .job-player-display .player-display-modes { gap: 2px; }

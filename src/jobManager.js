@@ -1343,6 +1343,7 @@ async function retrieveJobMetadataWork(job, signal, { artistPrefix = '', artistP
   }
   let updated = 0;
   let incomplete = 0;
+  let videoUrls = 0;
   for (const name of eligible) {
     signal.throwIfAborted();
     try {
@@ -1353,10 +1354,16 @@ async function retrieveJobMetadataWork(job, signal, { artistPrefix = '', artistP
       const sourceUrl = await readSongSourceUrl(filePath) || normalizeVideoUrl(job.songMetadata?.[name]?.videoUrl) || sourceUrls.get(name)
         || (!job.isPlaylist && eligible.length === 1 ? normalizeVideoUrl(job.url) : null);
       if (sourceUrl) {
-        job.songMetadata ||= {};
-        const previous = job.songMetadata[name] || {};
-        job.songMetadata[name] = { ...previous, videoUrl: sourceUrl,
+        const previous = job.songMetadata?.[name] || {};
+        const metadata = { ...previous, videoUrl: sourceUrl,
           ...(previous.linkedVideo && previous.linkedVideo.sourceUrl !== sourceUrl ? { linkedVideo: null } : {}) };
+        if (previous.videoUrl !== sourceUrl || previous.linkedVideo !== metadata.linkedVideo) {
+          job.updatedAt = new Date().toISOString();
+          await updatePostgresSong(database, job, name, 'metadata', metadata);
+        }
+        job.songMetadata ||= {};
+        job.songMetadata[name] = metadata;
+        videoUrls += 1;
       }
       if (existingArtist === 'skip' && (await readSongSummary(filePath, await fs.stat(filePath))).artist?.trim()) {
         appendJobOutput(job, `[system]\nSkipped file with existing artist: ${name}`);
@@ -1395,7 +1402,7 @@ async function retrieveJobMetadataWork(job, signal, { artistPrefix = '', artistP
   signal.throwIfAborted();
   job.status = incomplete ? 'partially_completed' : 'completed';
   job.warning = incomplete ? `Metadata retrieval was incomplete for ${incomplete} song(s). See process output for details.` : null;
-  appendJobOutput(job, `[system]\nMetadata retrieval complete: ${updated} updated, ${eligible.length - updated} unchanged.`);
+  appendJobOutput(job, `[system]\nVideo URLs available: ${videoUrls} of ${eligible.length} songs.\nMetadata retrieval complete: ${updated} updated, ${eligible.length - updated} unchanged.`);
   job.updatedAt = new Date().toISOString();
   await persistJob(job);
 }

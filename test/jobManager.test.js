@@ -572,6 +572,54 @@ test(`retrieve metadata allows ${access} access without downloading or replacing
 });
 }
 
+test('retrieve metadata persists playlist URLs before skipped tags and failed oEmbed requests', { timeout: 15_000 }, async (context) => {
+  const { manager, nextCommand, calls } = await makeQueueFixture(context);
+  const owner = { id: 'owner', role: 'user' };
+  const outputDir = path.join(fixtureDirectory, 'metadata-urls');
+  await fs.mkdir(outputDir);
+  const files = ['Skipped.mp3', 'Unavailable.mp3'];
+  const originals = files.map((name) => NodeID3.write({
+    title: name, artist: name === files[0] ? 'Existing artist' : ''
+  }, Buffer.from('unchanged audio')));
+  for (const [index, name] of files.entries()) await fs.writeFile(path.join(outputDir, name), originals[index]);
+  await writeJob(openDatabase(), { id: 'metadata-urls', url: 'https://music.youtube.com/playlist?list=metadata-urls',
+    isPlaylist: true, status: 'completed', outputDir, files, initiatedBy: owner, playlistTitle: 'Metadata URLs',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  let releaseMetadata;
+  const metadataGate = new Promise((resolve) => { releaseMetadata = resolve; });
+  let metadataStarted;
+  const fetchingMetadata = new Promise((resolve) => { metadataStarted = resolve; });
+  context.mock.method(globalThis, 'fetch', async () => {
+    metadataStarted();
+    await metadataGate;
+    return new Response('', { status: 404 });
+  });
+  const job = await manager.retrieveJobMetadata('metadata-urls', owner, { existingArtist: 'skip' });
+  fixtureCleanups.set(context, async () => {
+    releaseMetadata();
+    if (['queued', 'running'].includes(job.status)) await manager.stopJob(job.id, owner);
+  });
+  (await nextCommand(0)).finish(JSON.stringify({ entries: [
+    { id: 'aaaaaaaaaaa', title: 'Skipped' }, { id: 'bbbbbbbbbbb', title: 'Unavailable' }
+  ] }));
+  await fetchingMetadata;
+  const storedUrls = async () => Object.fromEntries((await openDatabase().prepare(
+    'SELECT name, metadata FROM songs WHERE job_id = $1').all(job.id))
+    .map((row) => [row.name, JSON.parse(row.metadata).videoUrl]));
+  const expected = {
+    'Skipped.mp3': 'https://www.youtube.com/watch?v=aaaaaaaaaaa',
+    'Unavailable.mp3': 'https://www.youtube.com/watch?v=bbbbbbbbbbb'
+  };
+  assert.deepEqual(await storedUrls(), expected, 'resolved URLs must reach PostgreSQL before oEmbed finishes');
+  releaseMetadata();
+  await waitForJobToFinish(job);
+  assert.equal(job.status, 'partially_completed');
+  assert.deepEqual(await storedUrls(), expected);
+  assert.match(job.output, /Video URLs available: 2 of 2 songs/);
+  for (const [index, name] of files.entries()) assert.deepEqual(await fs.readFile(path.join(outputDir, name)), originals[index]);
+  assert.equal(calls.length, 1, 'metadata retrieval must not rerun or download media');
+});
+
 for (const isPlaylist of [false, true]) {
   for (const existingArtist of ['overwrite', 'skip']) {
     test(`retrieve metadata artist options: playlist=${isPlaylist}, existingArtist=${existingArtist}`, { timeout: 15_000 }, async (context) => {

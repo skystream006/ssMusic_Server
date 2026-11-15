@@ -42,8 +42,7 @@ export function createAudioAnalyser(browser = globalThis) {
       if (disposed || requested !== revision) return null;
       if (!analyser) {
         analyser = context.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.8;
+        analyser.fftSize = 2048;
       }
       let source = sources.get(media);
       if (!source) {
@@ -154,14 +153,24 @@ export function LinkedSongVideo({ song, mediaRef, clock, artwork }) {
   </>;
 }
 
-export function radioPulseLevel(frequencies) {
-  const count = Math.min(24, frequencies.length);
-  let energy = 0;
-  for (let index = 0; index < count; index++) energy += (frequencies[index] / 255) ** 2;
-  return count ? Math.min(1, Math.sqrt(energy / count) * 2) : 0;
+export function drawCircularWaveform(context, samples, size) {
+  const center = size / 2;
+  context.beginPath();
+  for (let index = 0; index < samples.length; index++) {
+    const angle = index / samples.length * Math.PI * 2 - Math.PI / 2;
+    // Taper the seam so the first and last samples join without a radial jump.
+    const taper = Math.min(1, index / 16, (samples.length - 1 - index) / 16);
+    const radius = size * (0.28 + Math.max(-1, Math.min(1, samples[index])) * taper * 0.12);
+    const x = center + Math.cos(angle) * radius;
+    const y = center + Math.sin(angle) * radius;
+    if (index === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
+  }
+  context.closePath();
+  context.stroke();
 }
 
-export function RadioPulse({ analyser, playing }) {
+export function CircularWaveform({ analyser, playing }) {
   const canvasRef = useRef(null);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -169,44 +178,28 @@ export function RadioPulse({ analyser, playing }) {
     const context = canvas.getContext('2d');
     if (!context) { setError('This browser cannot draw the audio visualizer.'); return; }
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const frequencies = new Uint8Array(analyser?.frequencyBinCount || 128);
+    const samples = new Float32Array(analyser?.fftSize || 2048);
     let frame = null;
     let size = 1;
-    let phase = 0;
-    let previousTime = null;
     let color = getComputedStyle(canvas).color;
-    function draw(now, animate) {
-      const elapsed = previousTime === null ? 0 : Math.min(100, now - previousTime);
-      previousTime = now;
-      if (animate) analyser.getByteFrequencyData(frequencies);
-      const level = animate ? radioPulseLevel(frequencies) : 0;
-      phase = (phase + elapsed * level / 1400) % 1;
+    function draw(active) {
+      if (active) analyser.getFloatTimeDomainData(samples);
+      else samples.fill(0);
       context.clearRect(0, 0, size, size);
       context.strokeStyle = color;
-      for (let index = 0; index < 4; index++) {
-        const progress = (phase + index / 4) % 1;
-        context.globalAlpha = (1 - progress) * (0.2 + level * 0.65);
-        context.lineWidth = 1.5 + level * 3;
-        context.beginPath();
-        context.arc(size / 2, size / 2, size * (0.16 + progress * 0.31 + level * 0.02), 0, Math.PI * 2);
-        context.stroke();
-      }
-      context.globalAlpha = 0.65 + level * 0.35;
-      context.lineWidth = 2 + level * 4;
-      context.beginPath();
-      context.arc(size / 2, size / 2, size * (0.15 + level * 0.045), 0, Math.PI * 2);
-      context.stroke();
+      context.lineWidth = 2;
+      context.lineJoin = 'round';
+      drawCircularWaveform(context, samples, size);
     }
-    function tick(now) {
+    function tick() {
       frame = null;
-      const animate = Boolean(analyser && playing && !document.hidden && !motion.matches);
-      draw(now, animate);
-      if (animate) frame = window.requestAnimationFrame(tick);
+      const active = Boolean(analyser && playing && !document.hidden);
+      draw(active);
+      if (active && !motion.matches) frame = window.requestAnimationFrame(tick);
     }
     function refresh() {
       if (frame !== null) window.cancelAnimationFrame(frame);
-      previousTime = null;
-      tick(performance.now());
+      frame = window.requestAnimationFrame(tick);
     }
     function resize() {
       size = Math.max(1, canvas.getBoundingClientRect().width);
@@ -230,10 +223,10 @@ export function RadioPulse({ analyser, playing }) {
     };
   }, [analyser, playing]);
 
-  return <div className="expanded-artwork radio-pulse">
-    <canvas ref={canvasRef} role="img" aria-label="Radio pulse audio visualizer" />
-    <Radio className="radio-pulse-icon" size={44} aria-hidden="true" />
-    <span className="radio-pulse-label" role={error ? 'alert' : 'status'}>{error || (!analyser ? 'Preparing visualizer...' : playing ? 'Radio pulse' : 'Paused')}</span>
+  return <div className="expanded-artwork circular-waveform">
+    <canvas ref={canvasRef} role="img" aria-label="Circular audio waveform" />
+    <Radio className="circular-waveform-icon" size={44} aria-hidden="true" />
+    <span className="circular-waveform-label" role={error ? 'alert' : 'status'}>{error || (!analyser ? 'Preparing visualizer...' : playing ? 'Circular waveform' : 'Paused')}</span>
   </div>;
 }
 
@@ -251,7 +244,7 @@ export default function PlayerDisplay({ song, artwork, mode, onModeChange, media
         <Icon size={18} /><span>{label}</span></button>)}
     </div>
     {display === 'video' ? <LinkedSongVideo song={song} mediaRef={mediaRef} clock={clock} artwork={artwork} />
-      : display === 'visualizer' ? <RadioPulse analyser={analyser} playing={playing} />
+      : display === 'visualizer' ? <CircularWaveform analyser={analyser} playing={playing} />
         : <div className="expanded-artwork">{artwork && artwork !== failedArtwork
           ? <img src={artwork} alt={`${song.album || song.title || song.name} cover`} draggable={false} onError={() => setFailedArtwork(artwork)} />
           : <Disc3 size={96} strokeWidth={1} />}</div>}

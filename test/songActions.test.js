@@ -13,7 +13,7 @@ let SongVideoDialog;
 let PlayerDisplay;
 let createAudioAnalyser;
 let synchronizeSongVideo;
-let radioPulseLevel;
+let drawCircularWaveform;
 let PlaylistLinksDialog;
 let SongRating;
 let ListSongRating;
@@ -79,7 +79,7 @@ before(async () => {
   ({ default: MusicLoading } = await server.ssrLoadModule('/src/MusicLoading.jsx'));
   ({ reorderPlaybackQueue } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ SongActions, SongVideoDialog, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
-  ({ default: PlayerDisplay, createAudioAnalyser, synchronizeSongVideo, radioPulseLevel } = await server.ssrLoadModule('/src/PlayerDisplay.jsx'));
+  ({ default: PlayerDisplay, createAudioAnalyser, synchronizeSongVideo, drawCircularWaveform } = await server.ssrLoadModule('/src/PlayerDisplay.jsx'));
   ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, createPlaybackDiagnostics, publishPlaybackPosition, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ default: MusicLibrary, ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -107,7 +107,7 @@ test('song video downloads are offered only for authorized audio files with a sa
   assert.match(failed, /not added to a playlist/);
 });
 
-test('player display switches between artwork, radio pulse, and only completed linked videos', () => {
+test('player display switches between artwork, circular waveform, and only completed linked videos', () => {
   const song = { jobId: 'job', name: 'Song.mp3', title: 'Song' };
   const render = (mode, track = song, extra = {}) => renderToStaticMarkup(createElement(PlayerDisplay, {
     song: track, mode, onModeChange() {}, mediaRef: { current: null }, clock: {}, playing: false, ...extra
@@ -115,9 +115,9 @@ test('player display switches between artwork, radio pulse, and only completed l
   const art = render('artwork');
   assert.match(art, /aria-label="Album art"[^>]*aria-pressed="true"/);
   assert.doesNotMatch(art, /<video|<canvas/);
-  const pulse = render('visualizer');
-  assert.match(pulse, /<canvas[^>]*aria-label="Radio pulse audio visualizer"/);
-  assert.match(pulse, /aria-label="Audio visualizer"[^>]*aria-pressed="true"/);
+  const waveform = render('visualizer');
+  assert.match(waveform, /<canvas[^>]*aria-label="Circular audio waveform"/);
+  assert.match(waveform, /aria-label="Audio visualizer"[^>]*aria-pressed="true"/);
   for (const status of ['queued', 'running', 'failed', 'stopped', undefined]) {
     const html = render('video', { ...song, linkedVideo: { status, streamUrl: '/linked.mp4' } });
     assert.doesNotMatch(html, /<video/);
@@ -204,11 +204,33 @@ test('linked video cancels pending playback safely and reports genuine play fail
   stop();
 });
 
-test('radio pulse responds to audio energy and reuses its audio source without interrupting output', async () => {
-  assert.equal(radioPulseLevel(new Uint8Array(128)), 0);
-  const quiet = radioPulseLevel(new Uint8Array(128).fill(24));
-  const loud = radioPulseLevel(new Uint8Array(128).fill(180));
-  assert.ok(quiet > 0 && loud > quiet && loud <= 1);
+test('circular waveform traces signed audio samples rather than a single pulsing radius', () => {
+  const size = 240;
+  const trace = (samples) => {
+    const points = [];
+    let closed = false;
+    let strokes = 0;
+    drawCircularWaveform({
+      beginPath() {}, moveTo(x, y) { points.push([x, y]); }, lineTo(x, y) { points.push([x, y]); },
+      closePath() { closed = true; }, stroke() { strokes++; }
+    }, samples, size);
+    assert.equal(closed, true);
+    assert.equal(strokes, 1);
+    return points.map(([x, y]) => Math.hypot(x - size / 2, y - size / 2));
+  };
+  const silence = trace(new Float32Array(128));
+  assert.ok(silence.every((radius) => Math.abs(radius - silence[0]) < 1e-10));
+  const samples = Float32Array.from({ length: 128 }, (_, index) => Math.sin(index / 128 * Math.PI * 2) * 0.75);
+  const waveform = trace(samples);
+  assert.ok(waveform[32] > silence[32], 'positive samples move outside the resting circle');
+  assert.ok(waveform[96] < silence[96], 'negative samples move inside the resting circle');
+  assert.notDeepEqual(waveform, trace(samples.map((sample) => -sample)), 'equal-energy signals retain their different waveforms');
+  const clipped = trace(Float32Array.from({ length: 128 }, (_, index) => index % 2 ? 4 : -4));
+  assert.ok(clipped.every((radius) => radius > 0 && radius < size / 2), 'loud samples stay inside the canvas');
+  assert.ok(Math.abs(clipped[0] - clipped.at(-1)) < 1e-10, 'the circular seam has no amplitude jump');
+});
+
+test('audio analyser reuses its audio source without interrupting output', async () => {
   const nodes = [];
   let context;
   const controller = createAudioAnalyser({ AudioContext: class {
@@ -1698,6 +1720,24 @@ test('metadata viewer has close controls but no save or transcription-lock actio
     assert.match(html, /Loading metadata/);
     assert.doesNotMatch(html, /Save changes|Cancel|type="submit"|type="file"|type="radio"|Choose artwork|Remove artwork|(?:Unlock|Lock) transcription/);
   }
+});
+
+test('metadata dialog shows saved video URLs read-only and identifies missing URLs', () => {
+  const videoUrl = 'https://www.youtube.com/watch?v=abcdefghijk';
+  for (const readOnly of [false, true]) {
+    const html = renderToStaticMarkup(createElement(MetadataDialog, {
+      file: { name: 'Song.mp3', videoUrl }, jobId: 'job', readOnly, request() {}, onClose() {}
+    }));
+    assert.match(html, />YouTube video URL<\/label>/);
+    assert.match(html, /<input[^>]*type="url"[^>]*readonly=""[^>]*value="https:\/\/www\.youtube\.com\/watch\?v=abcdefghijk"/i);
+    assert.match(html, /aria-label="Open source video"/);
+    assert.ok(html.includes(`href="${videoUrl}"`));
+  }
+  const missing = renderToStaticMarkup(createElement(MetadataDialog, {
+    file: { name: 'Song.mp3' }, jobId: 'job', request() {}, onClose() {}
+  }));
+  assert.match(missing, /placeholder="No video URL saved"/);
+  assert.doesNotMatch(missing, /aria-label="Open source video"/);
 });
 
 test('metadata dialog remains editable by default for existing callers', () => {

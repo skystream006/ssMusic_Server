@@ -475,6 +475,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
   const [initialRating, setInitialRating] = useState(0);
   const [transcriptionLocked, setTranscriptionLocked] = useState(Boolean(file.transcriptionLocked));
   const [artwork, setArtwork] = useState(null);
+  const [videoUrl, setVideoUrl] = useState(file.videoUrl || '');
   const [artworkChanged, setArtworkChanged] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -496,6 +497,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
         setInitialRating(result.rating || 0);
         setTranscriptionLocked(Boolean(result.transcriptionLocked));
         setArtwork(result.artwork);
+        setVideoUrl(result.videoUrl || '');
       }).catch((loadError) => { if (active) setError(loadError.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
@@ -569,6 +571,17 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
           <input id={`${headingId}-${field}`} value={values[field]} readOnly={readOnly} maxLength={500} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />
         </label>)}</div>
       </fieldset>}
+      <div className="metadata-video-source">
+        <label htmlFor={`${headingId}-video-url`}>YouTube video URL</label>
+        <div>
+          <input id={`${headingId}-video-url`} type="url" readOnly value={videoUrl}
+            placeholder="No video URL saved" aria-describedby={`${headingId}-video-help`}
+            onFocus={(event) => event.target.select()} />
+          {videoUrl && <a className="music-icon-button" href={videoUrl} target="_blank" rel="noopener noreferrer"
+            title="Open source video" aria-label="Open source video"><ExternalLink size={18} /></a>}
+        </div>
+        <small id={`${headingId}-video-help`}>Saved by YouTube downloads or Retrieve Metadata. Used by Download song video.</small>
+      </div>
       {error && <p className="notice error" role="alert">{error}</p>}
       <div className="dialog-actions"><button className="secondary-button" type="button" disabled={saving || readingImage} onClick={onClose}>{readOnly ? 'Close' : 'Cancel'}</button>
         {!readOnly && <button className="primary-button" type="submit" disabled={loading || !values || saving || readingImage}>{saving ? <RefreshCw className="spin" size={17} /> : <Save size={17} />}{saving ? 'Saving...' : 'Save changes'}</button>}</div>

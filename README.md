@@ -126,7 +126,11 @@ Each retrieved file saves its own canonical YouTube video URL, including files
 reused by a download and URLs matched during **Retrieve Metadata**. Successful
 MP3 metadata retrieval also embeds the source URL in the file. Skipping an
 existing artist leaves the file bytes untouched but still saves a matched URL
-in the catalog.
+in the catalog. Each resolved URL is committed independently of artist/artwork
+updates, so skipped tags, failed metadata requests, or a later Stop do not lose
+URLs already saved. Process output reports how many songs have a video URL.
+**Edit song metadata** and **View song metadata** show the saved, read-only
+**YouTube video URL**, with a link to open it. A media rerun is not required.
 
 For a song with a saved URL, its owner can choose **Download song video** in the
 row action menu. The MP4 is linked to that song, not added to a playlist or the
@@ -137,8 +141,9 @@ the song after its last playlist link also deletes its video; moving/linking
 the song or replacing its audio with the same source retains the video.
 
 The player offers **Album art**, **Audio visualizer**, and **Video** display
-buttons. The visualizer uses an audio-reactive radio pulse and respects reduced
-motion settings. Video becomes available after the linked download completes;
+buttons. The visualizer wraps the live audio waveform around a circle instead
+of animating expanding pulses. It rests when paused and shows a still waveform
+when reduced motion is enabled. Video becomes available after the linked download completes;
 it follows the song's play/pause, seeking, and playback speed while muted, so
 switching displays never replaces or restarts the song audio. Video streaming
 inherits the song's privacy and shared-library permissions.
