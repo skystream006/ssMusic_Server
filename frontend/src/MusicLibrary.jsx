@@ -643,12 +643,10 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
   }
 
   function metadataSaved(file, result) {
+    const { artwork, sylt, uslt, canEdit, ...summary } = result;
     playback.updateMetadata(file.jobId, file.name, result);
     setTrackResult((current) => current ? { ...current, files: current.files.map((track) => songKey(track) === songKey(file)
-      ? { ...track, title: result.title, artist: result.artist, album: result.album, performerInfo: result.performerInfo, rating: result.rating,
-        genre: result.genre, year: result.year, trackNumber: result.trackNumber, partOfSet: result.partOfSet,
-        transcriptionLocked: result.transcriptionLocked,
-        ...(Object.hasOwn(result, 'artworkUrl') ? { artworkUrl: result.artworkUrl } : {}) } : track) } : current);
+      ? { ...track, ...summary } : track) } : current);
       if (actionTrack) playback.refreshLibrary();
   }
 
@@ -1086,6 +1084,7 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
     onTranscribe: setTranscribingFile, onDelete: removeSong, removedSong, onEditMetadata: setEditingMetadata,
     onReplaceFile: setReplacingFile, onShareMedia: setSharingFile, onChangePrivacy: changeFilePrivacy,
     onMetadataSaved: metadataSaved, onRatingError: setActionError,
+    onVideoSaved: (track, result) => { metadataSaved(track, result); setRefresh((value) => value + 1); },
     saving: saving || (actionTrack ? !library : tracksLoading || searchPending), onMove: moveSong };
   const actionJob = actionTrack && (actionJobResult?.id === actionTrack.jobId ? actionJobResult
     : sourceJobMap.get(actionTrack.jobId) || actionTrack.sourceJob || actionTrack.job);

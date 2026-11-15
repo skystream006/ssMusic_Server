@@ -1115,7 +1115,12 @@ function JobPage({ id }) {
                       playback.updateMetadata(id, file.name, result);
                       setFileRevision((revision) => revision + 1);
                     }} />
-                  <SongActions name={file.name} className="file-row-actions" file={file} jobId={id} request={request}>
+                  <SongActions name={file.name} className="file-row-actions" file={file} jobId={id} request={request}
+                    canDownloadVideo={canEditSong(user, job)} videoDisabled={songMutationDisabled(file.name)}
+                    onVideoSaved={(result) => {
+                      playback.updateMetadata(id, file.name, result);
+                      setFileRevision((revision) => revision + 1);
+                    }}>
                     {canChangePrivacy(user, job, false, file) && <button className="icon-link" type="button"
                       title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}
                       aria-label={`${privacyLabel}: ${file.name}`} aria-pressed={privacy.private}

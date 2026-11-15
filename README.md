@@ -122,6 +122,35 @@ other tags; blank artist tags are still eligible for retrieval.
 Unmatched or ambiguous files stay unchanged and are reported in process output;
 per-song failures do not stop the other songs. Stop cancels either phase.
 
+Each retrieved file saves its own canonical YouTube video URL, including files
+reused by a download and URLs matched during **Retrieve Metadata**. Successful
+MP3 metadata retrieval also embeds the source URL in the file. Skipping an
+existing artist leaves the file bytes untouched but still saves a matched URL
+in the catalog.
+
+For a song with a saved URL, its owner can choose **Download song video** in the
+row action menu. The MP4 is linked to that song, not added to a playlist or the
+playback queue. It uses the existing yt-dlp queue, cookie retry, cooldown, and
+Stop controls; other changes to the source job wait until it finishes. Failed
+or stopped video downloads can be retried from the same song action. Deleting
+the song after its last playlist link also deletes its video; moving/linking
+the song or replacing its audio with the same source retains the video.
+
+The player offers **Album art**, **Audio visualizer**, and **Video** display
+buttons. The visualizer uses an audio-reactive radio pulse and respects reduced
+motion settings. Video becomes available after the linked download completes;
+it follows the song's play/pause, seeking, and playback speed while muted, so
+switching displays never replaces or restarts the song audio. Video streaming
+inherits the song's privacy and shared-library permissions.
+
+`POST /api/jobs/:id/files/:name/video` queues the song-linked download (202), or
+reuses a completed video (200). `GET` on that endpoint returns `{ videoUrl,
+linkedVideo }`, including download status and any error. Completed links include
+a `streamUrl` under `/api/jobs/:id/video/:name`, with range and HEAD support.
+Source URLs and linked-video details are also returned with song lists and
+metadata. Shared accounts and linked-library viewers can read permitted videos
+but cannot initiate these downloads.
+
 Before a playlist download starts, its metadata is checked for the total item
 count and song list. All download jobs run a separate yt-dlp command with
 `--no-playlist` for each media item, in playlist order. Playlists with more than

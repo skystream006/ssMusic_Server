@@ -107,6 +107,7 @@ export function visibleJob(job, user) {
     || (job[aliases] || []).some((source) => !ownsJob(source, user)
       && (source.private === true || source.privateFiles?.length));
   result.files = files;
+  if (job.videoDownloadName && !canReadFile(job, job.videoDownloadName, user)) delete result.videoDownloadName;
   for (const field of ['songMetadata', 'transcriptions']) {
     if (!job[field]) continue;
     result[field] = Object.fromEntries(Object.entries(result[field])

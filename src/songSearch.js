@@ -15,8 +15,8 @@ export function attachSearchKey(req, res, next) {
   }
   const pathname = req.path.replace(/\/+$/, '').toLowerCase();
   const allowed = ['/api/songs/search', '/api/libraries', '/api/library', '/api/library/tracks'].includes(pathname)
-    || /^\/api\/jobs\/[^/]+\/(stream|download|artwork|lyrics)\/[^/]+$/.test(pathname)
-    || /^\/api\/jobs\/[^/]+\/files\/[^/]+\/metadata$/.test(pathname)
+    || /^\/api\/jobs\/[^/]+\/(stream|download|artwork|lyrics|video)\/[^/]+$/.test(pathname)
+    || /^\/api\/jobs\/[^/]+\/files\/[^/]+\/(metadata|video)$/.test(pathname)
     || /^\/api\/karaoke\/jobs\/[^/]+$/.test(pathname);
   const submittingVideo = req.method === 'POST' && pathname === '/api/karaoke/jobs';
   if (!submittingVideo && (!['GET', 'HEAD'].includes(req.method) || !allowed)) {

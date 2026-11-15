@@ -309,15 +309,17 @@ export async function postgresPageJobs(database, tracks, viewerId = null) {
     if (!jobs.has(track.jobId)) jobs.set(track.jobId, { ...track.sourceJob, files: [], songMetadata: {}, transcriptions: {} });
     const job = jobs.get(track.jobId);
     job.files.push(track.name);
-    job.songMetadata[track.name] = Object.fromEntries([...songMetadataFields, 'rating', 'transcriptionLocked'].map((field) => [field, track[field]]));
+    job.songMetadata[track.name] = Object.fromEntries([...songMetadataFields, 'rating', 'transcriptionLocked', 'videoUrl', 'linkedVideo']
+      .map((field) => [field, track[field]]));
     if (track.transcription) job.transcriptions[track.name] = track.transcription;
   }
   for (const job of jobs.values()) {
     const named = Object.values(job.transcriptions).map((record) => record.noVocalsName).filter(Boolean);
-    const companions = await database.prepare(`SELECT songs.name FROM songs JOIN jobs ON jobs.id = songs.job_id WHERE job_id = $1 AND
+    const companions = await database.prepare(`SELECT songs.name, songs.metadata FROM songs JOIN jobs ON jobs.id = songs.job_id WHERE job_id = $1 AND
       (karaoke_stem IN (SELECT jsonb_array_elements_text($2::jsonb)) OR name IN (SELECT jsonb_array_elements_text($3::jsonb)))
       AND ${fileVisibilitySql('jobs', 'songs.name', '$4')}`)
       .all(job.id, JSON.stringify(job.files.map(songStem)), JSON.stringify(named), viewerId);
+    for (const companion of companions) job.songMetadata[companion.name] = JSON.parse(companion.metadata);
     job.files = [...new Set([...job.files, ...companions.map((row) => row.name)])];
   }
   await attachPrivacyAliases(database, [...jobs.values()]);

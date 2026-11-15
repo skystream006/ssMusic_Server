@@ -10,6 +10,8 @@ import { buildLyricsUpdate, formatSyltForEdit } from './lyricsEditing.js';
 import { createMediaSourcePlayback, getMediaSourceDescriptor } from './mediaSourcePlayback.js';
 import LyricTimeline from './LyricTimeline.jsx';
 import MusicLoading from './MusicLoading.jsx';
+import PlayerDisplay, { createAudioAnalyser } from './PlayerDisplay.jsx';
+import { startVisiblePolling } from './polling.js';
 import { Film, Minimize2 } from 'lucide-react';
 export { findNoVocals, isNoVocals } from '../../src/library.js';
 
@@ -287,7 +289,10 @@ export function LibrarySongActions({ track, libraryView, request, onPlayKaraoke,
   const action = libraryView.songState(track);
   const privacy = action.privacy || getFilePrivacy(track);
   const privacyLabel = privacy.inherited ? 'Inherited privacy' : privacy.private ? 'Make file public' : 'Make file private';
-  return <SongActions name={track.name} className={className} file={track} request={request}>
+  return <SongActions name={track.name} className={className} file={track} request={request}
+    canDownloadVideo={action.canEditMetadata === true && !libraryView.readOnly}
+    videoDisabled={(action.metadataDisabled ?? action.disabled) || libraryView.saving}
+    onVideoSaved={(result) => libraryView.onVideoSaved(track, result)}>
     <KaraokeButton track={track} tracks={libraryView.tracks || []} onPlay={onPlayKaraoke} showLabel />
     {action.canChangePrivacy && !libraryView.readOnly && <button className="music-icon-button" type="button"
       title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}
@@ -326,12 +331,11 @@ export function movePlaybackMedia(container, target, media, onError = () => {}) 
   }
 }
 
-function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mountVideo, mediaSwipeHandlers }) {
+function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mountVideo, mediaSwipeHandlers, displayProps }) {
   const [details, setDetails] = useState(null);
   const [metadataError, setMetadataError] = useState('');
   const [ratingError, setRatingError] = useState('');
   const [retry, setRetry] = useState(0);
-  const [failedArtwork, setFailedArtwork] = useState(null);
   const supportsRating = /\.mp3$/i.test(song?.name || '');
 
   useEffect(() => {
@@ -354,10 +358,8 @@ function NowPlayingTrack({ song, metadata, artwork, request, updateMetadata, mou
   const current = { ...details, ...metadata, ...song };
   const cover = metadata?.artwork === undefined ? details?.artwork === undefined ? artwork : details.artwork : metadata.artwork;
   return <div className="expanded-player" {...mediaSwipeHandlers}>
-    {mediaType(song.name) === 'video' ? <div className="expanded-video" ref={mountVideo} /> : <div className="expanded-artwork">
-      {cover && cover !== failedArtwork ? <img src={cover} alt={`${current.album || current.title || song.name} cover`} draggable={false}
-        onError={() => setFailedArtwork(cover)} /> : <Disc3 size={96} strokeWidth={1} />}
-    </div>}
+    {mediaType(song.name) === 'video' ? <div className="expanded-video" ref={mountVideo} />
+      : <PlayerDisplay song={{ ...current, linkedVideo: song.linkedVideo }} artwork={cover} {...displayProps} />}
     <div className="expanded-track-heading"><h2>{current.title || song.title || song.name.split('/').at(-1).replace(/\.[^.]+$/, '')}</h2>
       {(current.artist || song.artist) && <p>{current.artist || song.artist}</p>}
       {(current.album || song.album) && <p className="expanded-album">{current.album || song.album}</p>}
@@ -809,6 +811,14 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   const progressSavedAtRef = useRef(0);
   const [videoOpen, setVideoOpen] = useState(true);
   const audioRef = useRef(null);
+  const [displayMode, setDisplayMode] = useState('artwork');
+  const [playerExpanded, setPlayerExpanded] = useState(false);
+  const [audioAnalyser] = useState(() => createAudioAnalyser(window));
+  const [analyser, setAnalyser] = useState(null);
+  const [visualizerError, setVisualizerError] = useState('');
+  const analyserRequestRef = useRef(0);
+  const [videoDownloads, setVideoDownloads] = useState(() => new Map());
+  const [videoDownloadError, setVideoDownloadError] = useState('');
   const mediaSessionRef = useRef(null);
   const mediaSessionPlaybackRef = useRef(null);
   const [playbackDiagnostics] = useState(() => createPlaybackDiagnostics());
@@ -852,6 +862,54 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     totalPages: queueTotalPages, onChange: setQueuePage,
     onPageSizeChange: (size) => { setQueuePageSize(size); setQueuePage(Math.max(1, Math.floor(index / size) + 1)); }
   };
+
+  function prepareVisualizer() {
+    const revision = ++analyserRequestRef.current;
+    setVisualizerError('');
+    audioAnalyser.attach(audioRef.current).then((next) => {
+      if (revision === analyserRequestRef.current) setAnalyser(next);
+    }).catch((error) => {
+      if (revision === analyserRequestRef.current) setVisualizerError(error.message);
+    });
+  }
+
+  function changeDisplayMode(next) {
+    if (next === 'visualizer') prepareVisualizer();
+    setDisplayMode(next);
+  }
+
+  useEffect(() => {
+    if (displayMode === 'visualizer' && song && !isVideo) prepareVisualizer();
+    else { analyserRequestRef.current++; setAnalyser(null); }
+  }, [displayMode, playbackSource, isVideo]);
+
+  useEffect(() => () => {
+    analyserRequestRef.current++;
+    audioAnalyser.dispose().catch((error) => console.warn('Unable to close audio visualizer:', error.message));
+  }, [audioAnalyser]);
+
+  useEffect(() => {
+    if (!videoDownloads.size) return;
+    let active = true;
+    const stop = startVisiblePolling(async () => {
+      for (const { jobId, name, ownerId } of videoDownloads.values()) {
+        if (!active) return false;
+        const query = ownerId ? `?${new URLSearchParams({ userId: ownerId })}` : '';
+        try {
+          const result = await request(`/api/jobs/${encodeURIComponent(jobId)}/files/${encodeURIComponent(name)}/video${query}`);
+          if (!active) return false;
+          updateMetadata(jobId, name, result);
+          if (!['queued', 'running'].includes(result.linkedVideo?.status)) {
+            setLibraryRevision((value) => value + 1);
+            if (result.linkedVideo?.error) setVideoDownloadError(`Video download for ${name}: ${result.linkedVideo.error}`);
+          }
+        } catch (error) {
+          if (active) setVideoDownloadError(`Unable to check the video download for ${name}: ${error.message}`);
+        }
+      }
+    }, 3000);
+    return () => { active = false; stop(); };
+  }, [videoDownloads, request]);
 
   function tracePlayback(event, details = {}) {
     const media = audioRef.current;
@@ -897,6 +955,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   }, [mediaContainer]);
 
   useLayoutEffect(() => {
+    if (!song || isVideo) audioAnalyser.release();
     if (song) {
       const change = formatChangeRef.current;
       if (change?.selected === selected && change.media === audioRef.current) {
@@ -1134,6 +1193,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   }
 
   function playMedia() {
+    audioAnalyser.resume().catch((error) => setPlayError(error.message));
     autoPlayRef.current = true;
     recoveryIssueRef.current = false;
     setPlayError('');
@@ -1225,6 +1285,7 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     onPlaying={() => { playbackTransport.resumed(); tracePlayback('playing'); }}
     onPlay={(event) => {
       if (event.currentTarget.paused) return;
+      audioAnalyser.resume().catch((error) => setPlayError(error.message));
       playbackTransport.resumed(); autoPlayRef.current = true; setPlaying(true); setPlayError(''); tracePlayback('play');
     }} onPause={(event) => {
       if (!event.currentTarget.paused || (event.currentTarget.ended && continuesAtEnd())) return;
@@ -1250,10 +1311,19 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
   }
 
   function updateMetadata(jobId, name, result, readSnapshot = null) {
+    const { artwork, sylt, uslt, canEdit, ...summary } = result;
     if (selectedRef.current === JSON.stringify([jobId, name])) setMetadata((current) => mergePlaybackMetadata(current, result, readSnapshot));
     setSongs((current) => current?.map((track) => track.jobId === jobId && track.name === name
-      ? mergePlaybackMetadata(track, { title: result.title, artist: result.artist, album: result.album, performerInfo: result.performerInfo, rating: result.rating,
-        transcriptionLocked: result.transcriptionLocked }, readSnapshot) : track));
+      ? mergePlaybackMetadata(track, summary, readSnapshot) : track));
+    if (Object.hasOwn(result, 'linkedVideo')) setVideoDownloads((current) => {
+      const key = JSON.stringify([jobId, name]);
+      const pending = ['queued', 'running'].includes(result.linkedVideo?.status);
+      if (current.has(key) === pending) return current;
+      const next = new Map(current);
+      if (pending) next.set(key, { jobId, name, ownerId: songs?.find((track) => songKey(track) === key)?.libraryOwnerId });
+      else next.delete(key);
+      return next;
+    });
   }
 
   function replaceFile(jobId, name, result) {
@@ -1275,6 +1345,8 @@ export function PlaybackProvider({ children, request, userId, user = null, SongA
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, seek: seekPlayback, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
+    displayMode, changeDisplayMode, analyser, visualizerError, playbackClock: playbackTransport, playerExpanded, setPlayerExpanded,
+    videoDownloadError, setVideoDownloadError,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, removeJob, updateMetadata, replaceFile }}>
     {children}
     <div className="audio-player" aria-hidden="true">{!isVideo && media}</div>
@@ -1294,6 +1366,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     mode, setMode, copying, currentCopy, lyricsText, copyLyrics, position, setPosition, seek, duration, volume, muted, playing,
     shuffle, setShuffle, repeatMode, setRepeatMode, audioRef, autoPlayRef, queueScopeRef, songKey, index, song,
     isVideo, videoOpen, setVideoOpen, mountVideo, mediaSwipeHandlers, restoredSelectionRef, playLibrary, queueLoading, queuePagination,
+    displayMode, changeDisplayMode, analyser, visualizerError, playbackClock, playerExpanded, setPlayerExpanded, videoDownloadError, setVideoDownloadError,
     selectSong, playKaraoke, nextSong, previousSong, togglePlayback, removeSong, updateMetadata } = usePlayback();
   const [job, setJob] = useState(null);
   const [loadError, setLoadError] = useState('');
@@ -1323,6 +1396,14 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const shuffleLabel = shuffle ? 'Shuffle on: turn off' : 'Shuffle off: turn on';
   const repeatLabel = repeatMode === 'off' ? 'Repeat off: repeat queue' : repeatMode === 'all' ? 'Repeat queue: repeat one song' : 'Repeat one song: turn off';
   const RepeatIcon = repeatMode === 'one' ? Repeat1 : Repeat;
+  const displayProps = { mode: displayMode, onModeChange: changeDisplayMode, mediaRef: audioRef, clock: playbackClock,
+    analyser, playing, visualizerError };
+
+  useEffect(() => {
+    if (!dockOnly) return;
+    setPlayerExpanded(Boolean(renderedPanel));
+    return () => setPlayerExpanded(false);
+  }, [dockOnly, Boolean(renderedPanel), setPlayerExpanded]);
 
   useEffect(() => {
     if (queueListRef.current) queueListRef.current.scrollTop = 0;
@@ -1591,7 +1672,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
       {dockOnly && <>
         {renderedPanel && <NowPlayingPanel panel={renderedPanel} expanded={Boolean(panel)} onChange={setPanel} wide={widePlayer} isVideo={isVideo}
           player={<>
-            <NowPlayingTrack key={selected} song={song} metadata={metadata} artwork={artwork} request={request} updateMetadata={updateMetadata} mountVideo={mountVideo} mediaSwipeHandlers={mediaSwipeHandlers} />
+            <NowPlayingTrack key={selected} song={song} metadata={metadata} artwork={artwork} request={request} updateMetadata={updateMetadata} mountVideo={mountVideo} mediaSwipeHandlers={mediaSwipeHandlers} displayProps={displayProps} />
             {song && SongActionView && <div className="expanded-player-tools"><SongActionView track={song} request={request} /></div>}
           </>}
           lyrics={lyricsPanel} queue={<>
@@ -1635,6 +1716,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         {playError && <div className="notice error playback-error" role="alert">{playError}
           <button className="music-icon-button" type="button" aria-label="Retry playback" title="Retry playback" onClick={retryPlayback}><RefreshCw size={16} /></button>
           <button className="music-icon-button" type="button" aria-label="Dismiss playback error" title="Dismiss" onClick={() => setPlayError('')}><X size={16} /></button></div>}
+        {videoDownloadError && <div className="notice error playback-error" role="alert">{videoDownloadError}
+          <button className="music-icon-button" type="button" aria-label="Dismiss video download error" title="Dismiss"
+            onClick={() => setVideoDownloadError('')}><X size={16} /></button></div>}
       </footer>
       </>}
     </div>;
@@ -1650,9 +1734,9 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
     {songs?.length === 0 && <div className="empty-files"><Music2 size={24} />No songs available.</div>}
     {song && <>
       <section className="now-playing" aria-label="Now playing">
-        <div className={`music-artwork ${playing ? 'is-playing' : ''}`}>
-          {artwork ? <img src={artwork} alt={`${metadata?.album || song.title || song.name} cover`} /> : <div className="record-art"><Disc3 size={60} strokeWidth={1.2} /></div>}
-        </div>
+        {isVideo ? <div className="music-artwork"><Film size={60} /></div>
+          : <div className="job-player-display"><PlayerDisplay song={{ ...song, ...metadata, linkedVideo: song.linkedVideo }} artwork={artwork}
+            {...displayProps} active={!playerExpanded} /></div>}
         <div className="playback-main">
           <div className="track-heading"><div><span>{song.name.startsWith('[NoVocals]/') ? 'NoVocals' : 'Original'}</span>
             <h2>{metadata?.title || song.name.split('/').at(-1)}</h2>

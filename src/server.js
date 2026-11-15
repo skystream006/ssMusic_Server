@@ -8,10 +8,11 @@ import https from 'node:https';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs } from 'node:util';
-import { clearProcessOutputs, createJob, deleteJob, deleteJobFile, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, getLiveJobOutput, getProcessOutputSize, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, retrieveJobMetadata, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, stopJob, transcribeJobFile } from './jobManager.js';
+import { clearProcessOutputs, createJob, deleteJob, deleteJobFile, downloadSongVideo, getAvailableContributors, getFilePath, getJob, getJobs, getJobQueue, getJobRateLimit, getLiveJobOutput, getProcessOutputSize, importJobFiles, isFileInsideJobFolder, isUpdateInProgress, isValidJobFileName, rerunJob, retrieveJobMetadata, setJobContributors, setJobTitle, setJobPrivacy, setJobFilePrivacy, setSongMetadata, stopJob, transcribeJobFile } from './jobManager.js';
 import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
+import { readSongVideo, songVideoMetadata } from './songVideos.js';
 import { readSongThumbnail } from './artworkThumbnails.js';
 import { createMediaStreamHandler } from './audioCompatibility.js';
 import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
@@ -595,10 +596,10 @@ async function listJobFiles(job, order, names) {
     if (stat?.isFile()) {
       const realPath = await fs.realpath(absoluteFilePath).catch(() => null);
       if (!realPath || !isFileInsideJobFolder({ outputDir }, realPath)) continue;
-      const metadata = await readSongSummary(realPath, stat).catch(() => ({}));
+      const metadata = { ...job.songMetadata?.[fileName], ...await readSongSummary(realPath, stat).catch(() => ({})) };
       files.push({
-        ...job.songMetadata?.[fileName],
         ...metadata,
+        ...songVideoMetadata(job.id, fileName, metadata),
         name: fileName,
         private: !canReadFile(job, fileName, { id: null }),
         noVocalsName: job.transcriptions?.[fileName]?.noVocalsName,
@@ -659,6 +660,36 @@ app.get('/api/jobs/:id/download/:name', async (req, res) => {
 
 app.get('/api/jobs/:id/stream/:name', createMediaStreamHandler((req) => resolveRequestedFile(req, isPlayableFile)));
 
+app.get('/api/jobs/:id/video/:name', createMediaStreamHandler(async (req) => {
+  await resolveRequestedFile(req, isSongFile);
+  const filePath = await readSongVideo(await getJob(req.params.id), req.params.name);
+  if (!filePath) throw Object.assign(new Error('Linked video not found'), { statusCode: 404 });
+  return filePath;
+}));
+
+app.post('/api/jobs/:id/files/:name/video', async (req, res) => {
+  try {
+    const job = await downloadSongVideo(req.params.id, req.params.name, req.user);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    return res.status(job.songMetadata?.[req.params.name]?.linkedVideo?.status === 'completed' ? 200 : 202)
+      .json(songVideoMetadata(job.id, req.params.name, job.songMetadata?.[req.params.name]));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.get('/api/jobs/:id/files/:name/video', async (req, res) => {
+  try {
+    await resolveRequestedFile(req, isSongFile);
+    const job = await getJob(req.params.id);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    return res.set('Cache-Control', 'no-store')
+      .json(songVideoMetadata(job.id, req.params.name, job.songMetadata?.[req.params.name], req.query.userId));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
 app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
   res.set('Cache-Control', 'private, no-cache');
   try {
@@ -675,8 +706,10 @@ const songMetadataHandler = (includeLyrics) => async (req, res) => {
   try {
     const filePath = await resolveRequestedFile(req, isSongFile);
     const job = await getJob(req.params.id);
+    const metadata = await readSongMetadata(filePath, { includeLyrics });
     res.set('Cache-Control', 'no-store');
-    return res.json({ ...await readSongMetadata(filePath, { includeLyrics }),
+    return res.json({ ...metadata,
+      ...songVideoMetadata(job.id, req.params.name, { ...job.songMetadata?.[req.params.name], ...metadata }, req.query.userId),
       transcriptionLocked: Boolean(job.songMetadata?.[req.params.name]?.transcriptionLocked),
       canEdit: Boolean(req.user.role !== 'shared' && (req.query.userId === undefined || req.query.userId === req.user.id) && /\.mp3$/i.test(req.params.name)
         && req.user.id === job.initiatedBy?.id

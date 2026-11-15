@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import NodeID3 from 'node-id3';
 import { retrieveYoutubeArtwork, retrieveYoutubeMetadata } from '../src/youtubeMetadata.js';
-import { readSongSourceUrl } from '../src/music.js';
+import { readSongMetadata, readSongSourceUrl, readSongSummary, updateSongMetadata } from '../src/music.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 
@@ -23,12 +23,18 @@ test('source URL recovery reads embedded yt-dlp and standard MP3 source tags', a
   ]) {
     await fs.writeFile(filePath, NodeID3.write(tags, Buffer.from('audio')));
     assert.equal(await readSongSourceUrl(filePath), url);
+    assert.equal((await readSongSummary(filePath, await fs.stat(filePath))).videoUrl, url);
+    assert.equal((await readSongMetadata(filePath, { includeLyrics: false })).videoUrl, url);
   }
   for (const tags of [{}, { comment: { language: 'eng', text: 'Not a source URL' } },
     { userDefinedText: [{ description: 'purl', value: 'http://127.0.0.1/private' }] }]) {
     await fs.writeFile(filePath, NodeID3.write(tags, Buffer.from('audio')));
     assert.equal(await readSongSourceUrl(filePath), null);
   }
+  await updateSongMetadata(filePath, { artist: 'Retrieved channel' }, { videoUrl: 'https://youtu.be/abcdefghijk?list=playlist' });
+  assert.equal(NodeID3.read(await fs.readFile(filePath)).audioSourceUrl, url);
+  assert.equal((await readSongSummary(filePath, await fs.stat(filePath))).videoUrl, url);
+  assert.deepEqual(NodeID3.removeTagsFromBuffer(await fs.readFile(filePath)), Buffer.from('audio'));
 });
 
 test('oEmbed retrieves channel and thumbnail directly with bounded, nonredirecting requests', async (context) => {

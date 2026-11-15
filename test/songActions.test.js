@@ -9,6 +9,11 @@ import { normalizeSearchText } from '../src/library.js';
 
 let server;
 let SongActions;
+let SongVideoDialog;
+let PlayerDisplay;
+let createAudioAnalyser;
+let synchronizeSongVideo;
+let radioPulseLevel;
 let PlaylistLinksDialog;
 let SongRating;
 let ListSongRating;
@@ -73,7 +78,8 @@ before(async () => {
   server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
   ({ default: MusicLoading } = await server.ssrLoadModule('/src/MusicLoading.jsx'));
   ({ reorderPlaybackQueue } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
-  ({ SongActions, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ SongActions, SongVideoDialog, PlaylistLinksDialog, SongRating, ListSongRating, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, TranscriptionStatus, canRunJobAction, canChangePrivacy, canEditSong, canChangePlaylistPrivacy, getFilePrivacy } = await server.ssrLoadModule('/src/SongActions.jsx'));
+  ({ default: PlayerDisplay, createAudioAnalyser, synchronizeSongVideo, radioPulseLevel } = await server.ssrLoadModule('/src/PlayerDisplay.jsx'));
   ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, createPlaybackDiagnostics, publishPlaybackPosition, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ default: MusicLibrary, ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
@@ -82,6 +88,157 @@ before(async () => {
 });
 
 after(async () => { await server?.close(); });
+
+test('song video downloads are offered only for authorized audio files with a saved source', () => {
+  const song = { name: 'Song.mp3', videoUrl: 'https://www.youtube.com/watch?v=abcdefghijk' };
+  const render = (file, options = {}) => renderToStaticMarkup(createElement(SongActions, {
+    name: file.name, file, jobId: 'job', request() {}, canDownloadVideo: true, ...options
+  }));
+  assert.match(render(song), /aria-label="Download video for Song.mp3"/);
+  assert.match(render(song, { videoDisabled: true }), /aria-label="Download video for Song.mp3"[^>]*disabled=""/);
+  for (const file of [{ ...song, videoUrl: null }, { ...song, name: 'Video.mp4' }, { ...song, name: 'Notes.txt' }]) {
+    assert.doesNotMatch(render(file), /Download video for/);
+  }
+  assert.doesNotMatch(render(song, { canDownloadVideo: false }), /Download video for/);
+  const failed = renderToStaticMarkup(createElement(SongVideoDialog, { file: { ...song,
+    linkedVideo: { status: 'failed', error: 'Video unavailable' } }, jobId: 'job', request() {}, onClose() {} }));
+  assert.match(failed, /role="alert">Video unavailable/);
+  assert.match(failed, /Retry download/);
+  assert.match(failed, /not added to a playlist/);
+});
+
+test('player display switches between artwork, radio pulse, and only completed linked videos', () => {
+  const song = { jobId: 'job', name: 'Song.mp3', title: 'Song' };
+  const render = (mode, track = song, extra = {}) => renderToStaticMarkup(createElement(PlayerDisplay, {
+    song: track, mode, onModeChange() {}, mediaRef: { current: null }, clock: {}, playing: false, ...extra
+  }));
+  const art = render('artwork');
+  assert.match(art, /aria-label="Album art"[^>]*aria-pressed="true"/);
+  assert.doesNotMatch(art, /<video|<canvas/);
+  const pulse = render('visualizer');
+  assert.match(pulse, /<canvas[^>]*aria-label="Radio pulse audio visualizer"/);
+  assert.match(pulse, /aria-label="Audio visualizer"[^>]*aria-pressed="true"/);
+  for (const status of ['queued', 'running', 'failed', 'stopped', undefined]) {
+    const html = render('video', { ...song, linkedVideo: { status, streamUrl: '/linked.mp4' } });
+    assert.doesNotMatch(html, /<video/);
+    assert.match(html, /aria-label="Video"[^>]*disabled=""/);
+    assert.match(html, /aria-label="Album art"[^>]*aria-pressed="true"/);
+  }
+  const linked = { ...song, linkedVideo: { status: 'completed', streamUrl: '/linked.mp4' } };
+  const video = render('video', linked);
+  assert.match(video, /<video[^>]*muted=""[^>]*playsInline=""/);
+  assert.doesNotMatch(video, /<audio|controls=""/);
+  assert.doesNotMatch(render('video', linked, { active: false }), /<video/);
+});
+
+test('linked video follows the logical song clock, seeking, buffering, rate, pause, and visibility', async () => {
+  const audio = Object.assign(new EventTarget(), {
+    paused: false, ended: false, seeking: false, readyState: 4, playbackRate: 1.25, currentTime: 130
+  });
+  const video = Object.assign(new EventTarget(), {
+    paused: true, readyState: 4, currentTime: 0, duration: 60, muted: false, playbackRate: 1,
+    play() { this.paused = false; return Promise.resolve(); }, pause() { this.paused = true; }
+  });
+  const page = Object.assign(new EventTarget(), { hidden: false });
+  const clock = { currentTime: 10 };
+  const errors = [];
+  const stop = synchronizeSongVideo(audio, video, clock, { page, onError: (error) => errors.push(error) });
+  await Promise.resolve();
+  assert.equal(video.currentTime, 10, 'video uses song time, not the accumulated MediaSource audio time');
+  assert.equal(video.muted, true);
+  assert.equal(video.playbackRate, 1.25);
+  assert.equal(video.paused, false);
+  clock.currentTime = 24;
+  audio.dispatchEvent(new Event('seeked'));
+  assert.equal(video.currentTime, 24);
+  audio.dispatchEvent(new Event('waiting'));
+  assert.equal(video.paused, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  audio.dispatchEvent(new Event('playing'));
+  assert.equal(video.paused, false);
+  page.hidden = true;
+  page.dispatchEvent(new Event('visibilitychange'));
+  assert.equal(video.paused, true);
+  audio.paused = true;
+  audio.playbackRate = 0.75;
+  audio.dispatchEvent(new Event('ratechange'));
+  assert.equal(video.playbackRate, 0.75);
+  clock.currentTime = 80;
+  audio.dispatchEvent(new Event('timeupdate'));
+  assert.equal(video.currentTime, 60);
+  assert.equal(video.paused, true, 'a short video does not restart or affect song playback');
+  video.dispatchEvent(new Event('error'));
+  assert.equal(errors.length, 1);
+  stop();
+  clock.currentTime = 5;
+  audio.dispatchEvent(new Event('seeked'));
+  assert.equal(video.currentTime, 60, 'old song listeners are removed');
+});
+
+test('linked video cancels pending playback safely and reports genuine play failures without pausing the song', async () => {
+  const audio = Object.assign(new EventTarget(), { paused: false, ended: false, seeking: false, readyState: 4, playbackRate: 1 });
+  const attempts = [];
+  const video = Object.assign(new EventTarget(), {
+    paused: true, readyState: 1, currentTime: 0, duration: 60,
+    play() { return new Promise((resolve, reject) => attempts.push({ resolve, reject })); },
+    pause() { this.paused = true; }
+  });
+  const errors = [];
+  const stop = synchronizeSongVideo(audio, video, { currentTime: 2 }, {
+    page: Object.assign(new EventTarget(), { hidden: false }), onError: (error) => errors.push(error)
+  });
+  audio.seeking = true;
+  audio.dispatchEvent(new Event('seeking'));
+  audio.seeking = false;
+  audio.dispatchEvent(new Event('seeked'));
+  assert.equal(attempts.length, 2);
+  attempts[0].reject(Object.assign(new Error('Intentional pause'), { name: 'AbortError' }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(errors.length, 0);
+  attempts[1].reject(new Error('Playback denied'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(errors.length, 1);
+  assert.equal(audio.paused, false);
+  audio.dispatchEvent(new Event('timeupdate'));
+  assert.equal(attempts.length, 2, 'a failed video waits for an explicit retry');
+  stop();
+});
+
+test('radio pulse responds to audio energy and reuses its audio source without interrupting output', async () => {
+  assert.equal(radioPulseLevel(new Uint8Array(128)), 0);
+  const quiet = radioPulseLevel(new Uint8Array(128).fill(24));
+  const loud = radioPulseLevel(new Uint8Array(128).fill(180));
+  assert.ok(quiet > 0 && loud > quiet && loud <= 1);
+  const nodes = [];
+  let context;
+  const controller = createAudioAnalyser({ AudioContext: class {
+    state = 'suspended';
+    destination = {};
+    constructor() { context = this; }
+    async resume() { this.state = 'running'; }
+    async close() { this.state = 'closed'; }
+    createAnalyser() { return { disconnect() {} }; }
+    createMediaElementSource(media) {
+      const node = { media, connections: [], disconnected: [],
+        connect(target) { this.connections.push(target); }, disconnect(target) { this.disconnected.push(target); } };
+      nodes.push(node);
+      return node;
+    }
+  } });
+  const first = { paused: false, pause() { this.paused = true; } };
+  const analyser = await controller.attach(first);
+  assert.equal(await controller.attach(first), analyser);
+  assert.equal(nodes.length, 1, 'a media element can only have one MediaElementAudioSourceNode');
+  assert.deepEqual(nodes[0].connections, [context.destination, analyser]);
+  assert.deepEqual(nodes[0].disconnected, [], 'reusing the visualizer does not disconnect the audible output');
+  await controller.attach({ pause() {} });
+  assert.equal(first.paused, true, 'replaced media elements cannot continue playing through Web Audio');
+  assert.deepEqual(nodes[0].disconnected, [undefined]);
+  await controller.attach(first);
+  assert.equal(nodes.length, 2, 'returning to an existing element reuses its source node');
+  await controller.dispose();
+  assert.equal(context.state, 'closed');
+});
 
 test('queue reordering preserves track identities and supports before and after destinations', () => {
   const queue = ['First', 'Second', 'Third', 'Fourth'].map((name) => ({ jobId: 'job', name: `${name}.mp3` }));
@@ -1038,8 +1195,6 @@ test('music-page metadata saves update rows in place without refreshing the sort
   assert.ok(handler);
   assert.match(handler, /playback\.updateMetadata\(file\.jobId, file\.name, result\)/);
   assert.match(handler, /current\.files\.map\(/);
-  assert.match(handler, /title: result\.title/);
-  assert.match(handler, /rating: result\.rating/);
   assert.doesNotMatch(handler, /setRefresh|request\(|\.sort\(|setTrackSort/);
   const saved = library.match(/\{editingMetadata && <MetadataDialog[\s\S]*?onSaved=\{\(result\) => \{([\s\S]*?)\n    \}\} \/>/)?.[1];
   assert.ok(saved);

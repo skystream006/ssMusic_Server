@@ -15,6 +15,7 @@ import { writeJob } from '../src/database.js';
 import { linkLibraryJob } from '../src/libraryStore.js';
 import { readPostgresJobs } from '../src/postgresCatalog.js';
 import { createTestDatabase } from '../test-support/postgres.js';
+import { songVideoPath } from '../src/songVideos.js';
 
 test('privacy and search keys enforce owner-only access through HTTP', { timeout: 120_000 }, async (context) => {
   let server;
@@ -113,6 +114,57 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
   await fs.mkdir(path.join(directory, 'public'), { recursive: true });
   await fs.writeFile(path.join(directory, 'public', 'index.html'), '<!doctype html><title>Privacy settings route</title>');
   await start();
+
+  await context.test('song-linked videos stream with ranges and inherit song and library permissions', async (subcontext) => {
+    const id = 'song-linked-video';
+    const name = 'Song.mp3';
+    const outputDir = path.join(outputRoot, id);
+    await fs.mkdir(path.join(outputDir, '.videos'), { recursive: true });
+    await fs.writeFile(path.join(outputDir, name), 'song audio');
+    await fs.writeFile(songVideoPath(outputDir, id, name), 'linked video bytes');
+    const sourceUrl = 'https://www.youtube.com/watch?v=abcdefghijk';
+    const now = new Date().toISOString();
+    await writeJob(database, { id, url: sourceUrl, status: 'completed', isPlaylist: true, outputDir, files: [name],
+      createdAt: now, updatedAt: now, playlistTitle: 'Song video', initiatedBy: { id: users.Owner.id },
+      songMetadata: { [name]: { videoUrl: sourceUrl, linkedVideo: { sourceUrl, status: 'completed', updatedAt: now } } } });
+    subcontext.after(async () => {
+      await call('/api/jobs/song-linked-alias', headers.Admin, 'DELETE');
+      await call(`/api/jobs/${id}`, headers.Owner, 'DELETE');
+    });
+    const route = `/api/jobs/${id}/video/${name}`;
+    const statusRoute = `/api/jobs/${id}/files/${name}/video`;
+    assert.equal((await call(route, {})).status, 401);
+    for (const auth of [headers.Owner, headers.Linked, headers.Reader, keyHeaders]) {
+      const response = await call(`${route}?userId=${users.Owner.id}`, { ...auth, Range: 'bytes=0-5' });
+      assert.equal(response.status, 206, response.text);
+      assert.match(response.headers['content-type'], /^video\/mp4/);
+      assert.equal(response.text, 'linked');
+      assert.equal((await call(`${statusRoute}?userId=${users.Owner.id}`, auth, 'HEAD')).status, 200);
+    }
+    const files = await call(`/api/jobs/${id}/files`);
+    assert.deepEqual(files.body.files.map((file) => file.name), [name]);
+    const tracks = await call(`/api/library/tracks?entryId=${id}&userId=${users.Owner.id}`, headers.Reader);
+    assert.equal(tracks.body.files.length, 1);
+    assert.equal(new URL(tracks.body.files[0].linkedVideo.streamUrl, 'https://localhost').searchParams.get('userId'), users.Owner.id);
+    const metadata = await call(`/api/jobs/${id}/files/${name}/metadata?userId=${users.Owner.id}`, headers.Reader);
+    assert.equal(metadata.body.videoUrl, sourceUrl);
+    assert.equal(new URL(metadata.body.linkedVideo.streamUrl, 'https://localhost').searchParams.get('userId'), users.Owner.id);
+    for (const auth of [headers.Admin, headers.Contributor, headers.Reader, keyHeaders]) {
+      assert.equal((await call(statusRoute, auth, 'POST')).status, 403);
+    }
+    assert.equal((await call(statusRoute, headers.Owner, 'POST')).status, 200, 'existing videos are reused');
+    assert.equal((await call(`/api/jobs/${id}/files/${name}/privacy`, headers.Owner, 'PATCH', { private: true })).status, 200);
+    assert.equal((await call(route)).status, 200);
+    for (const auth of [headers.Admin, headers.Linked, headers.Reader, keyHeaders]) {
+      assert.ok([403, 404].includes((await call(route, auth)).status));
+      assert.ok([403, 404].includes((await call(statusRoute, auth)).status));
+    }
+    assert.equal((await call(`/api/jobs/${id}/files/${name}/privacy`, headers.Owner, 'PATCH', { private: false })).status, 200);
+    await writeJob(database, { id: 'song-linked-alias', url: 'import:alias', status: 'completed', isPlaylist: true,
+      outputDir, files: [name], privateFiles: [name], initiatedBy: { id: users.Admin.id }, createdAt: now, playlistTitle: 'Alias' });
+    assert.equal((await call(route, headers.Owner)).status, 404, 'same-output aliases cannot bypass source privacy');
+    assert.equal((await call(statusRoute, headers.Owner, 'POST')).status, 403);
+  });
 
   await context.test('AAC streams support repeated ranges and preserve source privacy for cached audio', async (subcontext) => {
     if (!canGenerateVideo) { subcontext.skip('FFmpeg is not installed'); return; }

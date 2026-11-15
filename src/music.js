@@ -8,7 +8,8 @@ import { normalizeVideoUrl } from './utils.js';
 
 const ratingBytes = [0, 1, 64, 128, 196, 255];
 const summaryCache = new Map();
-const summaryFrames = ['TIT2', 'TPE1', 'TALB', 'TPE2', 'TCON', 'TYER', 'TRCK', 'TPOS', 'POPM'];
+const sourceUrlFrames = ['WOAS', 'WOAF', 'WXXX', 'TXXX', 'COMM'];
+const summaryFrames = ['TIT2', 'TPE1', 'TALB', 'TPE2', 'TCON', 'TYER', 'TRCK', 'TPOS', 'POPM', ...sourceUrlFrames];
 const publicMetadataFrames = [...summaryFrames, 'APIC', 'SYLT', 'USLT',
   'TT2', 'TP1', 'TAL', 'TP2', 'TCO', 'TYE', 'TRK', 'TPA', 'POP', 'PIC', 'SLT', 'ULT'];
 const lyricFrames = ['SYLT', 'USLT', 'SLT', 'ULT'];
@@ -98,19 +99,24 @@ export async function readSongSummary(filePath, stat) {
   } finally { await file.close(); }
   const summary = { rating: songRating(tags) };
   for (const field of metadataFields) if (typeof tags[field] === 'string') summary[field] = tags[field];
+  const videoUrl = songSourceUrl(tags);
+  if (videoUrl) summary.videoUrl = videoUrl;
   if (summaryCache.size >= 1000) summaryCache.delete(summaryCache.keys().next().value);
   summaryCache.set(filePath, { signature, summary });
   return summary;
 }
 
-export async function readSongSourceUrl(filePath) {
-  if (path.extname(filePath).toLowerCase() !== '.mp3') return null;
-  const tags = await readBoundedId3Tags(filePath, { include: ['WOAS', 'WOAF', 'WXXX', 'TXXX', 'COMM'] });
+function songSourceUrl(tags) {
   const urls = [tags.audioSourceUrl, tags.fileUrl, tags.comment?.text,
     ...(Array.isArray(tags.userDefinedUrl) ? tags.userDefinedUrl.map((entry) => entry.url) : []),
     ...(Array.isArray(tags.userDefinedText) ? tags.userDefinedText
       .filter((entry) => /^(purl|url|source|webpage_url)$/i.test(entry.description)).map((entry) => entry.value) : [])];
   return urls.map((url) => normalizeVideoUrl(typeof url === 'string' ? url.trim() : url)).find(Boolean) || null;
+}
+
+export async function readSongSourceUrl(filePath) {
+  if (path.extname(filePath).toLowerCase() !== '.mp3') return null;
+  return songSourceUrl(await readBoundedId3Tags(filePath, { include: sourceUrlFrames }));
 }
 
 export async function readSongArtwork(filePath) {
@@ -123,7 +129,7 @@ export async function readSongArtwork(filePath) {
   return type?.mime === image.mime ? image : null;
 }
 
-export async function updateSongMetadata(filePath, value, { includeLyrics = true } = {}) {
+export async function updateSongMetadata(filePath, value, { includeLyrics = true, videoUrl } = {}) {
   const invalid = (message) => { throw Object.assign(new Error(message), { statusCode: 400 }); };
   if (path.extname(filePath).toLowerCase() !== '.mp3') invalid('Metadata editing is supported for MP3 files');
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -140,6 +146,11 @@ export async function updateSongMetadata(filePath, value, { includeLyrics = true
     invalid('SYLT lyrics require valid timestamps, at most 10,000 lines and 100,000 characters without null characters');
   }
   const updates = {};
+  if (videoUrl !== undefined) {
+    const source = normalizeVideoUrl(videoUrl);
+    if (!source) invalid('A YouTube video URL is required');
+    updates.audioSourceUrl = source;
+  }
   for (const field of metadataFields) {
     if (!Object.hasOwn(value, field)) continue;
     if (typeof value[field] !== 'string' || value[field].length > 500 || /[\x00-\x1f\x7f]/.test(value[field])) invalid(`Invalid ${field}`);
@@ -214,6 +225,7 @@ export async function readSongMetadata(filePath, { bounded = false, includeLyric
   const artwork = image && ['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(image.mime)
     && image.imageBuffer?.length <= 3 * 1024 * 1024
     ? `data:${image.mime};base64,${image.imageBuffer.toString('base64')}` : null;
+  const videoUrl = songSourceUrl(tags);
   return {
     title: tags.title || path.basename(filePath, path.extname(filePath)),
     artist: tags.artist || '',
@@ -224,6 +236,7 @@ export async function readSongMetadata(filePath, { bounded = false, includeLyric
     trackNumber: tags.trackNumber || '',
     partOfSet: tags.partOfSet || '',
     rating: songRating(tags),
+    ...(videoUrl ? { videoUrl } : {}),
     artwork,
     ...lyrics
   };
