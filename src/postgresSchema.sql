@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS credentials (
   created_at TEXT, last_used_at TEXT
 );
 CREATE INDEX IF NOT EXISTS credentials_user ON credentials(user_id);
+ALTER TABLE credentials ADD COLUMN IF NOT EXISTS name TEXT;
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   expires_at TEXT NOT NULL

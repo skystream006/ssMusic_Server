@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import express from 'express';
 import https from 'node:https';
+import http from 'node:http';
 import selfsigned from 'selfsigned';
 import { isoCBOR } from '@simplewebauthn/server/helpers';
 import { closeDatabases, openDatabase, writeJob } from '../src/database.js';
@@ -496,10 +497,137 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       };
     }
 
+    await passkeyContext.test('secondary enrollment requires a one-use, origin-bound grant from a live original session', async (secondaryContext) => {
+      app.set('trust proxy', 1);
+      secondaryContext.after(() => app.set('trust proxy', false));
+      const call = (route, method = 'GET', headers = {}, body) => new Promise((resolve, reject) => {
+        const request = http.request(`${base}${route}`, {
+          method, headers: { 'Content-Type': 'application/json', ...headers }
+        }, (response) => {
+          const chunks = [];
+          response.on('data', (chunk) => chunks.push(chunk));
+          response.on('end', () => resolve(new Response(Buffer.concat(chunks), {
+            status: response.statusCode, headers: response.headers
+          })));
+          response.on('error', reject);
+        });
+        request.on('error', reject);
+        request.end(body === undefined ? undefined : JSON.stringify(body));
+      });
+      const secondaryOrigin = process.env.PASSKEY_ORIGIN_SECONDARY;
+      const secondaryRPID = process.env.PASSKEY_RP_ID_SECONDARY;
+      const originHeaders = (value) => ({
+        Host: new URL(value).host, Origin: value, 'X-Forwarded-Proto': 'https'
+      });
+      const ownerHandle = crypto.randomBytes(32).toString('base64url');
+      const owner = await store.registerUser('Secondary owner', ownerHandle, authenticator().credential);
+      await store.updateUser(owner.id, { status: 'approved' }, admin.id);
+      secondaryContext.after(() => store.deleteUser(owner.id, admin.id));
+      const session = await store.createSession(owner.id);
+      const sourceHeaders = { ...originHeaders(origin), Cookie: `ssmusic_session=${session.token}` };
+      const targetHeaders = originHeaders(secondaryOrigin);
+      const pat = await store.createPrivateAccessToken(owner.id, 'No secondary enrollment');
+      const mint = async (headers = sourceHeaders) => {
+        const result = await call('/api/auth/passkeys/secondary', 'POST', headers, { userId: admin.id, name: '  Local   phone  ' });
+        assert.equal(result.status, 201);
+        assert.equal(result.headers.get('cache-control'), 'no-store');
+        const url = new URL((await result.json()).url);
+        assert.equal(url.origin, secondaryOrigin);
+        assert.equal(url.pathname, '/passkey-enrollment');
+        assert.equal(url.search, '');
+        return url.hash.slice(1);
+      };
+      const options = (token, headers = targetHeaders) =>
+        call('/api/auth/passkeys/secondary/options', 'POST', headers, { token, userId: admin.id });
+      const finish = (ceremony, response, headers = targetHeaders) =>
+        call('/api/auth/passkeys/secondary/verify', 'POST', headers, { requestId: ceremony.requestId, response, userId: admin.id, name: 'Ignored override' });
+      for (const headers of [{}, { ...originHeaders(origin), 'X-PAT': pat.token }]) {
+        assert.equal((await call('/api/auth/passkeys/secondary', 'POST', headers)).status, 401);
+      }
+      assert.equal((await call('/api/auth/passkeys/secondary', 'POST', { ...sourceHeaders, Origin: 'https://evil.example' })).status, 403);
+      assert.equal((await call('/api/auth/passkeys/secondary', 'POST', { Cookie: sourceHeaders.Cookie })).status, 403);
+      for (const name of [123, {}, 'x'.repeat(65)]) {
+        assert.equal((await call('/api/auth/passkeys/secondary', 'POST', sourceHeaders, { name })).status, 400);
+      }
+      for (const headers of [targetHeaders, { ...targetHeaders, Cookie: sourceHeaders.Cookie }, { ...targetHeaders, 'X-PAT': pat.token }]) {
+        const missing = await options(undefined, headers);
+        assert.equal(missing.status, 400, await missing.text());
+        assert.equal((await finish({}, undefined, headers)).status, 400);
+      }
+      assert.equal((await options('invalid')).status, 400);
+      const token = await mint();
+      assert.equal((await options(token, originHeaders(origin))).status, 403);
+      assert.equal((await options(token, { Origin: secondaryOrigin })).status, 403);
+      const response = await options(token, { ...targetHeaders, ...userHeaders });
+      assert.equal(response.status, 200);
+      const ceremony = await response.json();
+      assert.equal(ceremony.options.user.name, owner.name);
+      assert.equal(ceremony.options.user.id, ownerHandle);
+      assert.equal(ceremony.options.rp.id, secondaryRPID);
+      assert.equal((await options(token)).status, 400);
+      const key = authenticator();
+      const attestation = key.register(ceremony.options, secondaryOrigin, secondaryRPID);
+      assert.equal((await finish(ceremony, attestation, originHeaders(origin))).status, 403);
+      assert.equal((await call('/api/auth/passkeys/verify', 'POST', sourceHeaders, {
+        requestId: ceremony.requestId, response: attestation
+      })).status, 400);
+      // The wrong API consumes its request ID; start a fresh enrollment.
+      const fresh = await (await options(await mint())).json();
+      const registered = await finish(fresh, key.register(fresh.options, secondaryOrigin, secondaryRPID), {
+        ...targetHeaders, ...adminHeaders
+      });
+      assert.equal(registered.status, 201);
+      assert.deepEqual(await registered.json(), { added: true });
+      assert.equal(registered.headers.get('set-cookie'), null);
+      assert.equal((await store.findCredential(key.credential.id)).user.id, owner.id);
+      assert.equal((await store.findCredential(key.credential.id)).credential.name, 'Local phone');
+      assert.equal((await finish(fresh, attestation)).status, 400);
+      assert.equal((await call('/api/auth/me', 'GET', targetHeaders)).status, 401);
+      const login = await (await call('/api/auth/login/options', 'POST', targetHeaders, {})).json();
+      const loggedIn = await call('/api/auth/login/verify', 'POST', targetHeaders, {
+        requestId: login.requestId, response: key.login(login.options, secondaryOrigin, secondaryRPID)
+      });
+      assert.equal(loggedIn.status, 200);
+      assert.equal((await loggedIn.json()).user.id, owner.id);
+
+      for (const wrong of ['origin', 'rpID', 'verification']) {
+        const invalid = await (await options(await mint())).json();
+        const invalidKey = authenticator();
+        const result = await finish(invalid, invalidKey.register(invalid.options,
+          wrong === 'origin' ? origin : secondaryOrigin,
+          wrong === 'rpID' ? rpID : secondaryRPID,
+          wrong === 'verification' ? 65 : 69));
+        assert.equal(result.status, 400);
+        assert.equal(await store.findCredential(invalidKey.credential.id), null);
+      }
+      await secondaryContext.test('grants and verification expire within five minutes', async (clockContext) => {
+        const pending = await mint();
+        const exchangedLater = await mint();
+        clockContext.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+        clockContext.mock.timers.tick(4 * 60_000);
+        const inProgress = await (await options(exchangedLater)).json();
+        clockContext.mock.timers.tick(60_000 + 1);
+        assert.equal((await options(pending)).status, 400);
+        assert.equal((await finish(inProgress, attestation)).status, 400);
+      });
+      const loggedOut = await mint();
+      const interrupted = await (await options(await mint())).json();
+      await store.deleteSession(session.token);
+      assert.equal((await options(loggedOut)).status, 403);
+      assert.equal((await finish(interrupted, attestation)).status, 403);
+      const replacement = await store.createSession(owner.id);
+      sourceHeaders.Cookie = `ssmusic_session=${replacement.token}`;
+      const revoked = await mint();
+      const revokedCeremony = await (await options(await mint())).json();
+      await store.updateUser(owner.id, { status: 'revoked' }, admin.id);
+      assert.equal((await options(revoked)).status, 403);
+      assert.equal((await finish(revokedCeremony, attestation)).status, 403);
+    });
+
     await passkeyContext.test('Shared passkey signup binds account type and organizer and revalidates approval', async () => {
       const key = authenticator();
       const start = await call('/api/auth/register/options', 'POST', { Origin: origin }, {
-        name: 'Car passkey', role: 'shared', organizerId: user.id
+        name: 'Car passkey', passkeyName: '  Car   device  ', role: 'shared', organizerId: user.id
       });
       assert.equal(start.status, 200);
       const attempt = await start.json();
@@ -512,6 +640,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.equal(shared.organizerId, user.id);
       assert.equal(shared.status, 'pending');
       assert.deepEqual(shared.sharedUserIds, []);
+      assert.equal((await store.getUserPasskeys(shared.id)).credentials[0].name, 'Car device');
       assert.equal((await call('/api/auth/register/verify', 'POST', { Origin: origin }, body)).status, 400);
       await store.updateUser(shared.id, { status: 'approved' }, admin.id);
       const login = await (await call('/api/auth/login/options', 'POST', { Origin: origin }, {})).json();
@@ -558,14 +687,18 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       }
     }
     assert.equal((await call('/api/auth/passkeys/options', 'POST', headers, { client: 'browser-app' })).status, 400);
+    for (const name of [123, {}, 'x'.repeat(65)]) {
+      assert.equal((await call('/api/auth/passkeys/options', 'POST', headers, { name })).status, 400);
+      assert.equal((await call('/api/auth/register/options', 'POST', {}, { name: 'Invalid key name', passkeyName: name })).status, 400);
+    }
     const start = async (requestHeaders = headers) => {
-      const result = await call('/api/auth/passkeys/options', 'POST', requestHeaders, { userId: admin.id, name: 'Ignored name' });
+      const result = await call('/api/auth/passkeys/options', 'POST', requestHeaders, { userId: admin.id, name: '  Backup   key  ' });
       assert.equal(result.status, 200);
       assert.equal(result.headers.get('cache-control'), 'no-store');
       return result.json();
     };
     const verify = (attempt, response, requestHeaders = headers) => call('/api/auth/passkeys/verify', 'POST', requestHeaders, {
-      requestId: attempt.requestId, response, userId: admin.id
+      requestId: attempt.requestId, response, userId: admin.id, name: 'Ignored override'
     });
     const originalUserCount = (await store.listUsers()).length;
     for (const key of [second, third]) {
@@ -595,10 +728,31 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       const enrolled = result.passkeys.find(({ id }) => id === key.credential.id);
       assert.equal(enrolled.createdAt, result.user.updatedAt);
       assert.equal(enrolled.lastUsedAt, null);
+      assert.equal(enrolled.name, 'Backup key');
       assert.ok(Number.isFinite(Date.parse(enrolled.createdAt)));
       assert.equal((await verify(attempt, response)).status, 400);
     }
     assert.equal((await store.listUsers()).length, originalUserCount);
+    await passkeyContext.test('renaming passkeys requires the owning session and only changes the display name', async () => {
+      const endpoint = `/api/auth/passkeys/${encodeURIComponent(first.credential.id)}`;
+      const before = (await store.findCredential(first.credential.id)).credential;
+      for (const unauthorized of [{}, { 'X-PAT': token.token }]) {
+        assert.equal((await call(endpoint, 'PATCH', unauthorized, { name: 'Phone' })).status, 401);
+      }
+      assert.equal((await call(endpoint, 'PATCH', adminHeaders, { name: 'Not mine' })).status, 404);
+      for (const body of [{}, { name: 123 }, { name: 'x'.repeat(65) }, { name: 'Phone', userId: admin.id }]) {
+        assert.equal((await call(endpoint, 'PATCH', headers, body)).status, 400);
+      }
+      const renamed = await call(endpoint, 'PATCH', headers, { name: '  My   phone  ' });
+      assert.equal(renamed.status, 200);
+      const result = await renamed.json();
+      assert.equal(result.user.id, account.id);
+      assert.equal(result.passkeys.find(({ id }) => id === first.credential.id).name, 'My phone');
+      const after = (await store.findCredential(first.credential.id)).credential;
+      assert.deepEqual({ ...after, name: before.name }, before);
+      assert.equal((await call(endpoint, 'PATCH', headers, { name: '' })).status, 200);
+      assert.equal((await store.findCredential(first.credential.id)).credential.name, null);
+    });
     for (const key of [first, second, third]) {
       const before = (await store.findCredential(key.credential.id)).credential;
       assert.equal(before.lastUsedAt, null);
@@ -671,7 +825,7 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
       assert.deepEqual(listing.passkeys.map(({ id }) => id).sort(),
         [first, second, third, secondaryKey].map(({ credential: value }) => value.id).sort());
       for (const passkey of listing.passkeys) {
-        assert.deepEqual(Object.keys(passkey).sort(), ['createdAt', 'id', 'lastUsedAt', 'transports']);
+        assert.deepEqual(Object.keys(passkey).sort(), ['createdAt', 'id', 'lastUsedAt', 'name', 'transports']);
         assert.deepEqual(passkey.transports, ['internal']);
         assert.ok(Number.isFinite(Date.parse(passkey.createdAt)));
         assert.ok(Date.parse(passkey.lastUsedAt) >= Date.parse(passkey.createdAt));

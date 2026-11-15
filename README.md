@@ -1410,8 +1410,21 @@ because the first verified passkey is intentionally trusted as the initial admin
 Approved users and administrators can add more passkeys from **User settings > Passkeys >
 Add passkey** while signed in. Each new passkey belongs to the existing account, keeping
 the same approval, permissions, and library; existing passkeys continue to work. Repeat
-with another device, password manager, or security key as needed. Enrollment uses the
-current hostname's RP ID and does not link accounts on unrelated hostnames.
+with another device, password manager, or security key as needed. **Add passkey** asks
+whether to use the main or secondary origin. The secondary choice opens
+`PASSKEY_ORIGIN_SECONDARY` in another window to enroll a passkey for the same account,
+without signing in on that origin first. Allow pop-ups and trust that origin's HTTPS
+certificate. Choose **Create passkey** in the new window, then return to settings;
+the passkey list refreshes when the original window regains focus. If already on the
+secondary origin, choosing main opens main-origin settings (sign in there if needed).
+The secondary choice is disabled when no secondary origin is configured.
+
+Give each passkey an optional name (up to 64 characters) during registration or in
+the **Add passkey** dialog, including secondary-origin enrollment. Names are saved
+on the server for identifying credentials; they do not rename the key in your
+device or password manager. In the passkey list, edit **Passkey name** and choose
+**Save name** to rename an existing key. Clearing the name restores the credential-ID
+label. Existing unnamed keys continue to work.
 
 The **Passkeys** section lists every registered credential with its ID and reported
 transports, creation date, and last-used date in your local time. Creation is recorded
@@ -1427,17 +1440,40 @@ or password manager.
 Passkey management requires a passkey session, not a PAT:
 
 - `GET /api/auth/passkeys` returns `{ "user": {...}, "passkeys": [...] }` for the
-    signed-in account. Passkey entries contain `id`, `transports`, `createdAt`, and
+    signed-in account. Passkey entries contain `id`, `name`, `transports`, `createdAt`, and
     `lastUsedAt`. Dates are UTC ISO timestamps or `null` when not recorded.
+- `PATCH /api/auth/passkeys/:credentialId` accepts only `{ "name": "Phone" }` and returns
+    the updated user and passkey list. Names are trimmed, repeated whitespace is collapsed,
+    and at most 64 characters are allowed. Empty text or `null` clears the name.
+    Unknown or other users' credentials return `404`. A passkey session is required.
 - `DELETE /api/auth/passkeys/:credentialId` removes one of your passkeys and returns
     the updated user and passkey list. Unknown or other users' credentials return
     `404`; removing your last passkey returns `409`.
 - `POST /api/auth/passkeys/options` returns registration options for the signed-in account,
-    reusing its user handle and excluding its existing credentials.
+    reusing its user handle and excluding its existing credentials. An optional
+    `{ "name": "Phone" }` is bound to the registration challenge. Initial account
+    registration accepts the same optional label as `passkeyName` on
+    `POST /api/auth/register/options`, separately from the account's `name`.
 - `POST /api/auth/passkeys/verify` accepts `{ "requestId": "...", "response": {...} }` and
     returns the updated user and passkey list with `201`. Requests are single-use, expire
     after five minutes, and are bound to the account, origin, and RP ID. Duplicate
     credentials are rejected.
+- `GET /api/auth/passkeys/origins` returns `{ "primary": "...", "secondary": "..." }`;
+    `secondary` is `null` when not configured.
+- `POST /api/auth/passkeys/secondary` requires the initiating user's cookie or Bearer
+    session and an exact configured browser origin. It accepts an optional
+    `{ "name": "Local phone" }` bound to the handoff. It returns a secondary-origin
+    enrollment `url` with a one-use credential in its fragment, never a session token.
+    The fragment is removed from the enrollment page's address bar.
+- `POST /api/auth/passkeys/secondary/options` accepts `{ "token": "..." }` and exchanges
+    that credential for `{ "requestId": "...", "options": {...} }`.
+- `POST /api/auth/passkeys/secondary/verify` accepts `{ "requestId": "...", "response": {...} }`
+    and returns `{ "added": true }` with `201`. These two endpoints work only on the exact
+    configured secondary origin and host, require the credentials minted by the original
+    session, and never issue a login session. Each credential is single-use; the entire
+    handoff expires five minutes after initiation. Logging out the initiating session or
+    changing the account invalidates pending enrollment. User IDs supplied by callers
+    cannot change the destination account; unrelated secondary-origin sessions are ignored.
 
 Passkeys work on `localhost` without TLS, but other hosts require HTTPS. The server creates
 `data/tls/server-key.pem` and `data/tls/server-cert.pem` when certificate paths are omitted.
@@ -1485,8 +1521,9 @@ on each client before using passkeys. Custom certificates are not changed and mu
 already cover the local hostname.
 
 Passkeys are scoped to their RP ID: an existing public-hostname passkey cannot be used
-on an unrelated local hostname. Register a local passkey with a different account name
-and have an administrator approve that account. This does not link the two accounts.
+on an unrelated local hostname. To sign in to the same account locally, use **User settings >
+Passkeys > Add passkey > Secondary origin** while signed in on the main origin.
+This registers a separate local-hostname credential on the existing approved account.
 To use the existing account and passkey locally, keep the public HTTPS hostname and
 resolve it to the server's LAN address using local DNS, with a trusted certificate.
 

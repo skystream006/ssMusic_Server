@@ -15,12 +15,12 @@ function userStatements(user) {
       updated_at=excluded.updated_at, organizer_id=excluded.organizer_id`, values: [
     user.id, user.name, user.name.toLowerCase(), user.userHandle, user.role, user.status,
     user.createdAt, user.updatedAt, user.organizerId ?? null
-  ] }, ...user.credentials.map((credential) => ({ credential: true, sql: `INSERT INTO credentials (id, user_id, public_key, counter, transports, created_at, last_used_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(id) DO UPDATE SET
-      public_key=excluded.public_key, counter=excluded.counter, transports=excluded.transports
+  ] }, ...user.credentials.map((credential) => ({ credential: true, sql: `INSERT INTO credentials (id, user_id, public_key, counter, transports, created_at, last_used_at, name)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT(id) DO UPDATE SET
+      public_key=excluded.public_key, counter=excluded.counter, transports=excluded.transports, name=excluded.name
       WHERE credentials.user_id = excluded.user_id`, values: [
       credential.id, user.id, credential.publicKey, credential.counter, JSON.stringify(credential.transports || []),
-      credential.createdAt ?? null, credential.lastUsedAt ?? null
+      credential.createdAt ?? null, credential.lastUsedAt ?? null, credential.name ?? null
   ] }))];
 }
 
@@ -37,7 +37,7 @@ export async function readUser(database, id) {
   if (!user) return null;
   user.sharedUserIds = (await database.prepare('SELECT owner_id FROM library_shares WHERE viewer_id = $1 ORDER BY owner_id')
     .all(id)).map((row) => row.owner_id);
-  user.credentials = (await database.prepare(`SELECT id, public_key AS "publicKey", counter, transports,
+  user.credentials = (await database.prepare(`SELECT id, name, public_key AS "publicKey", counter, transports,
     created_at AS "createdAt", last_used_at AS "lastUsedAt"
     FROM credentials WHERE user_id = $1`).all(id)).map((credential) => ({
     ...credential, transports: JSON.parse(credential.transports)

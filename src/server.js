@@ -871,7 +871,7 @@ app.get('/health', (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));
 });
 
-app.get('/app-login', (_req, res) => {
+app.get(['/app-login', '/passkey-enrollment'], (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.set('Referrer-Policy', 'no-referrer');
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'));

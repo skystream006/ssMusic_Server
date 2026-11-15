@@ -335,13 +335,55 @@ test('passkey deletion is account-scoped, preserves the final key, and persists'
   assert.equal((await reloaded.listUsers()).length, 2);
 });
 
+test('passkey names persist, normalize, and stay scoped to the credential owner', async (context) => {
+  const store = await loadStore(context);
+  const admin = await store.registerUser('Admin', 'admin-handle', { ...credential('admin-key'), name: '  My   laptop  ' });
+  const other = await store.registerUser('Listener', 'listener-handle', credential('listener-key'));
+  await store.updateUser(other.id, { status: 'approved' }, admin.id);
+  await store.addCredential(admin.id, { ...credential('backup-key'), name: 'Security key' });
+  assert.equal((await store.getUserPasskeys(admin.id)).credentials.find(({ id }) => id === 'admin-key').name, 'My laptop');
+  const before = (await store.findCredential('admin-key')).credential;
+  assert.equal(await store.renameCredential(other.id, 'admin-key', 'Not mine'), null);
+  assert.equal(await store.renameCredential(admin.id, 'missing', 'Missing'), null);
+  for (const name of [123, {}, [], 'x'.repeat(65)]) {
+    await assert.rejects(store.renameCredential(admin.id, 'admin-key', name), { statusCode: 400 });
+    await assert.rejects(store.addCredential(admin.id, { ...credential('invalid-key'), name }), { statusCode: 400 });
+  }
+  await store.renameCredential(admin.id, 'admin-key', '  Phone   passkey ');
+  assert.equal((await store.findCredential('admin-key')).credential.name, 'Phone passkey');
+  await store.updateCredentialCounter(admin.id, 'admin-key', 1);
+  await store.updateUser(admin.id, { name: 'New Admin' }, admin.id);
+  await closeDatabases();
+  const reloaded = await import(`../src/authStore.js?names=${crypto.randomUUID()}`);
+  const saved = (await reloaded.findCredential('admin-key')).credential;
+  assert.equal(saved.name, 'Phone passkey');
+  assert.deepEqual(saved.publicKey, before.publicKey);
+  assert.equal(saved.createdAt, before.createdAt);
+  assert.equal(saved.counter, 1);
+  assert.equal((await reloaded.getUserPasskeys(admin.id)).credentials.find(({ id }) => id === 'backup-key').name, 'Security key');
+  for (const name of ['', '   ', null]) {
+    await reloaded.renameCredential(admin.id, 'admin-key', name);
+    assert.equal((await reloaded.findCredential('admin-key')).credential.name, null);
+  }
+});
+
+test('startup adds names to existing credentials without changing their keys', async (context) => {
+  const store = await loadStore(context);
+  const admin = await store.registerUser('Admin', 'admin-handle', credential('legacy-key'));
+  await openDatabase().prepare('ALTER TABLE credentials DROP COLUMN name').run();
+  await closeDatabases();
+  const reloaded = await import(`../src/authStore.js?names-migration=${crypto.randomUUID()}`);
+  assert.equal((await reloaded.getUserPasskeys(admin.id)).credentials[0].name, null);
+  assert.deepEqual((await reloaded.findCredential('legacy-key')).credential.publicKey, credential('legacy-key').publicKey);
+});
+
 test('passkey dates track enrollment and approved use independently across reloads', async (testContext) => {
   const store = await loadStore(testContext);
   const createdAt = '2026-09-27T12:00:00.000Z';
   testContext.mock.timers.enable({ apis: ['Date'], now: new Date(createdAt) });
   const admin = await store.registerUser('Admin', 'admin-handle', credential('admin-key'));
   const user = await store.registerUser('Listener', 'listener-handle', credential('listener-key'));
-  const initial = { id: 'listener-key', transports: [], createdAt, lastUsedAt: null };
+  const initial = { id: 'listener-key', name: null, transports: [], createdAt, lastUsedAt: null };
   assert.deepEqual((await store.getUserPasskeys(user.id)).credentials, [initial]);
   await store.updateCredentialCounter(user.id, 'listener-key', 1);
   assert.equal((await store.findCredential('listener-key')).credential.lastUsedAt, null);
@@ -350,7 +392,7 @@ test('passkey dates track enrollment and approved use independently across reloa
   testContext.mock.timers.tick(60_000);
   const added = await store.addCredential(user.id, credential('backup-key'));
   assert.deepEqual((await store.getUserPasskeys(user.id)).credentials, [initial,
-    { id: 'backup-key', transports: [], createdAt: '2026-09-27T12:01:00.000Z', lastUsedAt: null }]);
+    { id: 'backup-key', name: null, transports: [], createdAt: '2026-09-27T12:01:00.000Z', lastUsedAt: null }]);
   assert.equal(added.updatedAt, '2026-09-27T12:01:00.000Z');
   testContext.mock.timers.tick(60_000);
   assert.equal(await store.updateCredentialCounter(user.id, 'listener-key', 2), true);

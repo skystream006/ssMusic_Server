@@ -28,7 +28,9 @@ import {
   listPrivateAccessTokens,
   listUserLinks,
   listUsers,
+  normalizePasskeyName,
   registerUser,
+  renameCredential,
   removeUserLink,
   requestUserLink,
   updateCredentialCounter,
@@ -56,11 +58,7 @@ function getAppAuthorization(body) {
   return { redirectUri: body.redirectUri, codeChallenge: body.codeChallenge, state: body.state };
 }
 
-function getWebAuthnConfig(req) {
-  const client = req.body?.client ?? 'web';
-  if (!['web', 'browser-app'].includes(client)) {
-    throw Object.assign(new Error('Use web passkey login or the browser-app flow'), { statusCode: 400 });
-  }
+function getWebAuthnOrigins(req) {
   const primary = {
     rpID: process.env.PASSKEY_RP_ID || req.hostname,
     origin: process.env.PASSKEY_ORIGIN || `${req.protocol}://${req.get('host')}`
@@ -72,6 +70,15 @@ function getWebAuthnConfig(req) {
   if (Boolean(secondary.rpID) !== Boolean(secondary.origin)) {
     throw Object.assign(new Error('Set both PASSKEY_RP_ID_SECONDARY and PASSKEY_ORIGIN_SECONDARY'), { statusCode: 500 });
   }
+  return { primary, secondary };
+}
+
+function getWebAuthnConfig(req) {
+  const client = req.body?.client ?? 'web';
+  if (!['web', 'browser-app'].includes(client)) {
+    throw Object.assign(new Error('Use web passkey login or the browser-app flow'), { statusCode: 400 });
+  }
+  const { primary, secondary } = getWebAuthnOrigins(req);
   const requestOrigin = req.get('origin') || `${req.protocol}://${req.get('host')}`;
   const { rpID, origin } = secondary.origin && requestOrigin === secondary.origin ? secondary : primary;
   if (net.isIP(rpID)) {
@@ -80,6 +87,52 @@ function getWebAuthnConfig(req) {
     throw error;
   }
   return { rpID, origin };
+}
+
+function requireEnrollmentOrigin(req, secondaryOnly = false) {
+  const { primary, secondary } = getWebAuthnOrigins(req);
+  const origin = req.get('origin');
+  if (!origin || origin !== `${req.protocol}://${req.get('host')}`
+    || (secondaryOnly ? origin !== secondary.origin : ![primary.origin, secondary.origin].includes(origin))) {
+    throw Object.assign(new Error('Passkey enrollment is not allowed on this origin'), { statusCode: 403 });
+  }
+  return getWebAuthnConfig(req);
+}
+
+async function additionalPasskeyOptions(user, config) {
+  const { userHandle, credentials } = await getUserPasskeys(user.id);
+  return generateRegistrationOptions({
+    rpName: 'ssMusic',
+    rpID: config.rpID,
+    userName: user.name,
+    userDisplayName: user.name,
+    userID: Buffer.from(userHandle, 'base64url'),
+    excludeCredentials: credentials.map(({ id, transports }) => ({ id, transports })),
+    attestationType: 'none',
+    authenticatorSelection: { residentKey: 'required', userVerification: 'required' }
+  });
+}
+
+async function verifyAdditionalPasskey(challenge, response) {
+  const verification = await verifyRegistrationResponse({
+    response,
+    expectedChallenge: challenge.challenge,
+    expectedOrigin: challenge.origin,
+    expectedRPID: challenge.rpID,
+    requireUserVerification: true
+  });
+  if (!verification.verified || !verification.registrationInfo) {
+    throw Object.assign(new Error('Passkey registration could not be verified'), { statusCode: 400 });
+  }
+  return addCredential(challenge.userId, { ...verification.registrationInfo.credential, name: challenge.passkeyName });
+}
+
+async function enrollmentUser(grant) {
+  const user = await getSessionUser(grant.sessionToken);
+  if (!user || user.id !== grant.userId || user.updatedAt !== grant.userUpdatedAt || user.role === 'shared') {
+    throw Object.assign(new Error('Account access changed or the original session ended. Start Add passkey again.'), { statusCode: 403 });
+  }
+  return user;
 }
 
 function pruneChallenges() {
@@ -332,6 +385,7 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
         return res.status(400).json({ error: 'Name must be between 2 and 64 characters' });
       }
       const account = await validateRegistrationAccount({ role: req.body?.role, organizerId: req.body?.organizerId });
+      const passkeyName = normalizePasskeyName(req.body?.passkeyName);
       const userHandle = crypto.randomBytes(32);
       const { rpID, origin } = getWebAuthnConfig(req);
       const options = await generateRegistrationOptions({
@@ -351,6 +405,7 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
         challenge: options.challenge,
         name,
         account,
+        passkeyName,
         userHandle: userHandle.toString('base64url'),
         rpID,
         origin
@@ -365,6 +420,64 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
     return res.json({ user: req.user, passkeys: (await getUserPasskeys(req.user.id)).credentials });
   });
 
+  app.get('/api/auth/passkeys/origins', requireSession, (req, res) => {
+    try {
+      const { primary, secondary } = getWebAuthnOrigins(req);
+      return res.json({ primary: primary.origin, secondary: secondary.origin || null });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.post('/api/auth/passkeys/secondary', requireSession, registrationOptionsLimiter, (req, res) => {
+    try {
+      requireEnrollmentOrigin(req);
+      const { secondary } = getWebAuthnOrigins(req);
+      if (!secondary.origin) return res.status(400).json({ error: 'Secondary passkey origin is not configured' });
+      if (req.user.role === 'shared') return res.status(403).json({ error: 'Shared accounts cannot add passkeys' });
+      const target = new URL(secondary.origin);
+      if (target.origin !== secondary.origin || target.protocol !== 'https:' || net.isIP(secondary.rpID)) {
+        return res.status(500).json({ error: 'Secondary passkeys require an HTTPS origin and a hostname RP ID' });
+      }
+      const token = rememberChallenge({
+        type: 'secondary-enrollment',
+        passkeyName: normalizePasskeyName(req.body?.name),
+        userId: req.user.id,
+        userUpdatedAt: req.user.updatedAt,
+        sessionToken: getSessionToken(req),
+        ...secondary
+      }, req.ip);
+      return res.status(201).json({ url: `${secondary.origin}/passkey-enrollment#${token}` });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.post('/api/auth/passkeys/secondary/options', registrationOptionsLimiter, async (req, res) => {
+    try {
+      const config = requireEnrollmentOrigin(req, true);
+      const grant = takeChallenge(req.body?.token, 'secondary-enrollment');
+      if (grant.origin !== config.origin || grant.rpID !== config.rpID) {
+        return res.status(403).json({ error: 'The secondary passkey configuration changed. Start Add passkey again.' });
+      }
+      const user = await enrollmentUser(grant);
+      const options = await additionalPasskeyOptions(user, config);
+      const requestId = rememberChallenge({
+        ...grant, type: 'secondary-passkey', challenge: options.challenge
+      }, req.ip, grant.expiresAt - Date.now());
+      return res.json({ requestId, options });
+    } catch (error) { return sendError(res, error); }
+  });
+
+  app.post('/api/auth/passkeys/secondary/verify', registrationVerifyLimiter, async (req, res) => {
+    try {
+      const config = requireEnrollmentOrigin(req, true);
+      const challenge = takeChallenge(req.body?.requestId, 'secondary-passkey');
+      if (challenge.origin !== config.origin || challenge.rpID !== config.rpID) {
+        return res.status(403).json({ error: 'The secondary passkey configuration changed. Start Add passkey again.' });
+      }
+      await enrollmentUser(challenge);
+      await verifyAdditionalPasskey(challenge, req.body?.response);
+      return res.status(201).json({ added: true });
+    } catch (error) { return sendError(res, error); }
+  });
+
   app.delete('/api/auth/passkeys/:credentialId', requireSession, async (req, res) => {
     try {
       const user = await deleteCredential(req.user.id, req.params.credentialId);
@@ -375,30 +488,30 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
     }
   });
 
+  app.patch('/api/auth/passkeys/:credentialId', requireSession, async (req, res) => {
+    try {
+      if (!req.body || !Object.hasOwn(req.body, 'name') || Object.keys(req.body).length !== 1) {
+        return res.status(400).json({ error: 'Only a passkey name may be changed here' });
+      }
+      const user = await renameCredential(req.user.id, req.params.credentialId, req.body.name);
+      if (!user) return res.status(404).json({ error: 'Passkey not found' });
+      return res.json({ user, passkeys: (await getUserPasskeys(user.id)).credentials });
+    } catch (error) { return sendError(res, error); }
+  });
+
   app.post('/api/auth/passkeys/options', requireSession, registrationOptionsLimiter, async (req, res) => {
     try {
       if (req.body?.client && req.body.client !== 'web') {
         return res.status(400).json({ error: 'Add passkeys in the web UI' });
       }
-      const { userHandle, credentials } = (await getUserPasskeys(req.user.id));
+      const passkeyName = normalizePasskeyName(req.body?.name);
       const { rpID, origin } = getWebAuthnConfig(req);
-      const options = await generateRegistrationOptions({
-        rpName: 'ssMusic',
-        rpID,
-        userName: req.user.name,
-        userDisplayName: req.user.name,
-        userID: Buffer.from(userHandle, 'base64url'),
-        excludeCredentials: credentials.map(({ id, transports }) => ({ id, transports })),
-        attestationType: 'none',
-        authenticatorSelection: {
-          residentKey: 'required',
-          userVerification: 'required'
-        }
-      });
+      const options = await additionalPasskeyOptions(req.user, { rpID, origin });
       const requestId = rememberChallenge({
         type: 'additional-passkey',
         challenge: options.challenge,
         userId: req.user.id,
+        passkeyName,
         rpID,
         origin
       }, req.ip);
@@ -415,17 +528,7 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
       if (challenge.userId !== req.user.id || challenge.rpID !== rpID || challenge.origin !== origin) {
         return res.status(403).json({ error: 'This passkey request belongs to a different account or origin' });
       }
-      const verification = await verifyRegistrationResponse({
-        response: req.body?.response,
-        expectedChallenge: challenge.challenge,
-        expectedOrigin: challenge.origin,
-        expectedRPID: challenge.rpID,
-        requireUserVerification: true
-      });
-      if (!verification.verified || !verification.registrationInfo) {
-        return res.status(400).json({ error: 'Passkey registration could not be verified' });
-      }
-      const user = await addCredential(req.user.id, verification.registrationInfo.credential);
+      const user = await verifyAdditionalPasskey(challenge, req.body?.response);
       return res.status(201).json({ user, passkeys: (await getUserPasskeys(user.id)).credentials });
     } catch (error) {
       return sendError(res, error);
@@ -448,7 +551,7 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
       const user = await registerUser(
         challenge.name,
         challenge.userHandle,
-        verification.registrationInfo.credential,
+        { ...verification.registrationInfo.credential, name: challenge.passkeyName },
         challenge.account
       );
       if (user.status === 'approved') await issueSession(req, res, user);

@@ -53,6 +53,18 @@ function normalizeName(name) {
   return normalized;
 }
 
+export function normalizePasskeyName(name) {
+  if (name === undefined || name === null) return null;
+  if (typeof name !== 'string') {
+    throw Object.assign(new Error('Passkey name must be text'), { statusCode: 400 });
+  }
+  const normalized = name.trim().replace(/\s+/g, ' ');
+  if (normalized.length > 64) {
+    throw Object.assign(new Error('Passkey name must be at most 64 characters'), { statusCode: 400 });
+  }
+  return normalized || null;
+}
+
 async function countApprovedAdmins(excludingUserId = null) {
   return (await database.prepare("SELECT count(*) AS count FROM users WHERE id IS DISTINCT FROM $1 AND role = 'admin' AND status = 'approved'")
     .get(excludingUserId)).count;
@@ -209,6 +221,7 @@ async function registerUserRecord(name, userHandle, credential, account) {
     status: isFirstUser ? 'approved' : 'pending',
     credentials: [{
       id: credential.id,
+      name: normalizePasskeyName(credential.name),
       publicKey: Buffer.from(credential.publicKey).toString('base64url'),
       counter: credential.counter,
       transports: credential.transports || [],
@@ -226,7 +239,7 @@ export async function getUserPasskeys(userId) {
   const user = (await readUser(database, userId));
   return user ? {
     userHandle: user.userHandle,
-    credentials: user.credentials.map(({ id, transports, createdAt, lastUsedAt }) => ({ id, transports, createdAt, lastUsedAt }))
+    credentials: user.credentials.map(({ id, name, transports, createdAt, lastUsedAt }) => ({ id, name, transports, createdAt, lastUsedAt }))
   } : null;
 }
 
@@ -246,6 +259,7 @@ export async function addCredential(userId, credential) {
     const now = new Date().toISOString();
     user.credentials.push({
       id: credential.id,
+      name: normalizePasskeyName(credential.name),
       publicKey: Buffer.from(credential.publicKey).toString('base64url'),
       counter: credential.counter,
       transports: credential.transports || [],
@@ -268,6 +282,19 @@ export async function updateCredentialCounter(userId, credentialId, counter) {
     (await database.prepare('UPDATE users SET updated_at = $1 WHERE id = $2').run(now, userId));
     return true;
   }));
+}
+
+export async function renameCredential(userId, credentialId, name) {
+  const normalized = normalizePasskeyName(name);
+  return withTransaction(database, async () => {
+    const user = await getUser(userId);
+    if (!canUserLogin(user)) {
+      throw Object.assign(new Error('Approved user required'), { statusCode: 403 });
+    }
+    const result = await database.prepare('UPDATE credentials SET name = $1 WHERE id = $2 AND user_id = $3')
+      .run(normalized, credentialId, userId);
+    return result.changes ? user : null;
+  });
 }
 
 export async function deleteCredential(userId, credentialId) {

@@ -61,6 +61,7 @@ import { LibraryAccessList, LinkedUsers, OrganizedSharedUsers, OrganizerControl,
 import ImportMusic from './ImportMusic.jsx';
 import JobPlaylistDialog from './JobPlaylistDialog.jsx';
 import LiveJobOutput from './LiveJobOutput.jsx';
+import { PasskeyNameForm, PasskeyOriginDialog, SecondaryPasskeyEnrollment } from './PasskeyEnrollment.jsx';
 import { submitJobUrl } from './jobSubmission.js';
 import { jobSortColumns, sortJobs } from './jobSorting.js';
 import { sortSelectOptions } from './selectOptions.js';
@@ -1189,6 +1190,7 @@ function HealthMetrics() {
 
 function LoginPage({ onLogin, appLogin = false }) {
   const [name, setName] = useState('');
+  const [passkeyName, setPasskeyName] = useState('');
   const [password, setPassword] = useState('');
   const [loginMethod, setLoginMethod] = useState(appLogin ? 'passkey' : null);
   const [registrationAccount, setRegistrationAccount] = useState({ role: 'user', organizerId: null });
@@ -1280,7 +1282,7 @@ function LoginPage({ onLogin, appLogin = false }) {
       const ceremony = await request('/api/auth/register/options', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, ...registrationAccount })
+        body: JSON.stringify({ name, passkeyName, ...registrationAccount })
       });
       const response = await startRegistration({ optionsJSON: ceremony.options });
       const result = await request('/api/auth/register/verify', {
@@ -1292,6 +1294,7 @@ function LoginPage({ onLogin, appLogin = false }) {
         onLogin(result.user);
       } else {
         setName('');
+        setPasskeyName('');
         setRegistrationAccount({ role: 'user', organizerId: null });
         setMessage({ type: 'warning', text: 'Passkey registered. An administrator must approve your access before you can log in.' });
       }
@@ -1328,6 +1331,8 @@ function LoginPage({ onLogin, appLogin = false }) {
       <form onSubmit={register}>
         <label htmlFor="registration-name">Display name</label>
         <input id="registration-name" minLength="2" maxLength="64" required value={name} disabled={Boolean(busy)} onChange={(event) => setName(event.target.value)} placeholder="Your name" />
+        <label htmlFor="registration-passkey-name">Passkey name (optional)</label>
+        <input id="registration-passkey-name" maxLength={64} value={passkeyName} disabled={Boolean(busy)} onChange={(event) => setPasskeyName(event.target.value)} placeholder="e.g. Phone or security key" />
         <SharedRegistrationFields account={registrationAccount} onChange={setRegistrationAccount} request={request} disabled={Boolean(busy)} />
         <button className="secondary-button" disabled={Boolean(busy) || (registrationAccount.role === 'shared' && !registrationAccount.organizerId)} type="submit">
           {busy === 'register' ? <RefreshCw className="spin" size={18} /> : <ShieldCheck size={18} />}
@@ -1398,6 +1403,8 @@ function UserSettingsPage({ userId }) {
   const [name, setName] = useState('');
   const [secret, setSecret] = useState(null);
   const [passkeyMessage, setPasskeyMessage] = useState(null);
+  const [passkeyOrigins, setPasskeyOrigins] = useState(null);
+  const [secondaryEnrollment, setSecondaryEnrollment] = useState(false);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const { confirm, dialog } = useConfirmation();
@@ -1425,6 +1432,16 @@ function UserSettingsPage({ userId }) {
 
   useEffect(() => { load(); }, [endpoint]);
 
+  useEffect(() => {
+    if (!secondaryEnrollment) return;
+    const refresh = () => {
+      request('/api/auth/passkeys').then(updatePasskeys)
+        .catch((refreshError) => setPasskeyMessage({ type: 'error', text: refreshError.message }));
+    };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [secondaryEnrollment]);
+
   async function saveAccess(changes) {
     if (busy) return;
     setBusy('access');
@@ -1446,12 +1463,45 @@ function UserSettingsPage({ userId }) {
     setUser((current) => current?.id === result.user.id ? result.user : current);
   }
 
-  async function addPasskey() {
+  async function choosePasskeyOrigin() {
     if (busy) return;
     setBusy('passkey');
     setPasskeyMessage(null);
+    try { setPasskeyOrigins(await request('/api/auth/passkeys/origins')); }
+    catch (originError) { setPasskeyMessage({ type: 'error', text: originError.message }); }
+    finally { setBusy(''); }
+  }
+
+  async function addPasskey(origin, name) {
+    if (busy) return;
+    const origins = passkeyOrigins;
+    setPasskeyOrigins(null);
+    if (origin === 'primary' && window.location.origin !== origins.primary) {
+      window.open(`${origins.primary}/settings`, '_blank', 'noopener,noreferrer');
+      setPasskeyMessage({ type: 'warning', text: 'Continue Add passkey in User settings on the main origin. Sign in there if needed.' });
+      return;
+    }
+    const popup = origin === 'secondary' ? window.open('about:blank', '_blank') : null;
+    if (origin === 'secondary' && !popup) {
+      setPasskeyMessage({ type: 'error', text: 'Allow pop-ups to add a passkey for the secondary origin.' });
+      return;
+    }
+    if (popup) popup.opener = null;
+    setBusy('passkey');
+    setPasskeyMessage(null);
     try {
-      const ceremony = await request('/api/auth/passkeys/options', { method: 'POST' });
+      if (origin === 'secondary') {
+        const result = await request('/api/auth/passkeys/secondary', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
+        });
+        popup.location.replace(result.url);
+        setSecondaryEnrollment(true);
+        setPasskeyMessage({ type: 'warning', text: 'Complete passkey setup in the secondary-origin window, then return here to refresh your passkeys.' });
+        return;
+      }
+      const ceremony = await request('/api/auth/passkeys/options', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
+      });
       const response = await startRegistration({ optionsJSON: ceremony.options });
       const result = await request('/api/auth/passkeys/verify', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1460,6 +1510,7 @@ function UserSettingsPage({ userId }) {
       updatePasskeys(result);
       setPasskeyMessage({ type: 'success', text: 'Passkey added.' });
     } catch (addError) {
+      popup?.close();
       const canceled = addError.name === 'NotAllowedError' || addError.cause?.name === 'NotAllowedError';
       setPasskeyMessage({ type: 'error', text: canceled ? 'Passkey setup was canceled or timed out.' : addError.message });
     } finally {
@@ -1467,10 +1518,25 @@ function UserSettingsPage({ userId }) {
     }
   }
 
+  async function renamePasskey(passkey, name) {
+    if (busy) return;
+    setBusy(`passkey-rename:${passkey.id}`);
+    setPasskeyMessage(null);
+    try {
+      const result = await request(`/api/auth/passkeys/${encodeURIComponent(passkey.id)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
+      });
+      updatePasskeys(result);
+      setPasskeyMessage({ type: 'success', text: 'Passkey name saved.' });
+    } catch (renameError) {
+      setPasskeyMessage({ type: 'error', text: renameError.message });
+    } finally { setBusy(''); }
+  }
+
   async function removePasskey(passkey) {
     if (busy || !await confirm({
       title: 'Delete passkey?',
-      message: `Delete passkey "${passkey.id.slice(0, 12)}"? It will no longer sign in to this account. Existing sessions will remain signed in.`,
+      message: `Delete passkey "${passkey.name || passkey.id.slice(0, 12)}"? It will no longer sign in to this account. Existing sessions will remain signed in.`,
       action: 'delete', label: 'Delete passkey'
     })) return;
     setBusy(`passkey-delete:${passkey.id}`);
@@ -1550,9 +1616,9 @@ function UserSettingsPage({ userId }) {
       {accessSaved && <p className="notice success" role="status">Access saved.</p>}
       {userId && details.role === 'shared' && <SharedLibraryAccess users={libraryUsers} selectedIds={sharedUserIds}
         onChange={(ids) => { setSharedUserIds(ids); setAccessSaved(false); }} onSave={() => saveAccess({ sharedUserIds })} saving={Boolean(busy)} />}
-      {!userId && <section className="passkey-section" aria-labelledby="passkey-heading" aria-busy={busy === 'passkey' || busy.startsWith('passkey-delete:')}>
+      {!userId && <section className="passkey-section" aria-labelledby="passkey-heading" aria-busy={busy === 'passkey' || busy.startsWith('passkey-delete:') || busy.startsWith('passkey-rename:')}>
         <div className="section-title"><div><Fingerprint size={19} /><h2 id="passkey-heading">Passkeys</h2></div>
-          <button className="secondary-button" type="button" onClick={addPasskey} disabled={Boolean(busy)}>
+          <button className="secondary-button" type="button" onClick={choosePasskeyOrigin} disabled={Boolean(busy)}>
             {busy === 'passkey' ? <RefreshCw size={17} className="spin" /> : <Plus size={17} />}
             {busy === 'passkey' ? 'Adding passkey...' : 'Add passkey'}
           </button>
@@ -1560,16 +1626,17 @@ function UserSettingsPage({ userId }) {
         {passkeyMessage && <div className={`notice ${passkeyMessage.type}`} role={passkeyMessage.type === 'error' ? 'alert' : 'status'}>{passkeyMessage.text}</div>}
         <ul className="pat-list passkey-list" aria-label="Registered passkeys">
           {passkeys.map((passkey) => <li key={passkey.id}><Fingerprint size={18} /><div>
-            <strong>Passkey {passkey.id.slice(0, 12)}</strong>
+            <strong>{passkey.name || `Passkey ${passkey.id.slice(0, 12)}`}</strong>
             <code title="Credential ID">{passkey.id}</code>
             <small>{passkey.transports.length ? passkey.transports.join(', ') : 'Transport not reported'}</small>
             <small>Created: {passkey.createdAt ? <time dateTime={passkey.createdAt}>{new Date(passkey.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time> : 'Unknown'}</small>
             <small>Last used: {passkey.lastUsedAt ? <time dateTime={passkey.lastUsedAt}>{new Date(passkey.lastUsedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</time> : passkey.createdAt ? 'Never' : 'Unknown'}</small>
             {passkeys.length === 1 && <small>Last passkey</small>}
+            <PasskeyNameForm passkey={passkey} onSave={renamePasskey} disabled={Boolean(busy)} />
           </div>
             <button className="danger-button pat-delete" type="button"
-              title={passkeys.length <= 1 ? 'At least one passkey is required' : `Delete passkey ${passkey.id.slice(0, 12)}`}
-              aria-label={`Delete passkey ${passkey.id.slice(0, 12)}`} disabled={Boolean(busy) || passkeys.length <= 1}
+              title={passkeys.length <= 1 ? 'At least one passkey is required' : `Delete passkey ${passkey.name || passkey.id.slice(0, 12)}`}
+              aria-label={`Delete passkey ${passkey.name || passkey.id.slice(0, 12)}`} disabled={Boolean(busy) || passkeys.length <= 1}
               onClick={() => removePasskey(passkey)}>
               {busy === `passkey-delete:${passkey.id}` ? <RefreshCw size={17} className="spin" /> : <Trash2 size={17} />}
             </button>
@@ -1595,6 +1662,7 @@ function UserSettingsPage({ userId }) {
       </section>
     </div>}
     {secret && <PatDialog pat={secret} onClose={() => setSecret(null)} />}
+    {passkeyOrigins && <PasskeyOriginDialog origins={passkeyOrigins} onChoose={addPasskey} onClose={() => setPasskeyOrigins(null)} />}
     {dialog}
   </AppShell>;
 }
@@ -1884,4 +1952,5 @@ const publicMediaMatch = window.location.pathname.match(/^\/share\/([^/]+)\/?$/)
 createRoot(document.getElementById('root')).render(<StrictMode>{publicPlaylistMatch
   ? <PublicPlaylist key={publicPlaylistMatch[1]} token={publicPlaylistMatch[1]} request={request} /> : publicMediaMatch
   ? <PublicMedia token={publicMediaMatch[1]} request={request} />
+  : window.location.pathname === '/passkey-enrollment' ? <SecondaryPasskeyEnrollment request={request} />
   : window.location.pathname === '/app-login' ? <LoginPage appLogin /> : <App />}</StrictMode>);
