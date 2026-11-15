@@ -221,6 +221,60 @@ test('PAT HTTP lifecycle and user/admin authorization', async (context) => {
   });
   await context.test('LAN password login requires the configured direct HTTPS address and creates an Admin session',
     (subcontext) => testLanPasswordLogin(subcontext, admin));
+  await context.test('tertiary certificate downloads require a session and expose only a public certificate', async (subcontext) => {
+    const keys = ['PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY', 'PASSKEY_RP_ID_TERTIARY', 'PASSKEY_ORIGIN_TERTIARY', 'HTTPS_CERT_PATH'];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    subcontext.after(() => {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    });
+    const endpoint = '/api/auth/passkeys/tertiary/certificate';
+    const pat = await store.createPrivateAccessToken(user.id, 'No certificate access');
+    for (const headers of [{}, { 'X-PAT': pat.token }]) {
+      assert.equal((await call(endpoint, 'GET', headers)).status, 401);
+    }
+    await store.deletePrivateAccessToken(user.id, pat.id);
+    assert.equal((await call(endpoint, 'GET', userHeaders)).status, 404);
+    process.env.PASSKEY_RP_ID_TERTIARY = 'third.example.com';
+    process.env.PASSKEY_ORIGIN_TERTIARY = 'https://third.example.com';
+    const certificate = await selfsigned.generate([{ name: 'commonName', value: 'third.example.com' }], { keySize: 2048 });
+    const certPath = path.resolve('data', 'tls', 'server-tertiary-cert.pem');
+    const files = new Map([[certPath, `${certificate.cert}\n${certificate.private}`]]);
+    const readFile = fs.readFile.bind(fs);
+    subcontext.mock.method(fs, 'readFile', async (file, ...args) => {
+      if (files.has(file)) {
+        const content = files.get(file);
+        if (content instanceof Error) throw content;
+        return content;
+      }
+      return readFile(file, ...args);
+    });
+    const expected = new crypto.X509Certificate(certificate.cert);
+    for (const headers of [userHeaders, { Authorization: `Bearer ${userSession.token}` }]) {
+      const response = await call(endpoint, 'GET', headers);
+      assert.equal(response.status, 200);
+      assert.match(response.headers.get('content-disposition'), /attachment; filename="ssmusic-tertiary\.crt"/);
+      assert.match(response.headers.get('content-type'), /^application\/x-x509-ca-cert/);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      const pem = await response.text();
+      assert.equal(new crypto.X509Certificate(pem).fingerprint256, expected.fingerprint256);
+      assert.doesNotMatch(pem, /PRIVATE KEY/);
+    }
+    files.set(certPath, Object.assign(new Error('Missing certificate'), { code: 'ENOENT' }));
+    const missing = await call(endpoint, 'GET', userHeaders);
+    assert.equal(missing.status, 503);
+    assert.match((await missing.json()).error, /certificate is unavailable/);
+    files.set(certPath, 'invalid certificate');
+    assert.equal((await call(endpoint, 'GET', userHeaders)).status, 500);
+    process.env.HTTPS_CERT_PATH = 'custom-cert.pem';
+    files.set(path.resolve('custom-cert.pem'), certificate.cert);
+    const custom = await call(endpoint, 'GET', userHeaders);
+    assert.equal(custom.status, 200);
+    assert.equal(new crypto.X509Certificate(await custom.text()).fingerprint256, expected.fingerprint256);
+  });
   await context.test('ExtServer accounts reject retained passkeys, cookie/Bearer sessions and PAT login', async (subcontext) => {
     const envKeys = ['PASSKEY_RP_ID', 'PASSKEY_ORIGIN', 'PASSKEY_RP_ID_SECONDARY', 'PASSKEY_ORIGIN_SECONDARY'];
     const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));

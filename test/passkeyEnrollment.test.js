@@ -27,6 +27,7 @@ test('passkey chooser offers all origins and disables unconfigured additional or
   assert.match(configured, /Main: https:\/\/music.example.com/);
   assert.match(configured, /Secondary: https:\/\/local.example.com:4123/);
   assert.match(configured, /Tertiary: https:\/\/third.example.com:4123/);
+  assert.match(configured, /<a href="\/api\/auth\/passkeys\/tertiary\/certificate" download="ssmusic-tertiary.crt">Download tertiary certificate \(\.crt\)<\/a>/);
   assert.match(configured, /<button[^>]*>Main origin<\/button>/);
   assert.match(configured, /<button[^>]*>Secondary origin<\/button>/);
   assert.match(configured, /<button[^>]*>Tertiary origin<\/button>/);
@@ -34,9 +35,11 @@ test('passkey chooser offers all origins and disables unconfigured additional or
   assert.match(render(null), /not configured/);
   assert.match(render(null), /<button[^>]*disabled=""[^>]*>Secondary origin<\/button>/);
   assert.match(render(null), /<button[^>]*disabled=""[^>]*>Tertiary origin<\/button>/);
+  assert.doesNotMatch(render('https://local.example.com:4123', null), /Download tertiary certificate/);
   const tertiaryOnly = render(null, 'https://third.example.com:4123');
   assert.match(tertiaryOnly, /<button[^>]*disabled=""[^>]*>Secondary origin<\/button>/);
   assert.match(tertiaryOnly, /<button(?![^>]*disabled)[^>]*>Tertiary origin<\/button>/);
+  assert.match(tertiaryOnly, /Download tertiary certificate/);
 });
 
 test('existing passkey names can be edited without exposing key material', () => {

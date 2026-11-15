@@ -1491,6 +1491,12 @@ certificate. Choose **Create passkey** in the new window, then return to setting
 the passkey list refreshes when the original window regains focus. If already on the
 secondary or tertiary origin, choosing main opens main-origin settings (sign in there if needed).
 Each additional-origin choice is disabled when that origin is not configured.
+When tertiary is configured, the dialog also offers **Download tertiary certificate (.crt)**.
+Download it from the signed-in origin and import it into your device's trust store before
+opening the tertiary origin. The file is PEM-encoded and contains only the public certificate,
+never a private key. Only install it if you trust this server. Custom-certificate deployments
+download their configured server certificate; HTTPS-terminating proxies may present a
+different certificate that must be obtained from the proxy administrator.
 
 Give each passkey an optional name (up to 64 characters) during registration or in
 the **Add passkey** dialog, including secondary- and tertiary-origin enrollment. Names are saved
@@ -1533,6 +1539,10 @@ Passkey management requires a passkey session, not a PAT:
     credentials are rejected.
 - `GET /api/auth/passkeys/origins` returns `{ "primary": "...", "secondary": "...", "tertiary": "..." }`;
     `secondary` and `tertiary` are independently `null` when not configured.
+- `GET /api/auth/passkeys/tertiary/certificate` requires a cookie or Bearer session
+    (not a PAT) and downloads the public tertiary certificate as `ssmusic-tertiary.crt`.
+    It returns `404` when tertiary is not configured or `503` when the certificate
+    file is unavailable.
 - `POST /api/auth/passkeys/secondary` requires the initiating user's cookie or Bearer
     session and an exact configured browser origin. It accepts an optional
     `{ "name": "Local phone" }` bound to the handoff. It returns a secondary-origin

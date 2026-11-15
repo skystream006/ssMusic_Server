@@ -38,6 +38,7 @@ import {
   updateUser,
   validateRegistrationAccount
 } from './authStore.js';
+import { readTertiaryCertificate } from './tls.js';
 
 const challenges = new Map();
 const challengeLifetimeMs = 5 * 60 * 1000;
@@ -430,6 +431,21 @@ export function registerAuthRoutes(app, limiters = {}, getMediaUsage = () => nul
       const { primary, secondary, tertiary } = getWebAuthnOrigins(req);
       return res.json({ primary: primary.origin, secondary: secondary.origin || null, tertiary: tertiary.origin || null });
     } catch (error) { return sendError(res, error); }
+  });
+
+  app.get('/api/auth/passkeys/tertiary/certificate', requireSession, async (req, res) => {
+    try {
+      if (!getWebAuthnOrigins(req).tertiary.origin) {
+        return res.status(404).json({ error: 'Tertiary passkey origin is not configured' });
+      }
+      const certificate = await readTertiaryCertificate();
+      return res.attachment('ssmusic-tertiary.crt').type('application/x-x509-ca-cert').send(certificate);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return res.status(503).json({ error: 'Tertiary HTTPS certificate is unavailable. Restart the server to load or generate it.' });
+      }
+      return res.status(error.statusCode || 500).json({ error: error.message });
+    }
   });
 
   for (const name of ['secondary', 'tertiary']) {

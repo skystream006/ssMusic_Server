@@ -19,6 +19,10 @@ export function PasskeyOriginDialog({ origins, onChoose, onClose }) {
     <p>Main: {origins.primary}</p>
     <p>{origins.secondary ? `Secondary: ${origins.secondary}` : 'Secondary origin is not configured.'}</p>
     <p>{origins.tertiary ? `Tertiary: ${origins.tertiary}` : 'Tertiary origin is not configured.'}</p>
+    {origins.tertiary && <p>
+      <a href="/api/auth/passkeys/tertiary/certificate" download="ssmusic-tertiary.crt">Download tertiary certificate (.crt)</a>
+      {' '}to import into your device's trust store. Only install it if you trust this server.
+    </p>}
     <p>Secondary and tertiary origins open in another window and add a passkey to this account without another login.</p>
     <label htmlFor={`${titleId}-name`}>Passkey name (optional)</label>
     <input id={`${titleId}-name`} maxLength={64} value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Phone or security key" />

@@ -14,6 +14,13 @@ function subjectAltName(value) {
   return net.isIP(value) ? { type: 7, ip: value } : { type: 2, value };
 }
 
+export async function readTertiaryCertificate() {
+  const certPath = process.env.HTTPS_CERT_PATH
+    ? path.resolve(process.env.HTTPS_CERT_PATH)
+    : path.resolve(process.cwd(), 'data', 'tls', 'server-tertiary-cert.pem');
+  return new X509Certificate(await fs.readFile(certPath)).toString();
+}
+
 export async function loadHttpsOptions() {
   const configuredKeyPath = process.env.HTTPS_KEY_PATH;
   const configuredCertPath = process.env.HTTPS_CERT_PATH;
