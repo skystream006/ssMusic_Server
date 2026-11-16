@@ -187,7 +187,12 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       const url = `${route}?format=hls&userId=${users.Owner.id}`;
       assert.equal((await call(url, {})).status, 401);
       let response = await call(url);
-      for (let attempt = 0; response.status === 202 && attempt < 50; attempt++) {
+      if (response.body?.status === 'original') {
+        const original = await call(response.body.streamUrl, { ...headers.Owner, Range: 'bytes=0-4' });
+        assert.equal(original.status, 206, original.text);
+        assert.equal(original.buffer.length, 5);
+      }
+      for (let attempt = 0; response.body?.status === 'original' && attempt < 50; attempt++) {
         await delay(100);
         response = await call(url);
       }
@@ -252,6 +257,37 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
     }
     assert.equal((await call(route, headers.Owner, 'HEAD')).status, 200);
     assert.deepEqual(await fs.readFile(sourcePath), original);
+  });
+
+  await context.test('video cache settings are admin-only, validated, persistent and switch playback to originals', async (subcontext) => {
+    const route = '/api/admin/settings/video-cache';
+    subcontext.after(() => call(route, headers.Admin, 'PUT', { videoCacheEnabled: true }));
+    assert.equal((await call(route, {})).status, 401);
+    for (const auth of [headers.Owner, headers.Reader, keyHeaders]) {
+      assert.equal((await call(route, auth)).status, 403);
+      assert.equal((await call(route, auth, 'PUT', { videoCacheEnabled: false })).status, 403);
+    }
+    assert.deepEqual((await call(route, headers.Admin)).body, { videoCacheEnabled: true });
+    for (const videoCacheEnabled of ['false', null, 0, undefined]) {
+      assert.equal((await call(route, headers.Admin, 'PUT', { videoCacheEnabled })).status, 400);
+    }
+    const disabled = await call(route, headers.Admin, 'PUT', { videoCacheEnabled: false });
+    assert.equal(disabled.status, 200, disabled.text);
+    assert.equal(disabled.headers['cache-control'], 'no-store');
+    await stop();
+    await start();
+    assert.deepEqual((await call(route, headers.Admin)).body, { videoCacheEnabled: false });
+    const streamRoute = `/api/jobs/playlist/stream/clip.mp4?userId=${users.Owner.id}`;
+    const playback = await call(`${streamRoute}&format=hls`);
+    assert.equal(playback.status, 200, playback.text);
+    assert.deepEqual(playback.body, { status: 'disabled', streamUrl: streamRoute });
+    const original = await call(playback.body.streamUrl, { ...headers.Owner, Range: 'bytes=0-4' });
+    assert.equal(original.status, 206, original.text);
+    assert.equal(original.buffer.length, 5);
+    assert.equal((await call(`${streamRoute}&format=hls`, {})).status, 401);
+    const enabled = await call(route, headers.Admin, 'PUT', { videoCacheEnabled: true });
+    assert.equal(enabled.status, 200, enabled.text);
+    assert.deepEqual((await call(route, headers.Admin)).body, { videoCacheEnabled: true });
   });
 
   await context.test('application privacy settings are admin-only, persistent and enforced across privacy routes', async (subcontext) => {

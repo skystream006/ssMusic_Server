@@ -51,6 +51,125 @@ test('HLS cache deduplicates generation, survives restarts, invalidates replacem
   assert.equal(encodes, 2);
 });
 
+test('disabling caching blocks cached reads and queued conversions while preserving reusable files', async (context) => {
+  const { source, directory, root } = await fixture(context);
+  let enabled = true;
+  let encodes = 0;
+  const gate = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  const cache = createVideoCache({ root, isEnabled: async () => enabled, async encode(input, output) {
+    encodes++;
+    started.resolve();
+    await gate.promise;
+    await fakeEncode(input, output);
+  } });
+  context.mock.method(console, 'error', () => {});
+  const first = await cache.acquire(source);
+  await started.promise;
+  const other = path.join(directory, 'Other.mp4');
+  await fs.writeFile(other, 'other');
+  const queued = await cache.acquire(other);
+  const rejected = assert.rejects(queued.done, { statusCode: 409 });
+  enabled = false;
+  gate.resolve();
+  await first.done;
+  await rejected;
+  first.release();
+  queued.release();
+  assert.equal(encodes, 1);
+  await assert.rejects(cache.acquire(source), { statusCode: 409 });
+  assert.ok(await fs.stat(first.directory));
+  enabled = true;
+  const restored = await cache.acquire(source);
+  assert.equal(restored.ready, true);
+  restored.release();
+  assert.equal(encodes, 1);
+});
+
+test('disabled HLS responses preserve public scopes and still authorize without accessing the cache', async (context) => {
+  const { source, root } = await fixture(context);
+  const cache = createVideoCache({ root, isEnabled: async () => false,
+    encode: () => { throw new Error('Must not encode'); } });
+  let allowed = true;
+  const app = express();
+  const router = express.Router();
+  router.get('/media/token/stream', async (req, res) => {
+    try {
+      await serveAdaptiveVideo(req, res, async () => {
+        if (!allowed) throw Object.assign(new Error('Revoked'), { statusCode: 404 });
+        return source;
+      }, cache);
+    } catch (error) { res.status(error.statusCode || 500).json({ error: error.message }); }
+  });
+  app.use('/api/public', router);
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/public/media/token/stream?format=hls&userId=owner&v=123&asset=old`;
+  const response = await fetch(url);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  assert.deepEqual(await response.json(), {
+    status: 'disabled', streamUrl: '/api/public/media/token/stream?userId=owner&v=123'
+  });
+  await assert.rejects(fs.stat(root), { code: 'ENOENT' });
+  allowed = false;
+  assert.equal((await fetch(url)).status, 404);
+});
+
+test('cache misses immediately play originals while one background encode runs, including with a busy queue', async (context) => {
+  const { source, directory, root } = await fixture(context);
+  const other = path.join(directory, 'Other.mp4');
+  await fs.writeFile(other, 'other video');
+  const gate = Promise.withResolvers();
+  let encodes = 0;
+  const cache = createVideoCache({ root, maxPending: 1, async encode(input, output) {
+    encodes++;
+    await gate.promise;
+    await fakeEncode(input, output);
+  } });
+  const errors = [];
+  context.mock.method(console, 'error', (...args) => errors.push(args.join(' ')));
+  let allowed = true;
+  const app = express();
+  app.get('/stream', async (req, res) => {
+    try {
+      await serveAdaptiveVideo(req, res, async () => {
+        if (!allowed) throw Object.assign(new Error('Revoked'), { statusCode: 404 });
+        return req.query.other ? other : source;
+      }, cache);
+    } catch (error) { res.status(error.statusCode || 500).json({ error: error.message }); }
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/stream?format=hls&userId=owner`;
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { status: 'original', streamUrl: '/stream?userId=owner' });
+    }
+    const busy = await fetch(`${url}&other=1`, { signal: AbortSignal.timeout(2000) });
+    assert.equal(busy.status, 200);
+    assert.deepEqual(await busy.json(), { status: 'original', streamUrl: '/stream?userId=owner&other=1' });
+    assert.match(errors.join('\n'), /Video preparation is busy/);
+    assert.equal(encodes, 1);
+    assert.equal((await cache.getStatus()).preparing, 1);
+    allowed = false;
+    assert.equal((await fetch(url)).status, 404);
+  } finally {
+    gate.resolve();
+    await prepare(cache, source);
+  }
+  allowed = true;
+  const cached = await fetch(url);
+  assert.equal(cached.status, 200);
+  assert.match(cached.headers.get('content-type'), /mpegurl/);
+  assert.match(await cached.text(), /#EXTM3U/);
+  assert.equal(encodes, 1);
+});
+
 test('seven-day inactivity is persisted, refreshed by reads, and cleanup protects active requests', async (context) => {
   const { source, root } = await fixture(context);
   let time = Date.now();
@@ -105,6 +224,11 @@ test('generation is serialized and bounded; failed output is removed and can be 
   } });
   await assert.rejects(prepare(failing, source), /Encoder failed/);
   assert.deepEqual(await fs.readdir(failingRoot), []);
+  const fallback = await failing.acquire(source, { background: true });
+  assert.equal(fallback.ready, false);
+  assert.match(fallback.error.message, /Encoder failed/);
+  fallback.release();
+  await assert.rejects(prepare(failing, source), /Encoder failed/);
   await assert.rejects(failing.acquire(source), /Encoder failed/);
   fail = false;
   await prepare(failing, source);
@@ -203,7 +327,10 @@ test('HLS manifests retain scoped URLs; all segments reauthorize, support HEAD/r
   const origin = `http://127.0.0.1:${server.address().port}`;
   const url = `${origin}/api/public/media/token/stream?format=hls&userId=owner&v=123`;
   const first = await fetch(url);
-  assert.equal(first.status, 202);
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), {
+    status: 'original', streamUrl: '/api/public/media/token/stream?userId=owner&v=123'
+  });
   await prepare(cache, source);
   const master = await fetch(url);
   assert.equal(master.headers.get('cache-control'), 'private, no-store');

@@ -15,7 +15,7 @@ import { readSongMetadata, readSongSummary } from './music.js';
 import { readSongVideo, songVideoMetadata } from './songVideos.js';
 import { readSongThumbnail } from './artworkThumbnails.js';
 import { createMediaStreamHandler } from './audioCompatibility.js';
-import { startVideoCacheMaintenance, videoCache } from './videoCache.js';
+import { getVideoCacheSettings, setVideoCacheSettings, startVideoCacheMaintenance, videoCache } from './videoCache.js';
 import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
 import { findNoVocals, individualPlaylistId, orderFiles, reconcileLibrary, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setLibraryPlaylistPrivacy, setTheme, transferLibrarySongs } from './libraryStore.js';
@@ -167,6 +167,18 @@ app.put('/api/admin/settings/privacy', requireAdmin, async (req, res) => {
   res.set('Cache-Control', 'no-store');
   try {
     res.json(await setPrivacySettings(openDatabase(), req.body?.privateItemsEnabled));
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+app.get('/api/admin/settings/video-cache', requireAdmin, async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(await getVideoCacheSettings(openDatabase()));
+});
+app.put('/api/admin/settings/video-cache', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json(await setVideoCacheSettings(openDatabase(), req.body?.videoCacheEnabled));
   } catch (error) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }

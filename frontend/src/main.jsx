@@ -56,6 +56,7 @@ import MusicLoading from './MusicLoading.jsx';
 import PublicMedia, { PublicPlaylist } from './PublicMedia.jsx';
 import AdminMediaShares, { AdminArtworkThumbnails } from './AdminMediaShares.jsx';
 import AdminJobQueue from './AdminJobQueue.jsx';
+import AdminVideoCache from './AdminVideoCache.jsx';
 import StatusBadge from './StatusBadge.jsx';
 import SharedLibraries, { SharedLibraryAccess } from './SharedLibraries.jsx';
 import { LibraryAccessList, LinkedUsers, OrganizedSharedUsers, OrganizerControl, SettingsTabs, SharedRegistrationFields, UsernameForm } from './AccountSettings.jsx';
@@ -1745,6 +1746,7 @@ function AdminSettingsPage() {
       {saving && <p className="sr-only" role="status">Saving privacy settings</p>}
       {(error || privacyError) && <p className="notice error" role="alert">{error || privacyError}</p>}
     </section>
+    <AdminVideoCache request={request} />
     <AdminArtworkThumbnails request={request} />
   </AppShell>;
 }

@@ -92,6 +92,13 @@ The source-resolution rendition is re-encoded for browser compatibility, not a
 bit-for-bit copy. Original media and downloads are unchanged. Browsers select
 between renditions automatically according to bandwidth and player size.
 
+Admins can toggle **Enable video caching** under **Admin > Application settings**.
+It is enabled by default and persists across restarts. When disabled, new playback
+uses original video files directly (browser codec compatibility may vary), without
+using cached renditions or starting queued conversions. A conversion already
+running may finish. Existing cache files are kept until their normal expiry;
+re-enabling caching allows them to be reused.
+
 Generated renditions are stored in `data/playback-video`, including in the existing
 Docker data volume. Each video cache expires after **seven days without playback**;
 playlist and segment requests refresh its inactivity clock. Cleanup runs at startup
@@ -100,8 +107,12 @@ Changed source files get a new cache revision. No cache directories are exposed
 statically: every playlist and segment retains the source's authorization or public
 share checks, including share expiry/revocation.
 
-First playback shows **Preparing adaptive video...** until both renditions are
-ready; subsequent playback reuses them across server restarts. One video is encoded
+Uncached videos play the original file immediately while adaptive renditions are
+prepared in the background; browser codec compatibility may vary. Playback stays
+on the original for that session without interruption. Subsequent playback uses
+the adaptive cache once both renditions are ready, including across server restarts.
+A busy queue or failed background conversion does not prevent original playback;
+preparation errors are logged on the server. One video is encoded
 at a time, with a bounded waiting queue. FFmpeg must support `libx264` and AAC;
 native installations use `FFMPEG_PATH` as for audio compatibility. Allow disk space
 for both renditions and temporary generation output: the seven-day policy is not a

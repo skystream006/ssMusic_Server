@@ -48,6 +48,17 @@ export function attachAdaptiveVideo(media, source, { browser = globalThis, onSta
         const detail = await response.json();
         throw new Error(detail.error || `Video preparation failed (${response.status})`);
       }
+      if (response.headers.get('content-type')?.includes('application/json')) {
+        const detail = await response.json();
+        if (!['disabled', 'original'].includes(detail.status) || typeof detail.streamUrl !== 'string' || !detail.streamUrl) {
+          throw new Error('Invalid video playback response');
+        }
+        controller.signal.throwIfAborted();
+        attached = true;
+        media.src = detail.streamUrl;
+        onStatus(false);
+        return;
+      }
       await response.body?.cancel();
       break;
     }

@@ -80,3 +80,36 @@ test('encoder/preparation errors are visible and marked retryable by the playbac
   assert.equal(playback.failed, true);
   playback.destroy();
 });
+
+for (const status of ['disabled', 'original']) {
+  test(`${status} playback uses the scoped original without loading HLS or polling and releases it on cancellation`, async () => {
+    const video = media(false);
+    const statuses = [];
+    const streamUrl = '/api/jobs/job/video/Song.mp3?userId=owner&v=123';
+    let requests = 0;
+    const playback = attachAdaptiveVideo(video, `${streamUrl}&format=hls`, {
+      browser: { fetch: async () => { requests++; return Response.json({ status, streamUrl }); }, clearTimeout, setTimeout },
+      loadHls: () => { throw new Error('HLS must not load'); },
+      onStatus: (value) => statuses.push(value)
+    });
+    await playback.ready;
+    assert.equal(video.src, streamUrl);
+    assert.equal(playback.failed, false);
+    assert.equal(requests, 1);
+    assert.deepEqual(statuses, [true, false]);
+    playback.destroy();
+    assert.equal(video.src, '');
+  });
+}
+
+test('cancellation cannot attach a stale original while background preparation continues', async () => {
+  const gate = Promise.withResolvers();
+  const video = media();
+  const playback = attachAdaptiveVideo(video, '/stream?format=hls', {
+    browser: { fetch: () => gate.promise, clearTimeout, setTimeout }
+  });
+  playback.destroy();
+  gate.resolve(Response.json({ status: 'original', streamUrl: '/stream' }));
+  await playback.ready;
+  assert.equal(video.src, '');
+});

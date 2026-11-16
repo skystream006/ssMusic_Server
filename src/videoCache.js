@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { mediaType } from './media.js';
+import { openDatabase } from './database.js';
 
 const execute = promisify(execFile);
 const retentionMs = 7 * 24 * 60 * 60_000;
@@ -12,6 +13,18 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 const revision = (source, stat) => hash(`hls-480-v1:${source}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`);
 const failure = (message, statusCode) => Object.assign(new Error(message), { statusCode });
 const absent = (error) => { if (error.code !== 'ENOENT') throw error; };
+
+export async function getVideoCacheSettings(database) {
+  const row = await database.prepare("SELECT value FROM job_server_state WHERE key = 'video-cache-enabled'").get();
+  return { videoCacheEnabled: row?.value !== 'false' };
+}
+
+export async function setVideoCacheSettings(database, value) {
+  if (typeof value !== 'boolean') throw failure('videoCacheEnabled must be a boolean', 400);
+  await database.prepare(`INSERT INTO job_server_state (key, value) VALUES ('video-cache-enabled', $1)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(String(value));
+  return { videoCacheEnabled: value };
+}
 
 function executable(name) {
   const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
@@ -81,7 +94,7 @@ export async function encodeAdaptiveVideo(source, directory) {
 }
 
 export function createVideoCache({ root = path.resolve('data', 'playback-video'), encode = encodeAdaptiveVideo,
-  now = Date.now, inactivityMs = retentionMs, maxPending = 8 } = {}) {
+  now = Date.now, inactivityMs = retentionMs, maxPending = 8, isEnabled = async () => true } = {}) {
   const pending = new Map();
   const readers = new Map();
   let tail = Promise.resolve();
@@ -146,7 +159,8 @@ export function createVideoCache({ root = path.resolve('data', 'playback-video')
     return pruning;
   }
 
-  async function acquire(filePath) {
+  async function acquire(filePath, { background = false } = {}) {
+    if (!await isEnabled()) throw failure('Video caching is disabled by an administrator', 409);
     if (mediaType(filePath) !== 'video') throw failure('Adaptive streaming is available for video files only', 400);
     const source = await fs.realpath(filePath);
     const stat = await fs.stat(source);
@@ -170,12 +184,21 @@ export function createVideoCache({ root = path.resolve('data', 'playback-video')
         return { key, directory, ready: true, release };
       }
       let entry = pending.get(key);
-      if (entry?.error) { pending.delete(key); throw entry.error; }
+      if (entry?.error) {
+        pending.delete(key);
+        if (background) return { key, directory, ready: false, error: entry.error, release };
+        throw entry.error;
+      }
       if (!entry) {
-        if (pending.size >= maxPending) throw failure('Video preparation is busy; retry shortly', 429);
+        if (pending.size >= maxPending) {
+          const error = failure('Video preparation is busy; retry shortly', 429);
+          if (background) return { key, directory, ready: false, error, release };
+          throw error;
+        }
         entry = {};
         pending.set(key, entry);
         entry.done = tail.then(async () => {
+          if (!await isEnabled()) throw failure('Video caching is disabled by an administrator', 409);
           await fs.mkdir(root, { recursive: true, mode: 0o700 });
           const temporary = path.join(root, `${randomUUID()}.tmp`);
           await fs.mkdir(temporary, { mode: 0o700 });
@@ -204,10 +227,12 @@ export function createVideoCache({ root = path.resolve('data', 'playback-video')
       return { key, directory, ready: false, done: entry.done, release };
     } catch (error) { release(); throw error; }
   }
-  return { acquire, prune, getStatus };
+  return { acquire, prune, getStatus, isEnabled };
 }
 
-export const videoCache = createVideoCache();
+export const videoCache = createVideoCache({
+  isEnabled: async () => (await getVideoCacheSettings(openDatabase())).videoCacheEnabled
+});
 
 export function startVideoCacheMaintenance() {
   const clean = () => videoCache.prune().catch((error) => console.error('Video cache cleanup:', error.message));
@@ -219,7 +244,19 @@ export function startVideoCacheMaintenance() {
 
 export async function serveAdaptiveVideo(req, res, resolveFile, cache = videoCache) {
   const source = await resolveFile(req);
-  const entry = await cache.acquire(source);
+  const serveOriginal = (status) => {
+    const query = new URLSearchParams(req.originalUrl.split('?')[1] || '');
+    query.delete('format');
+    query.delete('asset');
+    const search = query.toString();
+    res.set('Cache-Control', 'private, no-store');
+    return res.json({ status, streamUrl: `${req.baseUrl}${req.path}${search ? `?${search}` : ''}` });
+  };
+  if (!await cache.isEnabled()) {
+    if (mediaType(source) !== 'video') throw failure('Adaptive streaming is available for video files only', 400);
+    return serveOriginal('disabled');
+  }
+  const entry = await cache.acquire(source, { background: req.query.asset === undefined });
   res.once('finish', entry.release);
   res.once('close', entry.release);
   try {
@@ -232,6 +269,10 @@ export async function serveAdaptiveVideo(req, res, resolveFile, cache = videoCac
     }
     if (asset && !asset.startsWith(`${entry.key}/`)) throw failure('Video changed; reload playback', 409);
     if (!entry.ready) {
+      if (asset === undefined) {
+        if (entry.error) console.error('Background video preparation:', entry.error.message);
+        return serveOriginal('original');
+      }
       res.set('Retry-After', '2');
       return res.status(202).json({ status: 'preparing', message: 'Preparing adaptive video...' });
     }
