@@ -119,8 +119,9 @@ for both renditions and temporary generation output: the seven-day policy is not
 disk-size cap. Browsers use hls.js with MediaSource where supported, and native
 HLS otherwise.
 
-The **Health** page shows current video-cache disk usage, the number of cached
-videos, and preparing/queued conversions. Usage includes both renditions and any
+The **Health** page prominently shows the number of videos with completed caches,
+with current video-cache disk usage and preparing/queued conversions below it.
+Usage includes both renditions and any
 temporary generation files, with temporary bytes also shown separately. Disk
 usage is rescanned at most every 30 seconds; checking health does not refresh
 the cache's playback inactivity clock. The authenticated `GET /api/health`

@@ -1181,8 +1181,9 @@ function HealthMetrics() {
         <Metric icon={<MemoryStick />} label="Memory" value={formatBytes(health.memory.usedBytes)} detail={`${formatBytes(health.memory.totalBytes)} total`} percent={memoryPercent} />
         <Metric icon={<HardDrive />} label="Storage used" value={`${diskPercent.toFixed(1)}%`} detail={`${formatBytes(health.storage.freeBytes)} free of ${formatBytes(health.storage.totalBytes)}`} percent={diskPercent} />
         <Metric icon={<HardDrive />} label="Video cache"
-          value={Number.isFinite(health.videoCache?.totalBytes) ? formatBytes(health.videoCache.totalBytes) : '-'}
-          detail={<>Cached videos: {Number.isInteger(health.videoCache?.totalVideos) ? health.videoCache.totalVideos.toLocaleString() : '-'} (480p + original resolution)<br />
+          value={Number.isInteger(health.videoCache?.totalVideos) ? `${health.videoCache.totalVideos.toLocaleString()} cached ${health.videoCache.totalVideos === 1 ? 'video' : 'videos'}` : '-'}
+          detail={<>Completed caches (480p + original resolution)<br />
+            Cache storage: {Number.isFinite(health.videoCache?.totalBytes) ? formatBytes(health.videoCache.totalBytes) : '-'}<br />
             Preparing/queued: {Number.isInteger(health.videoCache?.preparing) ? health.videoCache.preparing.toLocaleString() : '-'}<br />
             {health.videoCache?.temporaryBytes > 0 && <>Temporary files: {formatBytes(health.videoCache.temporaryBytes)} (included above)<br /></>}
             Expires after 7 days of inactivity<br />
