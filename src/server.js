@@ -18,7 +18,7 @@ import { createMediaStreamHandler } from './audioCompatibility.js';
 import { getVideoCacheSettings, setVideoCacheSettings, startVideoCacheMaintenance, videoCache } from './videoCache.js';
 import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
 import { findNoVocals, individualPlaylistId, orderFiles, reconcileLibrary, songKey } from './library.js';
-import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, setLibrary, setLibraryPlaylistPrivacy, setTheme, transferLibrarySongs } from './libraryStore.js';
+import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, saveLibraryQueue, setLibrary, setLibraryPlaylistPrivacy, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
 import { prepareLibraryExport } from './libraryExport.js';
 import { getImportProgress, handleLibraryImport, listLocalImportFiles, resolveImportUser } from './libraryImport.js';
@@ -130,7 +130,7 @@ app.get(['/share/:token', '/share/playlist/:token'], (_req, res) => {
   res.sendFile(path.resolve(process.cwd(), 'public', 'index.html'), { cacheControl: false });
 });
 app.use('/api/jobs/:id/files/:name/metadata', express.json({ limit: '5mb' }));
-app.use(['/api/library/playlists/move', '/api/library/songs/transfer'], express.json({ limit: '3mb' }));
+app.use(['/api/library/playlists/move', '/api/library/songs/transfer', '/api/library/playlists/:id/queue'], express.json({ limit: '3mb' }));
 app.use(express.json({ limit: '128kb' }));
 app.use(express.static(path.resolve(process.cwd(), 'public')));
 app.use(attachUser);
@@ -371,6 +371,15 @@ app.post('/api/library/playlists', async (req, res) => {
     return res.status(201).json({ job: visibleJob(job, req.user) });
   } catch (error) {
     return res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
+app.post('/api/library/playlists/:id/queue', async (req, res) => {
+  try {
+    res.json(await mutateUserLibrary(req.user, (jobs) => saveLibraryQueue(req.user.id,
+      { ...req.body, playlistId: req.params.id }, jobs)));
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 

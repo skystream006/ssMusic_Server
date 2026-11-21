@@ -5,7 +5,8 @@ import MusicLoading from './MusicLoading.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
 import { getPlaylistIds, jobPlaylistId, songKey } from '../../src/library.js';
-import { submitJobUrl } from './jobSubmission.js';
+import AddPlaylistDialog from './AddPlaylistDialog.jsx';
+export { default as AddPlaylistDialog } from './AddPlaylistDialog.jsx';
 import { canChangePlaylistPrivacy, canChangePrivacy, canEditSong, canManageJob, canModifyJob, getFilePrivacy, formatBytes, MetadataDialog, ReplaceFileDialog, ShareMediaDialog, TranscriptionDialog, useTranscriptionService } from './SongActions.jsx';
 import { allowDrop, leaveDrop } from './touchControls.js';
 import { replaceURL } from './navigation.js';
@@ -216,53 +217,6 @@ export function ExportLibraryDialog({ request, onClose }) {
           disabled={locked || (view === 'export' && (source === 'new' ? running : !latest))}>
           {busy ? <RefreshCw className="spin" size={17} /> : view === 'schedule' ? <Save size={17} /> : <Download size={17} />}
           {view === 'schedule' ? 'Save schedule' : source === 'latest' ? 'Download ZIP' : 'Create export'}</button></div>
-    </form>
-  </dialog>;
-}
-
-export function AddPlaylistDialog({ user, request, confirm, onAdded, onClose }) {
-  const dialogRef = useRef(null);
-  const headingId = useId();
-  const nameId = useId();
-  const urlId = useId();
-  const [name, setName] = useState('');
-  const [url, setUrl] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    const previousFocus = document.activeElement;
-    dialog.showModal();
-    dialog.querySelector('input').focus();
-    return () => { dialog.close(); if (previousFocus?.isConnected) previousFocus.focus(); };
-  }, []);
-
-  async function submit(event) {
-    event.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError('');
-    try {
-      const result = url.trim()
-        ? await submitJobUrl(url, { request, user, confirm, library: true })
-        : await request('/api/library/playlists', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ playlistTitle: name.trim() })
-        });
-      if (result) { await onAdded(result.job); onClose(); }
-    } catch (submitError) { setError(submitError.message); }
-    finally { setBusy(false); }
-  }
-
-  return <dialog ref={dialogRef} className="confirmation-dialog folder-dialog" aria-labelledby={headingId}
-    onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
-    <form onSubmit={submit}>
-      <div className="folder-dialog-heading"><h2 id={headingId}>Add Playlist</h2><button className="music-icon-button" type="button" title="Close" aria-label="Close Add Playlist" disabled={busy} onClick={onClose}><X size={18} /></button></div>
-      <label htmlFor={nameId}>Playlist name</label><input id={nameId} required={!url.trim()} autoFocus maxLength={200} value={name} disabled={busy || Boolean(url.trim())} onChange={(event) => setName(event.target.value)} />
-      <label htmlFor={urlId}>YouTube Music URL (optional)</label><input id={urlId} type="url" value={url} disabled={busy} placeholder="https://music.youtube.com/..." onChange={(event) => setUrl(event.target.value)} />
-      {error && <p className="notice error" role="alert">{error}</p>}
-      <div className="dialog-actions"><button className="secondary-button" type="button" disabled={busy} onClick={onClose}>Cancel</button>
-        <button className="primary-button" type="submit" disabled={busy || (!url.trim() && !name.trim())}>{busy ? <RefreshCw className="spin" size={17} /> : <Plus size={17} />}{busy ? 'Adding...' : 'Add Playlist'}</button></div>
     </form>
   </dialog>;
 }

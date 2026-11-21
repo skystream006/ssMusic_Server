@@ -11,6 +11,12 @@ Explicit playlist and song links take precedence. Playback progress is saved
 every five seconds and when pausing, hiding, or leaving the page. Playback state
 does not sync between browsers and requires available browser storage.
 
+The expanded Queue header's three-dot menu offers **Save As New Playlist**.
+Enter a playlist name and choose a destination folder (or Library root) to save
+the entire queue in its current order, not just the visible page. Source files
+and playback remain unchanged. Repeated tracks are saved once. Shared accounts
+cannot create playlists; unavailable songs produce an error rather than being skipped.
+
 Submitted YouTube links containing a `list` query parameter are normalized to
 `https://music.youtube.com/playlist?list=PLAYLIST_ID` before duplicate detection and
 downloading. Video IDs, tracking parameters, and fragments are discarded for these

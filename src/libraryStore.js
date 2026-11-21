@@ -378,6 +378,31 @@ export async function transferLibrarySongs(userId, value, jobs) {
   }));
 }
 
+export async function saveLibraryQueue(userId, value, jobs) {
+  return withTransaction(openDatabase(), async () => {
+    const current = await getLibrary(userId, jobs);
+    if (!Number.isSafeInteger(value?.version) || value.version < 0) invalid('Invalid library version');
+    if (current.version !== value.version) invalid('Your library changed in another tab. Refresh and try again.', 409);
+    const destination = current.entries.find((entry) => entry.id === value.playlistId && entry.type === 'playlist');
+    if (!destination) invalid('Playlist is no longer available');
+    if (!(value.parentId === null || current.entries.some((entry) => entry.id === value.parentId && entry.type === 'folder'))) {
+      invalid('Destination folder is no longer available');
+    }
+    const available = jobs.flatMap((job) => (job.files || []).filter(isPlayableFile)
+      .filter((name) => canReadFile(job, name, userId)).map((name) => ({ jobId: job.id, name })));
+    const selected = selectedItems(available, value.keys, songKey);
+    const byKey = new Map(selected.map((track) => [songKey(track), track]));
+    const ordered = value.keys.map((key) => byKey.get(key));
+    return setLibrary(userId, {
+      ...current,
+      entries: current.entries.map((entry) => entry.id === destination.id ? { ...entry, parentId: value.parentId } : entry),
+      songAdds: [...current.songAdds.filter((track) => track.playlistId !== destination.id),
+        ...ordered.map((track) => ({ ...track, playlistId: destination.id }))],
+      playlistSongOrder: { ...current.playlistSongOrder, [destination.id]: value.keys }
+    }, jobs);
+  });
+}
+
 export async function reorderLibrarySong(userId, value, jobs) {
   const database = openDatabase();
   return (await withTransaction(database, async () => {

@@ -34,6 +34,7 @@ let formatLyricsForCopy;
 let LyricsEditor;
 let ExportLibraryDialog;
 let AddPlaylistDialog;
+let saveQueuePlaylist;
 let LibraryDestinationDialog;
 let EditPlaylistDialog;
 let FolderDialog;
@@ -82,6 +83,7 @@ before(async () => {
   ({ default: PlayerDisplay, createAudioAnalyser, synchronizeSongVideo, drawCircularWaveform } = await server.ssrLoadModule('/src/PlayerDisplay.jsx'));
   ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, createPlaybackDiagnostics, publishPlaybackPosition, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ default: MusicLibrary, ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
+  ({ saveQueuePlaylist } = await server.ssrLoadModule('/src/AddPlaylistDialog.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
   ({ UsernameForm, LibraryAccessList, SharedRegistrationFields, SettingsTabs, LinkedUsers, OrganizedSharedUsers, OrganizerControl } = await server.ssrLoadModule('/src/AccountSettings.jsx'));
@@ -433,6 +435,54 @@ test('new playlists accept a name without requiring a YouTube URL', () => {
   const urlInput = html.match(/<input[^>]*type="url"[^>]*>/)?.[0];
   assert.ok(urlInput);
   assert.doesNotMatch(urlInput, /required/);
+});
+
+test('queue playlist dialog requests a name and destination folder without a download URL', () => {
+  const html = renderToStaticMarkup(createElement(AddPlaylistDialog, { tracks: [{ jobId: 'job', name: 'Song.mp3' }] }));
+  assert.match(html, />Save As New Playlist<\/h2>/);
+  assert.match(html, /Playlist name/);
+  assert.match(html, /Destination folder/);
+  assert.match(html, /Loading folders/);
+  assert.doesNotMatch(html, /YouTube Music URL/);
+});
+
+test('queue header offers a three-dot save action on wide and narrow layouts and disables unavailable saves', () => {
+  for (const wide of [false, true]) {
+    for (const canSaveQueue of [false, true]) {
+      const html = renderToStaticMarkup(createElement(NowPlayingPanel, { panel: 'queue', wide,
+        onChange() {}, onSaveQueue() {}, canSaveQueue }));
+      assert.match(html, /class="queue-list-header"/);
+      assert.match(html, /aria-label="Actions for Queue"/);
+      const action = html.match(/<button[^>]*title="Save As New Playlist"[^>]*>/)[0];
+      assert.equal(action.includes('disabled=""'), !canSaveQueue);
+      assert.match(action, /aria-haspopup="dialog"/);
+    }
+  }
+});
+
+test('saving the full queue sends ordered unique song identities and uses the latest library version', async () => {
+  const calls = [];
+  const tracks = [
+    { jobId: 'b', name: 'Second.mp3' }, { jobId: 'a', name: 'First.mp3' },
+    { jobId: 'b', name: 'Second.mp3' }, { jobId: 'a', name: '[NoVocals]/First.mp3' }
+  ];
+  const request = async (url, options) => {
+    calls.push({ url, method: options.method, body: JSON.parse(options.body) });
+    return { version: 17 };
+  };
+  await saveQueuePlaylist(request, { id: 'new' }, tracks, 'folder-mixes');
+  assert.deepEqual(calls, [
+    { url: '/api/library/links', method: 'POST', body: { jobId: 'new' } },
+    { url: '/api/library/playlists/new/queue', method: 'POST', body: {
+      version: 17, parentId: 'folder-mixes',
+      keys: ['["b","Second.mp3"]', '["a","First.mp3"]', '["a","[NoVocals]/First.mp3"]']
+    } }
+  ]);
+  const failure = new Error('Your library changed');
+  await assert.rejects(saveQueuePlaylist(async (url) => {
+    if (url.endsWith('/queue')) throw failure;
+    return { version: 18 };
+  }, { id: 'new' }, tracks, null), failure);
 });
 
 test('optimistic song reorders preserve page numbering and other playlists without mutating tracks', () => {

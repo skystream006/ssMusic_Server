@@ -11,6 +11,7 @@ import { createMediaSourcePlayback, getMediaSourceDescriptor } from './mediaSour
 import { adaptiveVideoSource, attachAdaptiveVideo, isAdaptiveVideoSource } from './adaptiveVideo.js';
 import LyricTimeline from './LyricTimeline.jsx';
 import MusicLoading from './MusicLoading.jsx';
+import AddPlaylistDialog from './AddPlaylistDialog.jsx';
 import PlayerDisplay, { createAudioAnalyser } from './PlayerDisplay.jsx';
 import { startVisiblePolling } from './polling.js';
 import { Film, Minimize2 } from 'lucide-react';
@@ -193,7 +194,7 @@ function TrackPagination({ pagination, position, label = 'Track' }) {
   </nav>;
 }
 
-export function NowPlayingPanel({ panel, onChange, expanded = true, wide = false, isVideo = false, player, lyrics, queue }) {
+export function NowPlayingPanel({ panel, onChange, expanded = true, wide = false, isVideo = false, player, lyrics, queue, onSaveQueue, canSaveQueue = false }) {
   const tabsId = useId();
   const activeTab = wide && panel === 'queue' ? 'player' : panel;
   const tabs = [{ id: 'player', label: 'Player', Icon: Disc3 }, { id: 'lyrics', label: 'Lyrics', Icon: Mic2 },
@@ -230,7 +231,13 @@ export function NowPlayingPanel({ panel, onChange, expanded = true, wide = false
       </div>
       <section className="expanded-queue" role={wide ? 'region' : 'tabpanel'} id={`${tabsId}-queue-panel`}
         aria-labelledby={`${tabsId}-queue-${wide ? 'heading' : 'tab'}`} hidden={!wide && activeTab !== 'queue'}>
-        <h2 id={`${tabsId}-queue-heading`}>Queue</h2>
+        <header className="queue-list-header">
+          <h2 id={`${tabsId}-queue-heading`}>Queue</h2>
+          {onSaveQueue && <SongActions name="Queue" className="song-order-actions">
+            <button className="music-icon-button" type="button" title="Save As New Playlist" aria-haspopup="dialog"
+              disabled={!canSaveQueue} onClick={onSaveQueue}><Save size={18} /></button>
+          </SongActions>}
+        </header>
         {queue}
       </section>
     </div>
@@ -1389,6 +1396,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
   const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [editingLyrics, setEditingLyrics] = useState(null);
+  const [savingQueue, setSavingQueue] = useState(null);
   const [{ panel, renderedPanel }, setPanelState] = useState({ panel: null, renderedPanel: null });
   const [widePlayer, setWidePlayer] = useState(false);
   function updatePanel(next) {
@@ -1687,7 +1695,10 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
         </section>
       </div>}
       {dockOnly && <>
+        {savingQueue && createPortal(<AddPlaylistDialog user={user} request={request} tracks={savingQueue}
+          onClose={() => setSavingQueue(null)} />, document.body)}
         {renderedPanel && <NowPlayingPanel panel={renderedPanel} expanded={Boolean(panel)} onChange={setPanel} wide={widePlayer} isVideo={isVideo}
+          onSaveQueue={() => setSavingQueue([...songs])} canSaveQueue={Boolean(songs?.length && user?.role !== 'shared' && !queueLoading)}
           player={<>
             <NowPlayingTrack key={selected} song={song} metadata={metadata} artwork={artwork} request={request} updateMetadata={updateMetadata} mountVideo={mountVideo} mediaSwipeHandlers={mediaSwipeHandlers} displayProps={displayProps} />
             {song && SongActionView && <div className="expanded-player-tools"><SongActionView track={song} request={request} /></div>}

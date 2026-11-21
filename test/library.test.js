@@ -5,7 +5,7 @@ import path from 'node:path';
 import test, { beforeEach } from 'node:test';
 import { closeDatabases, openDatabase, writeJob, writeUser } from '../src/database.js';
 import { getPlaylistIds, getPlaylistTracks, individualSongsId, individualVideosId, orderFiles, songKey, themes } from '../src/library.js';
-import { addLibraryJobFiles, countLibraryFileLinks, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, removeLibrarySongLink, reorderLibrarySong, setLibrary, setTheme, transferLibrarySongs } from '../src/libraryStore.js';
+import { addLibraryJobFiles, countLibraryFileLinks, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, removeLibrarySongLink, reorderLibrarySong, saveLibraryQueue, setLibrary, setTheme, transferLibrarySongs } from '../src/libraryStore.js';
 import { submitJobUrl } from '../frontend/src/jobSubmission.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 
@@ -21,6 +21,49 @@ beforeEach(async (context) => {
   for (const id of ['alice', 'bob']) {
     (await writeUser(openDatabase(), { id, name: id, userHandle: id, role: 'user', status: 'approved', credentials: [],
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+  }
+});
+
+test('saving a mixed queue retains its order, folder and existing library placements', async () => {
+  const available = [...jobs, { id: 'queue', files: [] }];
+  let library = await getLibrary('alice', available);
+  library = await setLibrary('alice', { ...library,
+    entries: [...library.entries, { id: 'folder-mixes', type: 'folder', name: 'Mixes', parentId: null }],
+    songOrder: { jazz: ['Third.mp3', 'First.mp3'] },
+    songAdds: [{ jobId: 'jazz', name: 'First.mp3', playlistId: 'soul' }]
+  }, available);
+  const keys = [songKey({ jobId: 'live', name: 'Live.mp3' }), songKey({ jobId: 'jazz', name: 'Third.mp3' }),
+    songKey({ jobId: 'soul', name: 'Soul.mp3' })];
+  const saved = await saveLibraryQueue('alice', { version: library.version, playlistId: 'queue', parentId: 'folder-mixes', keys }, available);
+  assert.deepEqual(getPlaylistTracks(saved, available).get('queue').map(songKey), keys);
+  assert.equal(saved.entries.find((entry) => entry.id === 'queue').parentId, 'folder-mixes');
+  assert.deepEqual(saved.songOrder, library.songOrder);
+  assert.deepEqual(saved.songMoves, library.songMoves);
+  assert.ok(saved.songAdds.some((track) => track.playlistId === 'soul' && track.name === 'First.mp3'));
+  for (const id of ['jazz', 'soul', 'live']) {
+    assert.deepEqual(getPlaylistTracks(saved, available).get(id), getPlaylistTracks(library, available).get(id));
+  }
+  const reloaded = await getLibrary('alice', available);
+  assert.deepEqual(getPlaylistTracks(reloaded, available).get('queue').map(songKey), keys);
+  const again = await saveLibraryQueue('alice', { version: saved.version, playlistId: 'queue', parentId: null, keys }, available);
+  assert.deepEqual(getPlaylistTracks(again, available).get('queue').map(songKey), keys);
+  assert.equal(again.entries.find((entry) => entry.id === 'queue').parentId, null);
+});
+
+test('saving a queue rejects stale versions, invalid folders and unavailable or duplicate songs without mutations', async () => {
+  const available = [...jobs, { id: 'queue', files: [] },
+    { id: 'private', files: ['Secret.mp3'], private: true, initiatedBy: { id: 'bob' } }];
+  const library = await getLibrary('alice', available);
+  const key = songKey({ jobId: 'jazz', name: 'First.mp3' });
+  const value = { version: library.version, playlistId: 'queue', parentId: null, keys: [key] };
+  for (const changes of [
+    { version: 100, statusCode: 409 }, { parentId: 'missing' }, { playlistId: 'missing' },
+    { keys: [] }, { keys: [key, key] }, { keys: [songKey({ jobId: 'jazz', name: 'missing.mp3' })] },
+    { keys: [songKey({ jobId: 'private', name: 'Secret.mp3' })] }
+  ]) {
+    const { statusCode = 400, ...fields } = changes;
+    await assert.rejects(saveLibraryQueue('alice', { ...value, ...fields }, available), { statusCode });
+    assert.deepEqual(await getLibrary('alice', available), library);
   }
 });
 

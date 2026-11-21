@@ -824,6 +824,16 @@ test('job HTTP mutations enforce owner, contributor and admin access for session
     assert.deepEqual(created.body.job.files, []);
     const library = (await call('/api/library', 'GET', headers)).body;
     assert.ok(library.entries.some((entry) => entry.id === created.body.job.id));
+    const queueRoute = `/api/library/playlists/${created.body.job.id}/queue`;
+    const keys = [JSON.stringify(['music', 'keep.mp3']), JSON.stringify(['owned', songName])];
+    const queue = { version: library.version, parentId: null, keys };
+    assert.equal((await call(queueRoute, 'POST', {}, queue)).status, 401);
+    const savedQueue = await call(queueRoute, 'POST', headers, queue);
+    assert.equal(savedQueue.status, 200);
+    const savedTracks = await call(`/api/library/tracks?entryId=${created.body.job.id}`, 'GET', headers);
+    assert.equal(savedTracks.status, 200);
+    assert.deepEqual(savedTracks.body.files.map(({ jobId, name }) => JSON.stringify([jobId, name])), keys);
+    assert.equal((await call(queueRoute, 'POST', headers, queue)).status, 409);
     assert.equal((await call(`/api/jobs/${created.body.job.id}`, 'DELETE', headers)).status, 204);
   }
   const initialLibrary = (await call('/api/library', 'GET', credentials.Owner[0])).body;
