@@ -196,6 +196,41 @@ async function embedDownloadedArtwork(job, names = job.files || []) {
   }
 }
 
+async function retrieveVideoArtwork(job, names, signal) {
+  if (job.downloadType !== 'video') return;
+  const outputDir = job.outputDir && await fs.realpath(job.outputDir);
+  if (!outputDir) return;
+  for (const name of names) {
+    if (!isValidJobFileName(name) || mediaType(name) !== 'video') continue;
+    const sourceUrl = normalizeVideoUrl(job.songMetadata?.[name]?.videoUrl);
+    if (!sourceUrl) continue;
+    const videoId = new URL(sourceUrl).searchParams.get('v');
+    const filePath = await fs.realpath(getFilePath(job, name));
+    if (!isFileInsideJobFolder({ outputDir }, filePath)) continue;
+    try {
+      const { image, warning } = await retrieveYoutubeArtwork(`https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`, signal);
+      if (!image) throw new Error(warning || 'No high-resolution YouTube artwork is available');
+      signal.throwIfAborted();
+      const directory = path.join(outputDir, '.thumbnails');
+      await fs.mkdir(directory, { recursive: true });
+      if (await fs.realpath(directory) !== directory) throw new Error('Invalid downloaded artwork directory');
+      const stem = path.basename(name, path.extname(name));
+      const extension = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/avif': '.avif' }[image.mime];
+      const temporary = path.join(directory, `${randomUUID()}.tmp`);
+      try {
+        await fs.writeFile(temporary, image.imageBuffer, { flag: 'wx', mode: 0o600 });
+        await fs.rename(temporary, path.join(directory, `${stem}${extension}`));
+      } finally { await fs.rm(temporary, { force: true }); }
+      for (const other of ['.avif', '.webp', '.jpg', '.jpeg', '.png']) {
+        if (other !== extension) await fs.rm(path.join(directory, `${stem}${other}`), { force: true });
+      }
+    } catch (error) {
+      signal.throwIfAborted();
+      console.warn(`Unable to retrieve high-resolution video artwork for ${name}: ${error.message}`);
+    }
+  }
+}
+
 async function refreshJobThumbnails(job, names = job.files || [], options) {
   const outputDir = job.outputDir && await fs.realpath(job.outputDir).catch(() => null);
   if (!outputDir) return;
@@ -477,7 +512,7 @@ function appendJobOutput(job, output) {
   job.output = [job.output, output].filter(Boolean).join('\n\n');
 }
 
-function createJobPublisher(job) {
+function createJobPublisher(job, signal) {
   const pending = new Map();
   const published = new Set();
   let worker = null;
@@ -520,6 +555,7 @@ function createJobPublisher(job) {
       });
       for (const name of names) published.add(name);
       artwork = artwork.then(async () => {
+        await retrieveVideoArtwork(metadataJob, names, signal);
         await embedDownloadedArtwork(metadataJob, names);
         await refreshJobThumbnails(metadataJob, names);
       }).catch(recordFailure);
@@ -1009,7 +1045,7 @@ async function executeJobWork(job, signal) {
   } else {
     delete job.commandProgress;
   }
-  const publisher = !job.metadataOnly ? createJobPublisher(job) : null;
+  const publisher = !job.metadataOnly ? createJobPublisher(job, signal) : null;
   if (publisher) {
     jobExecutions.get(job.id).publisher = publisher;
     args.push('--print', `after_move:${completedFilePrefix}%(filepath)j`, '--no-quiet', '--no-simulate');

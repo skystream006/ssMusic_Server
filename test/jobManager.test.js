@@ -2475,8 +2475,8 @@ for (const metadataOnly of [false, true]) {
   });
 }
 
-for (const downloadType of ['audio', 'video']) {
-  test(`downloaded artwork populates AVIF thumbnails and preserves media for ${downloadType} jobs`, async (context) => {
+for (const [downloadType, artworkQuality] of [['audio', null], ['video', 'maxres'], ['video', 'sd'], ['video', 'unavailable']]) {
+  test(`downloaded artwork populates AVIF thumbnails and preserves media for ${downloadType} jobs${artworkQuality ? ` (${artworkQuality}${artworkQuality === 'maxres' ? ' playlist' : ''})` : ''}`, async (context) => {
     const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
     const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
     const executable = path.join(bin, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
@@ -2487,6 +2487,22 @@ for (const downloadType of ['audio', 'video']) {
       ? childProcess.execFileSync(executable, ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180',
         '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1'])
       : await fs.readFile(new URL('../src/assets/audio-thumbnail.avif', import.meta.url));
+    const fullSizeSource = downloadType === 'video'
+      ? childProcess.execFileSync(executable, ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
+        `testsrc2=size=${artworkQuality === 'sd' ? '640x480' : '1280x720'}`,
+        '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1'])
+      : null;
+    const artworkRequests = [];
+    context.mock.method(globalThis, 'fetch', async (url) => {
+      artworkRequests.push(url);
+      assert.ok(downloadType === 'video', 'audio jobs retain their existing artwork download behavior');
+      const target = new URL(url);
+      assert.equal(target.hostname, 'i.ytimg.com');
+      const available = artworkQuality === 'maxres' && target.pathname.endsWith('/maxresdefault.jpg')
+        || artworkQuality === 'sd' && target.pathname.endsWith('/sddefault.jpg');
+      return available ? new Response(fullSizeSource) : new Response('', { status: 404 });
+    });
+    const warnings = context.mock.method(console, 'warn', () => {});
     const payload = Buffer.from('downloaded media payload');
     const name = `Downloaded.${downloadType === 'audio' ? 'mp3' : 'mp4'}`;
     const custom = NodeID3.write({ title: 'Custom title', image: { mime: `image/${sourceExtension}`, type: { id: 3 }, imageBuffer: source } }, payload);
@@ -2502,7 +2518,10 @@ for (const downloadType of ['audio', 'video']) {
       child.stderr = new PassThrough();
       process.nextTick(async () => {
         try {
-          if (args.includes('--dump-single-json')) child.stdout.end(JSON.stringify({ title: 'Download artwork' }));
+          if (args.includes('--dump-single-json')) child.stdout.end(JSON.stringify({
+            title: 'Download artwork',
+            ...(artworkQuality === 'maxres' ? { playlist_count: 1, entries: [{ id: 'cMoRYP8EDUk', title: 'Downloaded' }] } : {})
+          }));
           else {
             const outputDir = path.dirname(args[args.indexOf('--output') + 1]);
             const artworkTemplate = args.find((argument) => argument.startsWith('thumbnail:'));
@@ -2535,9 +2554,11 @@ for (const downloadType of ['audio', 'video']) {
     });
     syncBuiltinESMExports();
     context.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
-    const manager = await import(`../src/jobManager.js?downloaded-artwork=${downloadType}`);
+    const manager = await import(`../src/jobManager.js?downloaded-artwork=${downloadType}-${artworkQuality}`);
     const owner = { id: 'owner', role: 'user' };
-    const job = await manager.createJob('https://www.youtube.com/watch?v=cMoRYP8EDUk', owner, { downloadType });
+    const job = await manager.createJob(artworkQuality === 'maxres'
+      ? 'https://www.youtube.com/playlist?list=artwork'
+      : 'https://www.youtube.com/watch?v=cMoRYP8EDUk', owner, { downloadType });
     await waitForJobToFinish(job);
     const filePath = await fs.realpath(path.join(job.outputDir, name));
     cachedFiles.push(...await Promise.all(job.files.map((file) => fs.realpath(path.join(job.outputDir, file)))));
@@ -2559,12 +2580,25 @@ for (const downloadType of ['audio', 'video']) {
       assert.equal(tags.unsynchronisedLyrics.text, 'Keep lyrics');
       assert.deepEqual(await fs.readFile(path.join(job.outputDir, 'Custom.mp3')), custom);
       assert.equal(await readSongArtwork(path.join(job.outputDir, 'Uncovered.mp3')), null);
-    } else assert.deepEqual(downloaded, payload);
+    } else {
+      assert.deepEqual(downloaded, payload);
+      const { readDownloadedArtwork } = await import('../src/artworkThumbnails.js');
+      const artwork = await readDownloadedArtwork(filePath);
+      assert.deepEqual(artwork.imageBuffer, artworkQuality === 'unavailable' ? source : fullSizeSource);
+      assert.equal(artwork.mime, artworkQuality === 'unavailable' ? 'image/avif' : 'image/png');
+      assert.deepEqual(artworkRequests, [
+        'https://i.ytimg.com/vi/cMoRYP8EDUk/maxresdefault.jpg',
+        ...(artworkQuality === 'maxres' ? [] : ['https://i.ytimg.com/vi/cMoRYP8EDUk/sddefault.jpg'])
+      ]);
+      assert.equal(warnings.mock.calls.some(({ arguments: args }) =>
+        args[0].includes('Unable to retrieve high-resolution video artwork')), artworkQuality === 'unavailable');
+    }
     const rerun = await manager.rerunJob(job.id, owner);
     await waitForJobToFinish(rerun);
     assert.equal(rerun.status, 'completed', rerun.error);
     assert.deepEqual(await fs.readFile(filePath), downloaded);
-    assert.equal(calls.length, 4);
+    if (downloadType === 'audio') assert.deepEqual(artworkRequests, []);
+    assert.equal(calls.length, artworkQuality === 'maxres' ? 3 : 4);
   });
 }
 

@@ -316,7 +316,10 @@ HTTP 202 with the job's `status: "queued"` and live `queuePosition`, subject to
 normal validation, access checks, and duplicate-job protections.
 
 Downloads also fetch each video's source cover into a hidden `.thumbnails` folder
-alongside the media. Supported source images (JPEG, PNG, WebP, or AVIF) are converted
+alongside the media. Video jobs additionally try YouTube's maximum-resolution
+cover, falling back to standard definition when unavailable, and save the original
+image bytes without resizing. If neither is available, the yt-dlp source cover is
+retained. Supported source images (JPEG, PNG, WebP, or AVIF) are converted
 to 192 by 192 AVIF thumbnails and cached when the job finishes. Video thumbnails
 prefer this source cover and fall back to a video frame if it is unavailable or
 cannot be decoded. The source covers remain available for cache regeneration but
