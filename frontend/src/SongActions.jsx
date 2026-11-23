@@ -574,7 +574,7 @@ export function MetadataDialog({ file, jobId, request, onSaved, onClose, readOnl
       <div className="metadata-video-source">
         <label htmlFor={`${headingId}-video-url`}>YouTube video URL</label>
         <div>
-          <input id={`${headingId}-video-url`} type="url" readOnly value={videoUrl}
+          <input id={`${headingId}-video-url`} type="url" readOnly disabled={!readOnly} value={videoUrl}
             placeholder="No video URL saved" aria-describedby={`${headingId}-video-help`}
             onFocus={(event) => event.target.select()} />
           {videoUrl && <a className="music-icon-button" href={videoUrl} target="_blank" rel="noopener noreferrer"

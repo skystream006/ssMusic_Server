@@ -99,7 +99,7 @@
 .public-playlist-tracks, .public-playlist-current { min-width: 0; }
 .public-playlist-tracks ol { list-style: none; padding: 0; margin: 0; max-height: min(65dvh, 640px); overflow-y: auto; border-top: 1px solid var(--line); }
 .public-playlist-tracks li { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; border-bottom: 1px solid var(--line); }
-.public-playlist-track { display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 68px; min-width: 0; width: 100%; border: 0; padding: 10px 8px; color: var(--ink); background: transparent; text-align: left; cursor: pointer; }
+.public-playlist-track { display: grid; grid-template-columns: 32px 40px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 68px; min-width: 0; width: 100%; border: 0; padding: 10px 8px; color: var(--ink); background: transparent; text-align: left; cursor: pointer; }
 .public-playlist-track[aria-current="true"] { color: var(--royal); background: color-mix(in srgb, var(--royal) 10%, transparent); }
 .public-playlist-track > span { min-width: 0; }
 .public-playlist-track strong, .public-playlist-track small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

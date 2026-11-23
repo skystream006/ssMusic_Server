@@ -7,6 +7,7 @@ import { getFilePath, isFileInsideJobFolder, isValidJobFileName } from './jobMan
 import { isPlayableFile } from './media.js';
 import { createMediaStreamHandler } from './audioCompatibility.js';
 import { readSongMetadata } from './music.js';
+import { readSongThumbnail } from './artworkThumbnails.js';
 import { individualPlaylistNames } from './library.js';
 import { addSharedLibrarySong } from './libraryStore.js';
 import { entryVisibilitySql, fileVisibilitySql, jobVisibilitySql } from './privacy.js';
@@ -254,7 +255,8 @@ export function publicMediaRouter() {
         const url = `/api/public/playlists/${req.params.token}/tracks/${row.id}`;
         return { id: row.id, name: path.basename(row.name), title: metadata.title || null,
           artist: metadata.artist || null, album: metadata.album || null,
-          metadataUrl: url, lyricsUrl: `${url}/lyrics`, streamUrl: `${url}/stream`, downloadUrl: `${url}/download` };
+          metadataUrl: url, lyricsUrl: `${url}/lyrics`, streamUrl: `${url}/stream`, downloadUrl: `${url}/download`,
+          artworkUrl: `${url}/artwork` };
       }) });
     } catch { return res.status(404).json({ error: 'Shared playlist not found' }); }
   });
@@ -264,6 +266,14 @@ export function publicMediaRouter() {
       url: (req) => `/api/public/playlists/${req.params.token}/tracks/${req.params.trackId}` }
   ];
   for (const source of sources) {
+    router.get(`${source.route}/artwork`, async (req, res) => {
+      try {
+        const song = await source.resolve(req);
+        const artwork = await readSongThumbnail(song.filePath);
+        if (!artwork) return notFound(req, res);
+        return res.type('image/avif').send(artwork);
+      } catch { notFound(req, res); }
+    });
     for (const includeLyrics of [false, true]) {
       router.get(`${source.route}${includeLyrics ? '/lyrics' : ''}`, async (req, res) => {
         if (metadataInFlight >= 4) {

@@ -2027,6 +2027,7 @@ export function getJobQueue(user) {
       playlistSongCount: visible.playlistSongCount,
       downloadType: visible.downloadType,
       metadataOnly: visible.metadataOnly,
+      artworkName: visible.files?.find((name) => !isNoVocals({ name }) && (/\.mp3$/i.test(name) || mediaType(name) === 'video')),
       createdAt: visible.createdAt,
       updatedAt: visible.updatedAt
     };

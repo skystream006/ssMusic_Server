@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ArrowRightLeft, CalendarClock, Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, Library, Link, ListChecks, ListMusic, Lock, LockKeyhole, Music2, Pencil, Plus, RefreshCw, Save, Search, Share2, Trash2, X } from 'lucide-react';
 import MusicPlayer, { LibrarySongActions, replaceSongFile, usePlayback } from './MusicPlayer.jsx';
 import MusicLoading from './MusicLoading.jsx';
+import SongArtwork, { JobArtwork } from './SongArtwork.jsx';
 import ImportMusic from './ImportMusic.jsx';
 import { Upload } from 'lucide-react';
 import { getPlaylistIds, jobPlaylistId, songKey } from '../../src/library.js';
@@ -981,7 +982,11 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
           })}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</button> : selectingPlaylists ? <input className="library-select-checkbox" type="checkbox" aria-label={`Select playlist ${entryTitle(entry)}`} checked={selectedPlaylists.has(entry.id)} disabled={saving}
             onChange={(event) => { const checked = event.target.checked; setSelectedPlaylists((current) => { const next = new Set(current); if (checked) next.add(entry.id); else next.delete(entry.id); return next; }); }} /> : <span className="folder-expander" />}
           <button className="library-entry-select" type="button" aria-current={selectedId === entry.id ? 'true' : undefined} title={entryTitle(entry)} onClick={() => { if (!reordering) selectEntry(entry.id); }}>
-            {folder ? open ? <FolderOpen size={18} /> : <Folder size={18} /> : <ListMusic size={18} />}<span>{entryTitle(entry)}</span>{playlist?.private && <Lock size={12} aria-label="Private playlist — owner only" />}{entry.protected && <LockKeyhole size={12} aria-label="Permanent playlist" />}<small>{count}</small>
+            {folder ? open ? <FolderOpen size={18} /> : <Folder size={18} />
+              : tracks?.some((track) => track.playlistId === entry.id)
+                ? <SongArtwork track={tracks.find((track) => track.playlistId === entry.id)} />
+                : <JobArtwork job={sourceJobMap.get(entry.id) || { ...playlist, id: entry.id, isPlaylist: true }} userId={readOnly ? owner?.id : undefined} />}
+            <span>{entryTitle(entry)}</span>{playlist?.private && <Lock size={12} aria-label="Private playlist — owner only" />}{entry.protected && <LockKeyhole size={12} aria-label="Permanent playlist" />}<small>{count}</small>
           </button>
           {!readOnly && !reordering && folder && <button className="music-icon-button library-entry-edit" type="button"
             title={`Edit ${entry.name}`} aria-label={`Edit folder ${entry.name}`} disabled={saving}

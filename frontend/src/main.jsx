@@ -51,6 +51,7 @@ import {
 import './styles.css';
 import appIcon from './assets/ic_launcher.png';
 import MusicPlayer, { PlaybackProvider, PlaybackSettings, SongArtwork, usePlayback } from './MusicPlayer.jsx';
+import { JobArtwork } from './SongArtwork.jsx';
 import MusicLibrary from './MusicLibrary.jsx';
 import MusicLoading from './MusicLoading.jsx';
 import PublicMedia, { PublicPlaylist } from './PublicMedia.jsx';
@@ -687,7 +688,7 @@ function JobsPage({ tab = 'tasks' }) {
                 <tr key={job.id} className={selectingJobs && selectedJobIds.has(job.id) ? 'job-selected' : undefined}>
                   {selectingJobs && <td className="job-selection-cell"><label className="job-select-row"><input type="checkbox" aria-label={`Select job ${job.playlistTitle || job.id}`}
                     checked={selectedJobIds.has(job.id)} disabled={Boolean(jobAction)} onChange={(event) => selectJobs([job.id], event.target.checked)} /></label></td>}
-                  <td><a className="job-name" href={`/job/${job.id}`}><span>{job.isPlaylist ? <ListMusic size={18} /> : <Music2 size={18} />}</span><div><strong title={job.playlistTitle || 'Preparing playlist'}>{job.playlistTitle || 'Preparing playlist'}</strong><small title={job.id}>{job.id}</small></div></a></td>
+                  <td><a className="job-name" href={`/job/${job.id}`}><JobArtwork job={job} /><div><strong title={job.playlistTitle || 'Preparing playlist'}>{job.playlistTitle || 'Preparing playlist'}</strong><small title={job.id}>{job.id}</small></div></a></td>
                   <td className="job-column-format">{job.isPlaylist ? 'Playlist' : 'Track'}</td>
                   <td><StatusBadge status={job.status} queuePosition={job.queuePosition} pausedUntil={job.pausedUntil} commandProgress={job.commandProgress} /></td>
                   <td className="job-column-created">{formatDate(job.createdAt)}</td>

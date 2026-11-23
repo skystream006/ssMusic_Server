@@ -1,12 +1,14 @@
 import { CircleAlert, Clock3, ExternalLink, ListOrdered, Lock, RefreshCw, Square } from 'lucide-react';
 import { formatDate } from './SongActions.jsx';
 import StatusBadge from './StatusBadge.jsx';
+import { JobArtwork } from './SongArtwork.jsx';
 
 function QueueJobRow({ job, onStop, stoppingId }) {
   return <li className="queue-job-row">
     <div className="queue-job-details">
       {job.hidden ? <strong className="queue-job-title"><Lock size={15} />Private job</strong> : <>
         <a className="queue-job-title" href={`/job/${encodeURIComponent(job.id)}`}>
+          <JobArtwork job={job} />
           <strong>{job.playlistTitle || (job.isPlaylist ? 'Preparing playlist' : 'Preparing track')}</strong><ExternalLink size={15} />
         </a>
         <a className="queue-job-source" href={job.url} target="_blank" rel="noreferrer">{job.url}</a>

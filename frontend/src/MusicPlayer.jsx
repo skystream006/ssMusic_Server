@@ -11,6 +11,7 @@ import { createMediaSourcePlayback, getMediaSourceDescriptor } from './mediaSour
 import { adaptiveVideoSource, attachAdaptiveVideo, isAdaptiveVideoSource } from './adaptiveVideo.js';
 import LyricTimeline from './LyricTimeline.jsx';
 import MusicLoading from './MusicLoading.jsx';
+import SongArtwork from './SongArtwork.jsx';
 import AddPlaylistDialog from './AddPlaylistDialog.jsx';
 import PlayerDisplay, { createAudioAnalyser } from './PlayerDisplay.jsx';
 import { startVisiblePolling } from './polling.js';
@@ -166,16 +167,7 @@ function KaraokeButton({ track, tracks, onPlay, showLabel = false }) {
     aria-label={`Play karaoke version of ${track.title || track.name}`} onClick={() => onPlay(version)}><MicVocal size={18} />{showLabel && <span>Play karaoke (NoVocals)</span>}</button> : null;
 }
 
-export function SongArtwork({ track }) {
-  const [failedUrl, setFailedUrl] = useState(null);
-  const isVideo = mediaType(track.name) === 'video';
-  return <span className="song-artwork" aria-hidden="true">
-    {!isVideo && track.artworkUrl && track.artworkUrl !== failedUrl
-      ? <img key={track.artworkUrl} src={track.artworkUrl} alt="" loading="lazy" decoding="async"
-        onError={() => setFailedUrl(track.artworkUrl)} />
-      : isVideo ? <Film size={20} /> : <Music2 size={20} />}
-  </span>;
-}
+export { default as SongArtwork } from './SongArtwork.jsx';
 
 function TrackPagination({ pagination, position, label = 'Track' }) {
   const { page, pageSize, total, totalPages, loading, onChange, onPageSizeChange } = pagination;
@@ -1786,7 +1778,7 @@ export default function MusicPlayer({ id, request, libraryView = null, dockOnly 
           <label className="queue-search"><Search size={16} /><input type="search" aria-label="Search songs" placeholder="Search songs" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
           <div className="queue-tracks">
             <SongGroups key={id} tracks={songs.filter((track) => songSearchText(track).includes(normalizeSearchText(search.trim())))}>{(group) => <ol>{group.map((track) => <li key={songKey(track)}><button type="button" aria-current={songKey(track) === selected ? 'true' : undefined} onClick={() => selectSong(track)}>
-                  <Music2 size={17} /><span>{track.name.split('/').at(-1)}</span>
+                  <SongArtwork track={track} /><span>{track.name.split('/').at(-1)}</span>
                   {songKey(track) === selected && <span className="queue-indicator" aria-label={playing ? 'Playing' : 'Selected'} />}
                 </button><KaraokeButton track={track} tracks={songs} onPlay={playKaraoke} /></li>)}</ol>}</SongGroups>
             {!songs.some((track) => songSearchText(track).includes(normalizeSearchText(search.trim()))) && <p className="music-empty">No matching songs.</p>}

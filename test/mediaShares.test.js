@@ -96,11 +96,12 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
   })));
   const [httpPort, httpsPort] = listeners.map((listener) => listener.address().port);
   await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.close(resolve))));
+  const ffmpegLocation = path.resolve(process.env.FFMPEG_PATH || path.join('runtime', 'ffmpeg', 'bin'));
   async function startServer() {
     server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
       '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
       cwd: directory,
-      env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath,
+      env: { ...process.env, YTDLP_OUTPUT_ROOT: outputRoot, YTDLP_PATH: process.execPath, FFMPEG_PATH: ffmpegLocation,
         IMPORT_STORAGE_ROOT: path.join(directory, 'imports'), LIBRARY_BACKUP_ROOT: path.join(directory, 'backups'),
         HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '', PASSKEY_RP_ID: 'localhost',
         PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: '' },
@@ -376,6 +377,23 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     const partial = await call(track.streamUrl, 'GET', { Range: 'bytes=0-4' });
     assert.equal(partial.status, 206);
     assert.deepEqual(partial.buffer, audio.subarray(0, 5));
+    assert.equal(track.artworkUrl, `${track.metadataUrl}/artwork`);
+    assert.equal((await call(`${endpointPublic}/tracks/${'0'.repeat(64)}/artwork`)).status, 404);
+    assert.equal((await call(track.artworkUrl, 'POST')).status, 404);
+    assert.equal((await call(track.artworkUrl.replace(token, tokens[1]))).status, 404);
+    const ffmpegPath = /^ffmpeg(?:\.exe)?$/i.test(path.basename(ffmpegLocation)) ? ffmpegLocation
+      : path.join(ffmpegLocation, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+    if (await fs.access(ffmpegPath).then(() => true, () => false)) {
+      const filePath = path.join(playlist.outputDir, track.name);
+      await fs.writeFile(filePath, NodeID3.write({ ...NodeID3.read(audio),
+        image: { mime: 'image/png', type: { id: 3 },
+          imageBuffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64') }
+      }, NodeID3.removeTagsFromBuffer(audio)));
+      const artwork = await call(track.artworkUrl);
+      assert.equal(artwork.status, 200, artwork.text);
+      assert.equal(artwork.headers['content-type'], 'image/avif');
+      privacyHeaders(artwork);
+    }
     assert.equal((await call(`${endpointPublic}/tracks/${'0'.repeat(64)}/stream`)).status, 404);
     assert.equal((await call(`${endpointPublic}?page=0`)).status, 400);
     assert.equal((await call(endpointPublic, 'POST', {}, {})).status, 404);
@@ -402,6 +420,7 @@ test('song shares are persistent, narrowly scoped, read-only public capabilities
     assert.equal((await call(endpointPublic)).status, 404);
     assert.equal((await call(track.streamUrl)).status, 404);
     assert.equal((await call(track.lyricsUrl)).status, 404);
+    assert.equal((await call(track.artworkUrl)).status, 404);
     assert.equal((await call(endpoint, 'POST', ownerHeaders)).status, 404);
     const privateLinks = (await call('/api/admin/media-shares', 'GET', credentials.Admin[0])).body;
     assert.ok(!privateLinks.shares.some((item) => item.id === hash(token)));

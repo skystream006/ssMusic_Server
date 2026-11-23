@@ -631,7 +631,8 @@ async function listJobFiles(job, order, names) {
         sizeBytes: stat.size,
         createdAt: stat.birthtime.toISOString(),
         downloadUrl: `/api/jobs/${job.id}/download/${encodeURIComponent(fileName)}`,
-        artworkUrl: /\.mp3$/i.test(fileName) ? `/api/jobs/${job.id}/artwork/${encodeURIComponent(fileName)}?v=${stat.mtimeMs}` : null,
+        artworkUrl: /\.mp3$/i.test(fileName) || mediaType(fileName) === 'video'
+          ? `/api/jobs/${job.id}/artwork/${encodeURIComponent(fileName)}?v=${stat.mtimeMs}` : null,
         isSong: isSongFile(fileName),
         isPlayable: isPlayableFile(fileName),
         mediaType: mediaType(fileName),

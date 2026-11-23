@@ -234,6 +234,7 @@ h1 { margin: 0; max-width: 780px; font: 600 48px/1.05 'Newsreader', serif; overf
 .import-progress { display: flex; align-items: center; gap: 8px; }
 .import-results { max-height: 30dvh; overflow-y: auto; padding-left: 20px; font-size: 13px; overflow-wrap: anywhere; }
 .import-results li { padding: 6px 0; }
+.import-results a { display: flex; align-items: center; gap: 10px; }
 .import-log-panel { min-width: 0; margin: 18px 0; }
 .import-log-panel h3 { margin: 0 0 6px; font-size: 13px; }
 .import-log-id { display: block; margin-bottom: 10px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
@@ -676,6 +677,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 .folder-expander { display: inline-grid; place-items: center; width: 22px; height: 30px; flex: none; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .library-entry-select { display: flex; align-items: center; width: 100%; min-width: 0; gap: 9px; min-height: 42px; padding: 4px 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .library-entry-select > svg { flex: none; color: var(--royal); }
+.library-entry-select > .song-artwork { width: 32px; height: 32px; flex: none; }
 .library-entry-select > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .library-entry-select > small { color: var(--muted); font: 10px 'DM Mono', monospace; }
 .library-location { display: grid; gap: 6px; margin-top: 10px; font-size: 10px; color: var(--muted); }
@@ -1244,7 +1246,7 @@ code { font: 400 11px 'DM Mono', monospace; }
 .queue-job-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, .35fr) minmax(190px, auto); align-items: center; gap: 24px; padding: 18px 0; border-bottom: 1px solid var(--line); }
 .queue-job-details, .queue-job-owner, .queue-job-state { min-width: 0; overflow-wrap: anywhere; }
 .queue-job-details, .queue-job-owner { display: grid; gap: 6px; }
-.queue-job-title { display: flex; align-items: baseline; gap: 8px; font-size: 14px; text-decoration: none; }
+.queue-job-title { display: flex; align-items: center; gap: 8px; font-size: 14px; text-decoration: none; }
 .queue-job-title svg { flex-shrink: 0; }
 .queue-job-source, .queue-job-type, .queue-job-owner > span, .queue-job-owner time { color: var(--muted); font-size: 12px; }
 .queue-job-type { display: flex; flex-wrap: wrap; gap: 6px 16px; }
@@ -1260,6 +1262,7 @@ code { font: 400 11px 'DM Mono', monospace; }
   .queue-job-state { grid-row: 1; }
 }
 .admin-share-list { padding: 0; margin: 0; list-style: none; }
+.admin-share-title { display: flex; align-items: center; gap: 10px; }
 .admin-share-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, .3fr) 44px; align-items: center; gap: 20px; padding: 18px 0; border-bottom: 1px solid var(--line); }
 .admin-share-song, .admin-share-creator { min-width: 0; overflow-wrap: anywhere; }
 .admin-share-song > strong { display: block; font-size: 14px; }

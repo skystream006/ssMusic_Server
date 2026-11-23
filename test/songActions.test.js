@@ -24,6 +24,7 @@ let TranscriptionDialog;
 let TranscriptionStatus;
 let SongGroups;
 let SongArtwork;
+let JobArtwork;
 let findNoVocals;
 let queueSongNext;
 let reorderPlaybackQueue;
@@ -83,6 +84,7 @@ before(async () => {
   ({ default: PlayerDisplay, createAudioAnalyser, synchronizeSongVideo, drawCircularWaveform } = await server.ssrLoadModule('/src/PlayerDisplay.jsx'));
   ({ default: MusicPlayer, LibrarySongActions, NowPlayingPanel, PlaybackQueueRow, mergePlaybackMetadata, movePlaybackMedia, createPlaybackMediaSession, createContinuousPlayback, createPlaybackDiagnostics, publishPlaybackPosition, getPlaybackElementType, getPlaybackSource, createAudioPreparation, PlaybackProvider, PlaybackSettings, readPlaybackSession, writePlaybackSession, writePlaybackPosition, loadPlaybackQueue, SongGroups, SongArtwork, findNoVocals, queueSongNext, nextPlaybackSong, nextRepeatMode, replaceSongFile, formatLyricsForCopy, LyricsEditor } = await server.ssrLoadModule('/src/MusicPlayer.jsx'));
   ({ default: MusicLibrary, ExportLibraryDialog, AddPlaylistDialog, LibraryDestinationDialog, EditPlaylistDialog, FolderDialog, reorderPlaylistTracks } = await server.ssrLoadModule('/src/MusicLibrary.jsx'));
+  ({ JobArtwork } = await server.ssrLoadModule('/src/SongArtwork.jsx'));
   ({ saveQueuePlaylist } = await server.ssrLoadModule('/src/AddPlaylistDialog.jsx'));
   ({ default: ImportMusic } = await server.ssrLoadModule('/src/ImportMusic.jsx'));
   ({ SharedLibraryAccess } = await server.ssrLoadModule('/src/SharedLibraries.jsx'));
@@ -1712,22 +1714,39 @@ test('music-page song rows show lazy artwork without changing playback or track 
   const previousWindow = globalThis.window;
   globalThis.window = { location: { search: '' } };
   try {
-    const track = { jobId: 'job', playlistId: 'playlist', name: 'Song.mp3', title: 'Song',
-      artworkUrl: '/api/jobs/job/artwork/Song.mp3?v=1', downloadUrl: '/song' };
-    for (const readOnly of [false, true]) {
+    for (const name of ['Song.mp3', 'Movie.mp4']) for (const readOnly of [false, true]) {
+      const track = { jobId: 'job', playlistId: 'playlist', name, title: 'Track',
+        artworkUrl: `/api/jobs/job/artwork/${name}?v=1${readOnly ? '&userId=owner' : ''}`, downloadUrl: '/track' };
       const html = renderToStaticMarkup(createElement(PlaybackProvider, { request() {} }, createElement(MusicPlayer, {
         libraryView: { readOnly, tracks: [track], title: 'Playlist', selectedId: 'playlist',
           songState: () => ({ canModify: false, disabled: true }) }
       })));
-      assert.match(html, /aria-label="Play Song.mp3"/);
-      assert.match(html, /class="song-number">1<\/span>/);
-      assert.match(html, /class="song-artwork" aria-hidden="true"><img[^>]*src="\/api\/jobs\/job\/artwork\/Song.mp3\?v=1"[^>]*alt=""[^>]*loading="lazy"[^>]*decoding="async"/);
-      assert.match(html, /<strong>Song<\/strong>/);
-      assert.match(html, /aria-label="Download Song.mp3"/);
+      assert.ok(html.includes(`aria-label="Play ${name}"`));
+      assert.match(html, name.endsWith('.mp4') ? /aria-label="Movie"/ : /class="song-number">1<\/span>/);
+      assert.match(html, /class="song-artwork" aria-hidden="true"><img[^>]*alt=""[^>]*loading="lazy"[^>]*decoding="async"/);
+      assert.ok(html.includes(`src="${track.artworkUrl.replaceAll('&', '&amp;')}"`));
+      assert.match(html, /<strong>Track<\/strong>/);
+      assert.ok(html.includes(`aria-label="Download ${name}"`));
     }
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
+  }
+});
+
+test('playback queue rows show lazy audio and video thumbnails including shared-library URLs', () => {
+  for (const name of ['Song.mp3', 'Movie.mp4']) for (const readOnly of [false, true]) {
+    const track = { jobId: 'job', name, readOnly,
+      artworkUrl: `/api/jobs/job/artwork/${name}?v=1${readOnly ? '&userId=owner' : ''}` };
+    const html = renderToStaticMarkup(createElement(PlaybackQueueRow, {
+      track, number: 7, current: true, user: { id: 'owner', role: readOnly ? 'shared' : 'user' },
+      request() {}, onSelect() {}, onMetadataSaved() {}
+    }));
+    assert.match(html, /class="queue-song-row is-current"/);
+    assert.match(html, /class="queue-track-number">7<\/span>/);
+    assert.match(html, /class="song-artwork" aria-hidden="true"><img[^>]*alt=""[^>]*loading="lazy"[^>]*decoding="async"/);
+    assert.ok(html.includes(`src="${track.artworkUrl.replaceAll('&', '&amp;')}"`));
+    assert.doesNotMatch(html, /<video/);
   }
 });
 
@@ -1788,10 +1807,24 @@ test('song artwork has music and movie placeholders when no cover is available',
     assert.doesNotMatch(html, /<img/);
     assert.match(html, name.endsWith('.mp4') ? /lucide-film/ : /lucide-music-2/);
   }
-  const movie = renderToStaticMarkup(createElement(SongArtwork, {
-    track: { name: 'Movie.mp4', artworkUrl: '/not-an-audio-cover' }
-  }));
-  assert.doesNotMatch(movie, /<img/);
+});
+
+test('job list thumbnails select visible originals and preserve revisions and shared-library scope', () => {
+  for (const name of ['Song 100% #1.MP3', 'Movie 100% #1.mp4']) {
+    const job = { id: 'job', files: ['Notes.txt', '[NoVocals]/Song.mp3', name], updatedAt: '2026-11-22T12:00:00Z' };
+    for (const userId of [undefined, 'owner']) {
+      const html = renderToStaticMarkup(createElement(JobArtwork, { job, userId }));
+      const src = html.match(/<img[^>]*src="([^"]+)"/)[1].replaceAll('&amp;', '&');
+      const url = new URL(src, 'http://localhost');
+      assert.equal(url.pathname, `/api/jobs/job/artwork/${encodeURIComponent(name)}`);
+      assert.equal(url.searchParams.get('v'), job.updatedAt);
+      assert.equal(url.searchParams.get('userId'), userId || null);
+      assert.match(html, /loading="lazy"[^>]*decoding="async"/);
+    }
+  }
+  for (const job of [{ id: 'empty', files: [] }, { hidden: true, id: 'private', files: ['Private.mp4'], artworkName: 'Private.mp4' }]) {
+    assert.doesNotMatch(renderToStaticMarkup(createElement(JobArtwork, { job })), /<img|\/api\/jobs/);
+  }
 });
 
 test('metadata viewer has close controls but no save or transcription-lock actions', () => {
@@ -1808,7 +1841,7 @@ test('metadata viewer has close controls but no save or transcription-lock actio
   }
 });
 
-test('metadata dialog shows saved video URLs read-only and identifies missing URLs', () => {
+test('metadata dialog disables saved video URLs in the editor and identifies missing URLs', () => {
   const videoUrl = 'https://www.youtube.com/watch?v=abcdefghijk';
   for (const readOnly of [false, true]) {
     const html = renderToStaticMarkup(createElement(MetadataDialog, {
@@ -1816,6 +1849,8 @@ test('metadata dialog shows saved video URLs read-only and identifies missing UR
     }));
     assert.match(html, />YouTube video URL<\/label>/);
     assert.match(html, /<input[^>]*type="url"[^>]*readonly=""[^>]*value="https:\/\/www\.youtube\.com\/watch\?v=abcdefghijk"/i);
+    const input = html.match(/<input[^>]*type="url"[^>]*>/)[0];
+    assert.equal(input.includes('disabled=""'), !readOnly);
     assert.match(html, /aria-label="Open source video"/);
     assert.ok(html.includes(`href="${videoUrl}"`));
   }
@@ -1823,6 +1858,7 @@ test('metadata dialog shows saved video URLs read-only and identifies missing UR
     file: { name: 'Song.mp3' }, jobId: 'job', request() {}, onClose() {}
   }));
   assert.match(missing, /placeholder="No video URL saved"/);
+  assert.match(missing, /<input[^>]*type="url"[^>]*disabled=""/);
   assert.doesNotMatch(missing, /aria-label="Open source video"/);
 });
 

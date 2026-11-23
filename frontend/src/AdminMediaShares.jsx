@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, CircleAlert, ExternalLink, RefreshCw, Share2, Trash2 } from 'lucide-react';
 import { startVisiblePolling } from './polling.js';
+import SongArtwork from './SongArtwork.jsx';
 
 export function AdminMediaSharesView({ data, loading, error, deleting, onRefresh, onPage, onDelete }) {
   const busy = loading || Boolean(deleting);
@@ -18,7 +19,10 @@ export function AdminMediaSharesView({ data, loading, error, deleting, onRefresh
       {!loading && data?.total === 0 && <div className="empty-state compact"><Share2 size={30} /><h3>No shared links</h3></div>}
       {data?.shares.length > 0 && <ul className="admin-share-list">
         {data.shares.map((share) => <li key={share.id} className="admin-share-row">
-          <div className="admin-share-song"><strong>{share.name}</strong>
+          <div className="admin-share-song"><div className="admin-share-title">
+            {share.kind !== 'playlist' && share.jobId && <SongArtwork track={{ name: share.name,
+              artworkUrl: `/api/jobs/${encodeURIComponent(share.jobId)}/artwork/${encodeURIComponent(share.name)}` }} />}
+            <strong>{share.name}</strong></div>
             {share.kind === 'playlist' && <small>Playlist link</small>}
             {share.jobId && <a href={`/job/${encodeURIComponent(share.jobId)}`}><ExternalLink size={13} />{share.playlistTitle || share.jobId}</a>}
             <details><summary>Link ID</summary><code>{share.id}</code></details>

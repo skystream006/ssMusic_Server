@@ -164,7 +164,7 @@ test('queued job badges and the admin queue view show positions, ordering and op
   const job = { id: 'first', url: 'https://music.youtube.com/playlist?list=first', playlistTitle: 'Running collection',
     status: 'running', isPlaylist: true, playlistSongCount: 101, downloadType: 'audio',
     commandProgress: { completed: 12, total: 101 },
-    initiatedBy: { name: 'Owner' }, updatedAt: '2026-10-28T12:00:00Z' };
+    artworkName: 'Cover.mp3', initiatedBy: { name: 'Owner' }, updatedAt: '2026-10-28T12:00:00Z' };
   const data = { running: job, queued: [
     { ...job, id: 'second', playlistTitle: 'Second collection', status: 'queued', queuePosition: 1 },
     { ...job, id: 'third', playlistTitle: 'Third collection', initiatedBy: null, status: 'queued', queuePosition: 2, metadataOnly: true }
@@ -175,6 +175,7 @@ test('queued job badges and the admin queue view show positions, ordering and op
   assert.match(populated, /Queued - Current Position #1/);
   assert.match(populated, /Queued - Current Position #2/);
   assert.match(populated, /href="\/job\/second"/);
+  assert.match(populated, /src="\/api\/jobs\/first\/artwork\/Cover.mp3\?v=[^"]+"[^>]*loading="lazy"/);
   assert.match(populated, /101 items/);
   assert.match(populated, /Owner/);
   assert.match(populated, /Unknown/);
@@ -196,6 +197,7 @@ test('queued job badges and the admin queue view show positions, ordering and op
   assert.ok(!hiddenPaused.includes('href="/job/'));
   assert.ok(!hiddenPaused.includes('Submitted by'));
   assert.ok(!hiddenPaused.includes('Commands:'));
+  assert.doesNotMatch(hiddenPaused, /<img|\/artwork\//);
   const hiddenStop = render({ data: { running: { hidden: true, status: 'running' }, queued: [] }, onStop() {} });
   assert.ok(!hiddenStop.includes('Stop job'));
   const hidden = render({ data: { running: null, queued: [{ hidden: true, status: 'queued', queuePosition: 1 }] } });

@@ -4,6 +4,7 @@ import { formatBytes } from './SongActions.jsx';
 import { mediaAccept } from '../../src/media.js';
 import { sortSelectOptions } from './selectOptions.js';
 import { startVisiblePolling } from './polling.js';
+import { JobArtwork } from './SongArtwork.jsx';
 
 export default function ImportMusic({ user, request, onClose, onImported, initialPlaylistId = '' }) {
   const dialogRef = useRef(null);
@@ -257,7 +258,7 @@ export default function ImportMusic({ user, request, onClose, onImported, initia
     {result ? <>
       <p className="notice success" role="status"><Check size={18} />Imported {result.importedFiles} {result.importedFiles === 1 ? 'file' : 'files'} into {result.jobs.length} {result.jobs.length === 1 ? 'playlist' : 'playlists'}.</p>
       {isAdmin && <p className="metadata-filename">Library owner: {importOwner?.name || ownerId}</p>}
-      <ul className="import-results">{result.jobs.map((job) => <li key={job.id}><a href={`/job/${encodeURIComponent(job.id)}`}>{job.playlistTitle}</a></li>)}</ul>
+      <ul className="import-results">{result.jobs.map((job) => <li key={job.id}><a href={`/job/${encodeURIComponent(job.id)}`}><JobArtwork job={job} />{job.playlistTitle}</a></li>)}</ul>
       {logPanel}
       <div className="dialog-actions"><button className="primary-button" type="button" onClick={onClose}><Check size={17} />Done</button></div>
     </> : <form onSubmit={submit}>

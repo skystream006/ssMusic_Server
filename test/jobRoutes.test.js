@@ -180,10 +180,11 @@ test('job storage, video cache health and process output cleanup enforce HTTP pe
   await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve))));
   const [httpPort, httpsPort] = listeners.map((listener) => listener.address().port);
   await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.close(resolve))));
+  const ffmpegLocation = path.resolve(process.env.FFMPEG_PATH || path.join('runtime', 'ffmpeg', 'bin'));
   async function startServer() {
     server = spawn(process.execPath, [fileURLToPath(new URL('../src/server.js', import.meta.url)),
       '--http-port', String(httpPort), '--https-port', String(httpsPort)], {
-      cwd: directory, env: { ...process.env, YTDLP_OUTPUT_ROOT: path.join(directory, 'output'),
+      cwd: directory, env: { ...process.env, YTDLP_OUTPUT_ROOT: path.join(directory, 'output'), FFMPEG_PATH: ffmpegLocation,
         LIBRARY_BACKUP_ROOT: path.join(directory, 'backups'), HTTPS_KEY_PATH: '', HTTPS_CERT_PATH: '',
         PASSKEY_RP_ID: 'localhost', PASSKEY_ORIGIN: `https://localhost:${httpsPort}`, TRUST_PROXY: '', TRANSCRIPTION_ENDPOINT: '' },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -204,8 +205,11 @@ test('job storage, video cache health and process output cleanup enforce HTTP pe
       headers, method, rejectUnauthorized: false }, (response) => {
       const chunks = [];
       response.on('data', (chunk) => chunks.push(chunk));
-      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers,
-        body: JSON.parse(Buffer.concat(chunks).toString()) }));
+      response.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        resolve({ status: response.statusCode, headers: response.headers, buffer,
+          body: response.headers['content-type']?.includes('application/json') ? JSON.parse(buffer.toString()) : null });
+      });
     });
     request.on('error', reject);
     request.setTimeout(5000, () => request.destroy(new Error('HTTP test request timed out')));
@@ -269,6 +273,39 @@ test('job storage, video cache health and process output cleanup enforce HTTP pe
   assert.equal((await call('/api/jobs/stored-output', credentials.Owner[0])).body.output, null);
   assert.deepEqual((await call(route, credentials.Admin[0])).body, { totalSizeBytes: 0 });
   assert.equal((await call('/api/jobs', credentials.Other[0])).body.find((job) => job.id === 'stored-output').totalSizeBytes, 14);
+  await context.test('video list responses provide authorized thumbnails for playlists and shared queues', async () => {
+    const name = 'Movie 100% #1.mp4';
+    const videoDir = path.join(directory, 'output', 'video-artwork');
+    await fs.mkdir(path.join(videoDir, '.thumbnails'), { recursive: true });
+    await fs.writeFile(path.join(videoDir, name), Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex'));
+    const imageBuffer = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+    await fs.writeFile(path.join(videoDir, '.thumbnails', 'Movie 100% #1.png'), imageBuffer);
+    await writeJob(database, { id: 'video-artwork', url: '', source: 'upload', status: 'completed',
+      initiatedBy: users.Owner, playlistTitle: 'Video artwork', outputDir: videoDir, files: [name],
+      createdAt: now, updatedAt: now });
+    const files = (await call('/api/jobs/video-artwork/files', credentials.Owner[0])).body.files;
+    const artworkUrl = files[0].artworkUrl;
+    assert.equal(artworkUrl, `/api/jobs/video-artwork/artwork/${encodeURIComponent(name)}?v=${(await fs.stat(path.join(videoDir, name))).mtimeMs}`);
+    assert.equal((await call(artworkUrl)).status, 401);
+    const ffmpegPath = /^ffmpeg(?:\.exe)?$/i.test(path.basename(ffmpegLocation)) ? ffmpegLocation
+      : path.join(ffmpegLocation, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+    const canEncode = await fs.access(ffmpegPath).then(() => true, () => false);
+    for (const reader of ['Owner', 'Reader']) {
+      const result = await call(`/api/library/tracks?entryId=video-artwork&userId=${users.Owner.id}`, credentials[reader][0]);
+      assert.equal(result.status, 200);
+      const track = result.body.files[0];
+      const url = new URL(track.artworkUrl, 'http://localhost');
+      assert.equal(url.pathname, new URL(artworkUrl, 'http://localhost').pathname);
+      assert.equal(url.searchParams.get('v'), new URL(artworkUrl, 'http://localhost').searchParams.get('v'));
+      if (reader === 'Reader') assert.equal(url.searchParams.get('userId'), users.Owner.id);
+      if (canEncode) {
+        const cover = await call(track.artworkUrl, credentials[reader][0]);
+        assert.equal(cover.status, 200, JSON.stringify(cover.body));
+        assert.equal(cover.headers['content-type'], 'image/avif');
+        assert.deepEqual(cover.buffer, await encodeThumbnail({ mime: 'image/png', imageBuffer }));
+      }
+    }
+  });
 });
 
 test('job HTTP mutations enforce owner, contributor and admin access for sessions and PATs', { timeout: 120_000 }, async (context) => {

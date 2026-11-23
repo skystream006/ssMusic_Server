@@ -126,7 +126,8 @@ test('changing public tracks aborts lyric requests and ignores stale success and
 
 test('public playlists render ordered read-only songs, downloads and bounded page controls', () => {
   const playlist = { title: 'Evening collection', page: 1, pageSize: 50, total: 51, totalPages: 2,
-    tracks: [{ id: 'first', name: 'Evening.mp3', title: 'Evening', artist: 'Quartet', downloadUrl: '/api/public/playlists/token/tracks/first/download' }] };
+    tracks: [{ id: 'first', name: 'Evening.mp3', title: 'Evening', artist: 'Quartet',
+      artworkUrl: '/api/public/playlists/token/tracks/first/artwork', downloadUrl: '/api/public/playlists/token/tracks/first/download' }] };
   const html = renderToStaticMarkup(createElement(PublicPlaylistView, { playlist, selectedId: 'first' },
     createElement(PublicMediaView, { media, embedded: true })));
   assert.match(html, /Shared playlist/);
@@ -134,6 +135,7 @@ test('public playlists render ordered read-only songs, downloads and bounded pag
   assert.match(html, /aria-label="Play Evening"/);
   assert.match(html, /aria-current="true"/);
   assert.match(html, /download="Evening.mp3"/);
+  assert.match(html, /src="\/api\/public\/playlists\/token\/tracks\/first\/artwork"[^>]*loading="lazy"[^>]*decoding="async"/);
   assert.match(html, /aria-label="Previous playlist page" disabled=""/);
   assert.doesNotMatch(html.match(/<button[^>]*aria-label="Next playlist page"[^>]*>/)[0], /disabled/);
   assert.equal((html.match(/<main\b/g) || []).length, 1);

@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, Download, Headphones, LibraryBig, ListMusic, Maximize2, Music2, Play, RefreshCw, SkipBack, SkipForward, X } from 'lucide-react';
 import LyricTimeline from './LyricTimeline.jsx';
 import AdaptiveVideo from './AdaptiveVideo.jsx';
+import SongArtwork from './SongArtwork.jsx';
 import { mediaType } from '../../src/media.js';
 import { individualPlaylistNames } from '../../src/library.js';
 import { sortSelectOptions } from './selectOptions.js';
@@ -455,6 +456,7 @@ export function PublicPlaylistView({ playlist, loading, error, selectedId, onSel
                 <button className="public-playlist-track" type="button" aria-current={track.id === selectedId ? 'true' : undefined}
                   aria-label={`Play ${displayText(track.title, track.name)}`} title={displayText(track.title, track.name)} onClick={() => onSelect(track)}>
                   <span className="public-playlist-number">{track.id === selectedId ? <Play size={16} aria-hidden="true" /> : (playlist.page - 1) * playlist.pageSize + index + 1}</span>
+                  <SongArtwork track={track} />
                   <span><strong>{displayText(track.title, track.name)}</strong><small>{displayText(track.artist, 'Unknown artist')}</small></span>
                 </button>
                 <a className="music-icon-button" href={track.downloadUrl} download={track.name} title={`Save ${track.name}`} aria-label={`Save ${track.name}`}><Download size={17} /></a>

@@ -186,7 +186,8 @@ in the catalog. Each resolved URL is committed independently of artist/artwork
 updates, so skipped tags, failed metadata requests, or a later Stop do not lose
 URLs already saved. Process output reports how many songs have a video URL.
 **Edit song metadata** and **View song metadata** show the saved, read-only
-**YouTube video URL**, with a link to open it. A media rerun is not required.
+**YouTube video URL**, with a link to open it. The URL input is disabled in the
+editor; the source-video link remains available. A media rerun is not required.
 
 For a song with a saved URL, its owner can choose **Retrieve song video** in the
 row action menu. The MP4 is linked to that song, not added to a playlist or the
@@ -1907,11 +1908,18 @@ It lists only jobs you initiated or contribute to, using their **Playlist Title*
 This personal-library rule also applies to administrators. The Jobs dashboard keeps
 its existing broader access rules. Select a playlist on the left to browse its songs
 on the right. Search playlists or songs independently.
-Song rows lazy-load **192 × 192 AVIF thumbnails** of embedded MP3 album artwork,
-with a music-note placeholder when no supported cover is available. Uploads,
+Playlist song rows and playback queue rows lazy-load **192 × 192 AVIF thumbnails**
+of embedded MP3 album artwork or video source covers (falling back to video frames).
+Missing or failed images show a music-note or movie-icon placeholder. Uploads,
 downloads, metadata edits, file replacement, and transcription refresh the
 thumbnails using the existing FFmpeg runtime. Original artwork and audio are
 unchanged.
+
+The Jobs table, admin job queue, import results, job-player queue, shared-link
+song list, and public playlist tracks also show lazy-loaded thumbnails. Job and
+playlist previews use a representative visible MP3 or video when available;
+empty jobs and playlists retain their icons. Public playlist thumbnail requests
+use the playlist's share-scoped endpoint and stop working when its link is revoked.
 
 Thumbnails are cached on disk under `data/artwork-thumbnails` (the existing Docker
 data volume), not in PostgreSQL. Unchanged songs are served from this cache without
