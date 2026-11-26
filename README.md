@@ -711,6 +711,10 @@ rapid toggles reverse the transition, and reduced-motion preferences disable it.
     library, including metadata, privacy, sharing, transcription, file replacement,
     playlist moves/removal, and downloads. Open dialogs retain their original song
     when playback advances.
+    Song menus in Player, the library, and job files group available controls under
+    **Current Media**, **Other**, and **List actions**, with headings and dividers.
+    Empty groups are hidden, and actions remain alphabetical within each group.
+    The Queue menu places **Save As New Playlist** under **Queue list actions**.
 - **Lyrics** provides synchronized SYLT and plain-text USLT, with seeking,
     copying, and editing under the existing song permissions. Lyrics load only
     when the Lyrics view is opened.

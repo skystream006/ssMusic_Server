@@ -161,8 +161,12 @@ export function SongGroups({ tracks, children }) {
   </>;
 }
 
+function getKaraokeVersion(track, tracks) {
+  return track && mediaType(track.name) !== 'video' && !isNoVocals(track) && (track.noVocalsVersion || findNoVocals(track, tracks || []));
+}
+
 function KaraokeButton({ track, tracks, onPlay, showLabel = false }) {
-  const version = track && mediaType(track.name) !== 'video' && !isNoVocals(track) && (track.noVocalsVersion || findNoVocals(track, tracks || []));
+  const version = getKaraokeVersion(track, tracks);
   return version ? <button className="music-icon-button karaoke-button" type="button" title="Play karaoke (NoVocals)"
     aria-label={`Play karaoke version of ${track.title || track.name}`} onClick={() => onPlay(version)}><MicVocal size={18} />{showLabel && <span>Play karaoke (NoVocals)</span>}</button> : null;
 }
@@ -226,7 +230,7 @@ export function NowPlayingPanel({ panel, onChange, expanded = true, wide = false
         <header className="queue-list-header">
           <h2 id={`${tabsId}-queue-heading`}>Queue</h2>
           {onSaveQueue && <SongActions name="Queue" className="song-order-actions">
-            <button className="music-icon-button" type="button" title="Save As New Playlist" aria-haspopup="dialog"
+            <button className="music-icon-button" type="button" title="Save As New Playlist" data-action-section="Queue list actions" aria-haspopup="dialog"
               disabled={!canSaveQueue} onClick={onSaveQueue}><Save size={18} /></button>
           </SongActions>}
         </header>
@@ -293,22 +297,22 @@ export function LibrarySongActions({ track, libraryView, request, onPlayKaraoke,
     canDownloadVideo={action.canEditMetadata === true && !libraryView.readOnly}
     videoDisabled={(action.metadataDisabled ?? action.disabled) || libraryView.saving}
     onVideoSaved={(result) => libraryView.onVideoSaved(track, result)}>
-    <KaraokeButton track={track} tracks={libraryView.tracks || []} onPlay={onPlayKaraoke} showLabel />
+    {getKaraokeVersion(track, libraryView.tracks) && <KaraokeButton data-action-section="List actions" track={track} tracks={libraryView.tracks || []} onPlay={onPlayKaraoke} showLabel />}
     {action.canChangePrivacy && !libraryView.readOnly && <button className="music-icon-button" type="button"
-      title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}
+      title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel} data-action-section="Current Media"
       aria-label={`${privacyLabel}: ${track.name}`} aria-pressed={privacy.private}
       disabled={action.disabled || libraryView.saving || privacy.inherited} onClick={() => libraryView.onChangePrivacy(track)}>
       {libraryView.saving ? <RefreshCw className="spin" size={16} /> : privacy.private ? <Lock size={16} /> : <LockOpen size={16} />}
     </button>}
     {action.canModify && !libraryView.readOnly && mediaType(track.name) && <button className="music-icon-button" type="button" title={privacy.private ? 'Private files cannot be shared' : 'Share Media'} data-action-label="Share Media" aria-label={`Share Media ${track.name}`} aria-haspopup="dialog" disabled={action.disabled || libraryView.saving || privacy.private} onClick={() => libraryView.onShareMedia(track)}><Share2 size={16} /></button>}
     {(action.canModify || action.canEditMetadata === false || libraryView.readOnly) && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button"
-      title={libraryView.readOnly || action.canEditMetadata === false ? 'View song metadata' : 'Edit song metadata'} aria-label={`${libraryView.readOnly || action.canEditMetadata === false ? 'View' : 'Edit'} metadata ${track.name}`}
+      title={libraryView.readOnly || action.canEditMetadata === false ? 'View song metadata' : 'Edit song metadata'} data-action-section="Current Media" aria-label={`${libraryView.readOnly || action.canEditMetadata === false ? 'View' : 'Edit'} metadata ${track.name}`}
       aria-haspopup="dialog" disabled={!libraryView.readOnly && action.canEditMetadata !== false && action.disabled} onClick={() => libraryView.onEditMetadata(track)}>
       {libraryView.readOnly || action.canEditMetadata === false ? <Info size={16} /> : <Pencil size={16} />}</button>}
     {action.canModify && !libraryView.readOnly && mediaType(track.name) === 'audio' && <button className="music-icon-button" type="button" title="Replace File" aria-label={`Replace File ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onReplaceFile(track)}><Upload size={16} /></button>}
     {!libraryView.readOnly && mediaType(track.name) === 'audio' && !track.name.toLowerCase().startsWith('[novocals]/') && <button className="music-icon-button" type="button" data-action-label="Transcribe song" title={libraryView.transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${track.name}`} disabled={(action.metadataDisabled ?? action.disabled) || !libraryView.transcriptionActive} onClick={() => libraryView.onTranscribe(track)}><Mic size={16} /></button>}
-    {action.canModify && <button className="music-icon-button" type="button" title="Remove song from playlist" aria-label={`Delete song ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
-    {!libraryView.readOnly && <button className="music-icon-button" type="button" title="Add/Move to playlist" aria-label={`Add/Move ${track.name} to playlist`} disabled={action.busy || libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>}
+    {action.canModify && <button className="music-icon-button" type="button" title="Remove song from playlist" data-action-section="List actions" aria-label={`Delete song ${track.name}`} disabled={action.disabled || libraryView.saving} onClick={() => libraryView.onDelete(track)}>{action.deleting ? <RefreshCw className="spin" size={16} /> : <Trash2 size={16} />}</button>}
+    {!libraryView.readOnly && <button className="music-icon-button" type="button" title="Add/Move to playlist" data-action-section="List actions" aria-label={`Add/Move ${track.name} to playlist`} disabled={action.busy || libraryView.saving} onClick={() => libraryView.onMove(track)}><ArrowRightLeft size={15} /></button>}
     <a className="music-icon-button" href={track.downloadUrl} title="Download song" aria-label={`Download ${track.name}`}><ArrowDownToLine size={15} /></a>
   </SongActions>;
 }

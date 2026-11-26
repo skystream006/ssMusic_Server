@@ -39,7 +39,7 @@ export function SongActions({ name, className, children, file, jobId, request, c
   const [videoDialog, setVideoDialog] = useState(null);
   const actions = Children.toArray(children);
   if (file && mediaType(file.name) && request) actions.push(
-    <button key="playlist-links" className="music-icon-button" type="button" title="Linked Playlists"
+    <button key="playlist-links" className="music-icon-button" type="button" title="Linked Playlists" data-action-section="Current Media"
       aria-label={`Linked Playlists ${file.name}`} aria-haspopup="dialog" onClick={() => setPlaylistLinks({ file: { ...file }, jobId: jobId || file.jobId })}><ListMusic size={18} /></button>
   );
   if (canDownloadVideo && mediaType(file?.name) === 'audio' && file.videoUrl && request) actions.push(
@@ -97,10 +97,16 @@ export function SongActions({ name, className, children, file, jobId, request, c
         menuRef.current.hidePopover();
         triggerRef.current.focus();
       }}>
-      {sortSelectOptions(actions, (child) => child.props['data-action-label'] || child.props.title)
+      {['Queue list actions', 'Current Media', 'Other', 'List actions'].map((section) => {
+        const sectionActions = actions.filter((child) => (child.props['data-action-section'] || 'Other') === section);
+        return sectionActions.length > 0 && <div key={section} className="song-actions-section" role="group" aria-label={section}>
+          <h3 className="song-actions-heading">{section}</h3>
+          {sortSelectOptions(sectionActions, (child) => child.props['data-action-label'] || child.props.title)
         .map((child) => cloneElement(child, {}, <>
         {child.props.children}<span>{child.props['data-action-label'] || child.props.title}</span>
       </>))}
+        </div>;
+      })}
     </div>
   </div>
     {playlistLinks && createPortal(<PlaylistLinksDialog file={playlistLinks.file} jobId={playlistLinks.jobId} request={request} onClose={() => setPlaylistLinks(null)} />, document.body)}

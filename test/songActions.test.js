@@ -1364,6 +1364,41 @@ test('song action dropdowns alphabetize visible labels while preserving links an
   assert.deepEqual(children.map((child) => child.key), ['transcribe', 'edit', 'download']);
 });
 
+test('song menus group actions in player section order and alphabetize within sections', () => {
+  const html = renderToStaticMarkup(createElement(SongActions, {
+    name: 'Song.mp3', file: { name: 'Song.mp3', videoUrl: '/video' }, request() {}, canDownloadVideo: true
+  }, [
+    createElement('button', { key: 'remove', title: 'Remove song from playlist', 'data-action-section': 'List actions', disabled: true }),
+    createElement('button', { key: 'privacy', title: 'Make file private', 'data-action-section': 'Current Media' }),
+    createElement('button', { key: 'save', title: 'Save As New Playlist', 'data-action-section': 'Queue list actions' }),
+    createElement('button', { key: 'edit', title: 'Edit song metadata', 'data-action-section': 'Current Media' }),
+    createElement('button', { key: 'move', title: 'Add/Move to playlist', 'data-action-section': 'List actions' }),
+    createElement('a', { key: 'download', title: 'Download song', href: '/song' }),
+    false
+  ]));
+  const sections = [...html.matchAll(/class="song-actions-section" role="group" aria-label="([^"]+)">([\s\S]*?)<\/div>/g)];
+  assert.deepEqual(sections.map((match) => match[1]), ['Queue list actions', 'Current Media', 'Other', 'List actions']);
+  assert.deepEqual(sections.map((match) => [...match[2].matchAll(/<span>([^<]*)<\/span>/g)].map((label) => label[1])), [
+    ['Save As New Playlist'], ['Edit song metadata', 'Linked Playlists', 'Make file private'],
+    ['Download song', 'Retrieve song video'], ['Add/Move to playlist', 'Remove song from playlist']
+  ]);
+  assert.match(sections[2][2], /href="\/song"/);
+  assert.match(sections[3][2], /disabled=""/);
+});
+
+test('read-only song menus omit empty list and queue sections, including unavailable karaoke', () => {
+  const render = (noVocalsVersion) => renderToStaticMarkup(createElement(LibrarySongActions, {
+    track: { jobId: 'job', name: 'Song.mp3', downloadUrl: '/song', noVocalsVersion }, request() {}, onPlayKaraoke() {},
+    libraryView: { readOnly: true, tracks: [], songState: () => ({ canModify: false, canEditMetadata: false }) }
+  }));
+  const html = render();
+  assert.deepEqual([...html.matchAll(/class="song-actions-heading">([^<]+)<\/h3>/g)].map((match) => match[1]), ['Current Media', 'Other']);
+  const karaoke = render({ jobId: 'job', name: '[NoVocals]/Song.mp3' });
+  assert.match(karaoke, /aria-label="List actions"/);
+  assert.match(karaoke, /aria-label="Play karaoke version of Song.mp3"/);
+  assert.doesNotMatch(karaoke, /Queue list actions|Remove song from playlist|Add\/Move to playlist/);
+});
+
 test('playlist editing groups name, privacy, location, job details and public sharing', () => {
   const props = { playlist: { id: 'mix', playlistTitle: 'My mix', private: false }, parentId: 'folder',
     folders: [{ id: 'folder', path: 'Collection' }], canRename: true, canChangePrivacy: true, canShare: true };

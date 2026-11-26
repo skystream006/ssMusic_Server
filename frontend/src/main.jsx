@@ -1125,13 +1125,13 @@ function JobPage({ id }) {
                       setFileRevision((revision) => revision + 1);
                     }}>
                     {canChangePrivacy(user, job, false, file) && <button className="icon-link" type="button"
-                      title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel}
+                      title={privacy.inherited ? 'Private via source; change the source job or original file privacy first' : privacyLabel} data-action-label={privacyLabel} data-action-section="Current Media"
                       aria-label={`${privacyLabel}: ${file.name}`} aria-pressed={privacy.private}
                       disabled={mutationDisabled || privacy.inherited} onClick={() => savePrivacy(file)}>
                       {savingPrivacy ? <RefreshCw className="spin" size={18} /> : privacy.private ? <Lock size={18} /> : <LockOpen size={18} />}
                     </button>}
                     {canModify && file.isPlayable && <button className="icon-link" type="button" title={privacy.private ? 'Private files cannot be shared' : 'Share Media'} data-action-label="Share Media" aria-label={`Share Media ${file.name}`} aria-haspopup="dialog" disabled={songMutationDisabled(file.name) || privacy.private} onClick={() => setSharingFile(file)}><Share2 size={18} /></button>}
-                    {canEditSong(user, job) && file.isSong && <button className="icon-link" type="button" title="Edit song metadata" aria-label={`Edit metadata ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
+                    {canEditSong(user, job) && file.isSong && <button className="icon-link" type="button" title="Edit song metadata" data-action-section="Current Media" aria-label={`Edit metadata ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setEditingMetadata(file)}><Pencil size={18} /></button>}
                     {canModify && file.isSong && <button className="icon-link" type="button" title="Replace File" aria-label={`Replace File ${file.name}`} disabled={songMutationDisabled(file.name)} onClick={() => setReplacingFile(file)}><Upload size={18} /></button>}
                     {file.isSong && !file.name.toLowerCase().startsWith('[novocals]/') && <button className="icon-link song-transcribe" type="button" data-action-label="Transcribe song" title={transcriptionActive ? 'Transcribe song' : transcriptionInactiveMessage} aria-label={`Transcribe ${file.name}`} disabled={!canEditSong(user, job) || songMutationDisabled(file.name) || !transcriptionActive} onClick={() => { setTranscriptionNotice(''); setTranscribingFile(file); }}><Mic size={18} /></button>}
                     <a href={file.downloadUrl} aria-label={`Download ${file.name}`} title="Download song"><ArrowDownToLine size={18} /></a>
