@@ -1920,8 +1920,16 @@ thumbnails using the existing FFmpeg runtime. Original artwork and audio are
 unchanged.
 
 The Jobs table, admin job queue, import results, job-player queue, shared-link
-song list, and public playlist tracks also show lazy-loaded thumbnails. Job and
-playlist previews use a representative visible MP3 or video when available;
+song list, and public playlist tracks also show lazy-loaded thumbnails. Job
+previews use a representative visible MP3 or video when available. Library
+playlist covers use the first visible original MP3 or video in playlist order,
+with a YouTube-style dark playlist badge. They are generated after download,
+import, and metadata jobs finish, and cached under `data/playlist-thumbnails`
+in the existing Docker data volume. Songs without embedded covers use the bundled
+audio cover. Linked songs and the Individual Songs/Videos playlists are included.
+Every cover request rechecks library access and source privacy; shared viewers
+never receive covers from hidden tracks. Reordering or changing membership selects
+the new first visible track on the next request;
 empty jobs and playlists retain their icons. Public playlist thumbnail requests
 use the playlist's share-scoped endpoint and stop working when its link is revoked.
 
@@ -1936,10 +1944,11 @@ generation failure does not roll back a song upload or edit; check FFmpeg and re
 Artwork requests still require authentication and granted-library access.
 
 On **Admin → Settings**, use **Regenerate all thumbnails** in the album artwork section to
-rebuild thumbnails for all indexed MP3 songs, across all users. Regeneration runs in
+rebuild thumbnails for all indexed MP3 songs and all library playlists, across all
+users. Playlist covers are rebuilt after song thumbnails. Regeneration runs in
 the background in bounded batches, with processed, generated, missing, and failed
 counts. Only administrators may start or view this operation, and only one rebuild
-runs at a time. Individual failures do not stop the remaining songs. Progress is
+runs at a time. Individual failures do not stop the remaining songs or playlists. Progress is
 in memory and resets on server restart; cached images persist. Restart regeneration
 after a restart or after correcting FFmpeg errors. The original images remain
 available in song metadata and downloads.

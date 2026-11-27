@@ -95,7 +95,7 @@ export function AdminArtworkThumbnailsView({ status, starting = false, error = '
             : 'Ready to regenerate all thumbnails.';
   return <section className="users-section admin-artwork-thumbnails" aria-labelledby="admin-artwork-title">
     <div className="section-title"><div><h2 id="admin-artwork-title">Album artwork thumbnails</h2></div></div>
-    <p>Regenerate all cached 192px AVIF images on disk. Original album artwork and media files remain unchanged.</p>
+    <p>Regenerate all cached song and playlist 192px AVIF images on disk. Original album artwork and media files remain unchanged.</p>
     <button className="primary-button compact-button" type="button" disabled={!status || busy} onClick={onRegenerate}>
       <RefreshCw size={16} className={busy ? 'spin' : undefined} />Regenerate all thumbnails
     </button>

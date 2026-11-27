@@ -17,6 +17,7 @@ import { linkLibraryJob } from '../src/libraryStore.js';
 import { readPostgresJobs } from '../src/postgresCatalog.js';
 import { createTestDatabase } from '../test-support/postgres.js';
 import { songVideoPath } from '../src/songVideos.js';
+import { playlistThumbnailSources } from '../src/playlistThumbnails.js';
 
 test('privacy and search keys enforce owner-only access through HTTP', { timeout: 120_000 }, async (context) => {
   let server;
@@ -115,6 +116,70 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
   await fs.mkdir(path.join(directory, 'public'), { recursive: true });
   await fs.writeFile(path.join(directory, 'public', 'index.html'), '<!doctype html><title>Privacy settings route</title>');
   await start();
+
+  await context.test('playlist covers respect membership order, private sources and granted-library scope', async (subcontext) => {
+    const id = 'playlist-cover';
+    const outputDir = path.join(outputRoot, id);
+    await fs.mkdir(outputDir);
+    const imageBuffer = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+    await fs.writeFile(path.join(outputDir, 'secret.mp3'), NodeID3.write({
+      image: { mime: 'image/png', type: { id: 3 }, imageBuffer }
+    }, Buffer.from('audio')));
+    await fs.writeFile(path.join(outputDir, 'open.mp3'), 'audio');
+    const job = { id, url: `import:${id}`, status: 'completed', isPlaylist: true,
+      initiatedBy: { id: users.Owner.id }, outputDir, files: ['secret.mp3', 'open.mp3'],
+      privateFiles: ['secret.mp3'], playlistTitle: 'Playlist cover', createdAt: new Date().toISOString() };
+    await writeJob(database, job);
+    subcontext.after(() => call(`/api/jobs/${id}`, headers.Owner, 'DELETE'));
+    const sources = async (viewerId) => {
+      const rows = [];
+      for await (const row of playlistThumbnailSources(database, { userId: users.Owner.id, playlistId: id, viewerId })) rows.push(row);
+      return rows;
+    };
+    assert.equal((await sources(users.Owner.id))[0].name, 'secret.mp3');
+    assert.equal((await sources(users.Reader.id))[0].name, 'open.mp3');
+    assert.equal((await sources(null))[0].name, 'open.mp3', 'catalog credentials cannot inherit owner privacy');
+    const route = `/api/library/playlists/${id}/artwork`;
+    assert.equal((await call(route, {})).status, 401);
+    assert.equal((await call(route, headers.Linked)).status, 404);
+    assert.equal((await call(`${route}?userId=${users.Linked.id}`, headers.Reader)).status, 403);
+    assert.equal((await call('/api/library/playlists/missing/artwork')).status, 404);
+    if (canGenerateVideo) {
+      const ownerCover = await call(route);
+      assert.equal(ownerCover.status, 200, ownerCover.text);
+      assert.equal((await fileTypeFromBuffer(ownerCover.buffer)).mime, 'image/avif');
+      assert.equal(ownerCover.headers['cache-control'], 'no-store');
+      const jobCover = await call(`/api/jobs/${id}/artwork/secret.mp3?playlist=1`);
+      assert.equal(jobCover.status, 200, jobCover.text);
+      assert.deepEqual(jobCover.buffer, ownerCover.buffer);
+      assert.equal((await call(`/api/jobs/${id}/artwork/secret.mp3?playlist=1`, headers.Reader)).status, 403);
+      for (const auth of [headers.Linked, headers.Reader, keyHeaders]) {
+        const sharedCover = await call(`${route}?userId=${users.Owner.id}`, auth);
+        assert.equal(sharedCover.status, 200, sharedCover.text);
+        assert.notDeepEqual(sharedCover.buffer, ownerCover.buffer);
+      }
+      await database.prepare(`UPDATE library_memberships SET position = CASE name WHEN 'open.mp3' THEN 0 ELSE 1 END
+        WHERE user_id = $1 AND playlist_id = $2`).run(users.Owner.id, id);
+      assert.equal((await sources(users.Owner.id))[0].name, 'open.mp3');
+      assert.notDeepEqual((await call(route)).buffer, ownerCover.buffer, 'reordering chooses the new first cover');
+      const cacheRoot = path.join(directory, 'data', 'playlist-thumbnails');
+      await fs.rm(cacheRoot, { recursive: true, force: true });
+      const regeneration = await call('/api/admin/artwork-thumbnails', headers.Admin, 'POST');
+      assert.equal(regeneration.status, 202, regeneration.text);
+      let state = regeneration.body;
+      for (let attempt = 0; state.running && attempt < 100; attempt++) {
+        await delay(100);
+        state = (await call('/api/admin/artwork-thumbnails', headers.Admin)).body;
+      }
+      assert.equal(state.running, false);
+      assert.equal(state.failed, 0, state.error);
+      assert.ok((await fs.readdir(cacheRoot, { recursive: true })).some((name) => name.endsWith('.avif')),
+        'the admin action regenerates playlist covers after their cache is removed');
+    }
+    await writeJob(database, { ...job, private: true });
+    assert.equal((await call(`${route}?userId=${users.Owner.id}`, headers.Reader)).status, 404);
+    assert.equal((await call(`${route}?userId=${users.Owner.id}`, keyHeaders)).status, 404);
+  });
 
   await context.test('song-linked videos stream with ranges and inherit song and library permissions', async (subcontext) => {
     const id = 'song-linked-video';

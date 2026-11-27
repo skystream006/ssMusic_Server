@@ -15,6 +15,7 @@ export function attachSearchKey(req, res, next) {
   }
   const pathname = req.path.replace(/\/+$/, '').toLowerCase();
   const allowed = ['/api/songs/search', '/api/libraries', '/api/library', '/api/library/tracks'].includes(pathname)
+    || /^\/api\/library\/playlists\/[^/]+\/artwork$/.test(pathname)
     || /^\/api\/jobs\/[^/]+\/(stream|download|artwork|lyrics|video)\/[^/]+$/.test(pathname)
     || /^\/api\/jobs\/[^/]+\/files\/[^/]+\/(metadata|video)$/.test(pathname)
     || /^\/api\/karaoke\/jobs\/[^/]+$/.test(pathname);

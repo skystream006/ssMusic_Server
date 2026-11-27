@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileTypeFromBuffer } from 'file-type';
 import { readSongArtwork, readSongMetadata, readSongSummary, updateSongMetadata } from '../src/music.js';
-import { createThumbnailCache, encodeThumbnail, encodeVideoThumbnail, readDownloadedArtwork } from '../src/artworkThumbnails.js';
+import { createThumbnailCache, encodePlaylistThumbnail, encodeThumbnail, encodeVideoThumbnail, readDownloadedArtwork } from '../src/artworkThumbnails.js';
 import { audioExtensions, videoExtensions } from '../src/media.js';
 import { createThumbnailMaintenance, thumbnailSongs } from '../src/thumbnailMaintenance.js';
 
@@ -383,6 +383,19 @@ test('FFmpeg encodes bounded 192px AVIF thumbnails without modifying original ar
   assert.ok(thumbnail.length < source.length);
   assert.ok(thumbnail.length <= 64 * 1024);
   assert.deepEqual(source, original);
+  const white = execFileSync(path.join(bin, `ffmpeg${suffix}`), ['-v', 'error', '-f', 'lavfi',
+    '-i', 'color=white:size=192x192', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1']);
+  const playlist = await encodePlaylistThumbnail({ mime: 'image/png', imageBuffer: white });
+  const playlistProbe = JSON.parse(execFileSync(path.join(bin, `ffprobe${suffix}`), ['-v', 'error',
+    '-show_entries', 'stream=codec_name,width,height', '-of', 'json', 'pipe:0'], { input: playlist }));
+  assert.deepEqual(playlistProbe.streams, [{ codec_name: 'av1', width: 192, height: 192 }]);
+  assert.equal((await fileTypeFromBuffer(playlist)).mime, 'image/avif');
+  assert.ok(playlist.length <= 64 * 1024);
+  const pixels = execFileSync(path.join(bin, `ffmpeg${suffix}`), ['-v', 'error', '-i', 'pipe:0',
+    '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { input: playlist });
+  assert.ok(pixels[(10 * 192 + 100) * 3] > 220, 'source cover is retained');
+  assert.ok(pixels[(10 * 192 + 145) * 3] < 130, 'playlist band darkens the right side');
+  assert.ok(pixels[(79 * 192 + 150) * 3] > 200, 'playlist badge is visible');
   await assert.rejects(encodeThumbnail({ mime: 'image/png', imageBuffer: Buffer.from('broken') }), /could not generate|Invalid artwork/);
 });
 
@@ -506,6 +519,32 @@ test('thumbnail maintenance releases its running state after catalog errors', as
   await maintenance.wait();
   assert.equal(maintenance.status().running, false);
   assert.match(maintenance.status().error, /could not finish/);
+});
+
+test('bulk regeneration rebuilds playlists after songs and counts empty and failed playlist covers', async (context) => {
+  context.mock.method(console, 'warn', () => {});
+  const calls = [];
+  const maintenance = createThumbnailMaintenance({
+    async *songs() { yield 'song'; },
+    async *playlists() { yield { name: 'playlist' }; yield { name: null }; yield { name: 'broken' }; },
+    resolveFile: async (source) => source.name || source,
+    async generate(file, options) { calls.push([file, options.force]); return Buffer.from('song'); },
+    async generatePlaylist(file, options) {
+      calls.push([file, options.force]);
+      if (file === 'broken') throw new Error('Encoder failed');
+      return Buffer.from('playlist');
+    }
+  });
+  maintenance.start();
+  await maintenance.wait();
+  assert.deepEqual(calls, [['song', true], ['playlist', true], ['broken', true]]);
+  const state = maintenance.status();
+  assert.equal(state.processed, 4);
+  assert.equal(state.generated, 2);
+  assert.equal(state.missing, 1);
+  assert.equal(state.failed, 1);
+  assert.equal(state.running, false);
+  assert.match(state.error, /Some thumbnails failed/);
 });
 
 test('thumbnail catalog iteration uses bounded keyset batches rather than loading all jobs', async () => {

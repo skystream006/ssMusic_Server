@@ -983,6 +983,8 @@ export default function MusicLibrary({ user, request, confirm, owner = null, act
             onChange={(event) => { const checked = event.target.checked; setSelectedPlaylists((current) => { const next = new Set(current); if (checked) next.add(entry.id); else next.delete(entry.id); return next; }); }} /> : <span className="folder-expander" />}
           <button className="library-entry-select" type="button" aria-current={selectedId === entry.id ? 'true' : undefined} title={entryTitle(entry)} onClick={() => { if (!reordering) selectEntry(entry.id); }}>
             {folder ? open ? <FolderOpen size={18} /> : <Folder size={18} />
+              : playlist?.playlistArtworkUrl
+                ? <JobArtwork job={playlist} />
               : tracks?.some((track) => track.playlistId === entry.id)
                 ? <SongArtwork track={tracks.find((track) => track.playlistId === entry.id)} />
                 : <JobArtwork job={sourceJobMap.get(entry.id) || { ...playlist, id: entry.id, isPlaylist: true }} userId={readOnly ? owner?.id : undefined} />}

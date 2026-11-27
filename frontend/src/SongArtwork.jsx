@@ -19,7 +19,9 @@ export function JobArtwork({ job, userId }) {
   const parameters = new URLSearchParams();
   if (job.updatedAt) parameters.set('v', job.updatedAt);
   if (userId) parameters.set('userId', userId);
-  const artworkUrl = name ? `/api/jobs/${encodeURIComponent(job.id)}/artwork/${encodeURIComponent(name)}?${parameters}` : null;
-  return <SongArtwork track={{ name, artworkUrl }} placeholder={job.isPlaylist ? <ListMusic size={20} />
+  if (job.isPlaylist) parameters.set('playlist', '1');
+  const artworkUrl = job.playlistArtworkUrl
+    || (name ? `/api/jobs/${encodeURIComponent(job.id)}/artwork/${encodeURIComponent(name)}?${parameters}` : null);
+  return <SongArtwork track={{ name, artworkUrl }} placeholder={job.isPlaylist || job.playlistArtworkUrl ? <ListMusic size={20} />
     : job.downloadType === 'video' || mediaType(name) === 'video' ? <Film size={20} /> : <Music2 size={20} />} />;
 }

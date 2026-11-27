@@ -2555,7 +2555,9 @@ for (const [downloadType, artworkQuality] of [['audio', null], ['video', 'maxres
     syncBuiltinESMExports();
     context.after(() => { spawnMock.mock.restore(); syncBuiltinESMExports(); });
     const manager = await import(`../src/jobManager.js?downloaded-artwork=${downloadType}-${artworkQuality}`);
-    const owner = { id: 'owner', role: 'user' };
+    const owner = { id: 'owner', name: 'Owner', role: 'user', status: 'approved',
+      userHandle: 'owner-handle', credentials: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    await writeUser(openDatabase(), owner);
     const job = await manager.createJob(artworkQuality === 'maxres'
       ? 'https://www.youtube.com/playlist?list=artwork'
       : 'https://www.youtube.com/watch?v=cMoRYP8EDUk', owner, { downloadType });
@@ -2568,6 +2570,17 @@ for (const [downloadType, artworkQuality] of [['audio', null], ['video', 'maxres
     const [cached] = await fs.readdir(cacheDirectory);
     assert.match(cached, /^[a-f0-9]{64}\.avif$/);
     assert.equal((await fileTypeFromBuffer(await fs.readFile(path.join(cacheDirectory, cached)))).mime, 'image/avif');
+    const { playlistThumbnailSources } = await import('../src/playlistThumbnails.js');
+    let playlistCount = 0;
+    for await (const first of playlistThumbnailSources(openDatabase(), { jobId: job.id })) {
+      playlistCount++;
+      const sourcePath = await fs.realpath(path.join(first.output_dir, first.name));
+      const playlistCache = path.resolve('data', 'playlist-thumbnails', createHash('sha256').update(sourcePath).digest('hex'));
+      const [cover] = await fs.readdir(playlistCache);
+      assert.equal((await fileTypeFromBuffer(await fs.readFile(path.join(playlistCache, cover)))).mime, 'image/avif',
+        'download completion generates playlist covers before they are requested');
+    }
+    assert.ok(playlistCount > 0);
     const downloaded = await fs.readFile(filePath);
     if (downloadType === 'audio') {
       const image = await readSongArtwork(filePath);
@@ -3320,7 +3333,7 @@ test('manual playlists persist without a URL or files and validate their names',
   await assert.rejects(manager.importJobFiles({ files: [], playlistTitle: 'Empty single', source: 'manual', individual: true }, owner), { statusCode: 400 });
 });
 
-test('metadata search indexes existing embedded tags once and includes new imports', async () => {
+test('metadata search indexes existing embedded tags once and includes new imports', async (context) => {
   const outputDir = path.join(fixtureDirectory, 'embedded-search');
   await fs.mkdir(outputDir);
   const name = 'Existing.mp3';
@@ -3356,6 +3369,17 @@ test('metadata search indexes existing embedded tags once and includes new impor
   assert.equal(result.total, 1);
   assert.equal(result.files[0].jobId, imported.id);
   assert.equal(result.files[0].artist, 'Imported artist');
+  const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
+  const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
+  const executable = path.join(bin, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  if (await fs.access(executable).then(() => true, () => false)) {
+    const filePath = await fs.realpath(path.join(imported.outputDir, 'Imported.mp3'));
+    const cacheDirectory = path.resolve('data', 'playlist-thumbnails', createHash('sha256').update(filePath).digest('hex'));
+    const [cover] = await fs.readdir(cacheDirectory);
+    assert.equal((await fileTypeFromBuffer(await fs.readFile(path.join(cacheDirectory, cover)))).mime, 'image/avif',
+      'completed imports generate playlist covers before any artwork request');
+    context.after(() => fs.rm(cacheDirectory, { recursive: true, force: true }));
+  }
 });
 
 test('file replacement omits lyric payloads while preserving uploaded lyrics and transcription locks', async () => {

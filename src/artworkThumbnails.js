@@ -15,7 +15,7 @@ const isAvif = async (buffer) => buffer.length > 0 && buffer.length <= maxThumbn
   && (await fileTypeFromBuffer(buffer).catch(() => null))?.mime === 'image/avif';
 let audioFallback;
 
-async function encodeThumbnailSource(inputArguments, imageBuffer, video = false) {
+async function encodeThumbnailSource(inputArguments, imageBuffer, video = false, filters = []) {
   const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
   const directory = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
   const executable = path.join(directory, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
@@ -26,7 +26,7 @@ async function encodeThumbnailSource(inputArguments, imageBuffer, video = false)
       const child = execFile(executable, ['-nostdin', '-v', 'error', '-max_alloc', '33554432',
         ...inputArguments,
         '-vf', ['scale=192:192:force_original_aspect_ratio=decrease', ...(video ? ['thumbnail=30'] : []),
-          'pad=192:192:(ow-iw)/2:(oh-ih)/2:color=0x00000000'].join(','),
+          'pad=192:192:(ow-iw)/2:(oh-ih)/2:color=0x00000000', ...filters].join(','),
         '-frames:v', '1', '-threads', '1', '-c:v', 'libaom-av1', '-still-picture', '1', '-cpu-used', '8',
         '-crf', '32', '-b:v', '0', '-pix_fmt', 'yuv420p', '-f', 'avif', target],
       { encoding: 'buffer', timeout: 15_000, maxBuffer: maxThumbnailBytes, windowsHide: true }, (error) => {
@@ -45,14 +45,14 @@ async function encodeThumbnailSource(inputArguments, imageBuffer, video = false)
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
-export function encodeThumbnail(image) {
+export function encodeThumbnail(image, filters = []) {
   const format = { 'image/jpeg': 'mjpeg', 'image/png': 'png', 'image/webp': 'webp' }[image.mime];
   if (!format && image.mime !== 'image/avif') throw new Error('Unsupported artwork image');
   const input = image.mime === 'image/avif'
     ? ['-f', 'mov', '-enable_drefs', '0', '-use_absolute_path', '0']
     : ['-f', 'image2pipe', '-c:v', format];
   return encodeThumbnailSource(['-protocol_whitelist', 'pipe', ...input,
-    '-max_pixels', '16777216', '-threads', '1', '-i', 'pipe:0'], image.imageBuffer);
+    '-max_pixels', '16777216', '-threads', '1', '-i', 'pipe:0'], image.imageBuffer, false, filters);
 }
 
 export function encodeVideoThumbnail(filePath) {
@@ -185,12 +185,36 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
 const thumbnails = createThumbnailCache();
 export const readSongThumbnail = (filePath, options) => thumbnails.read(filePath, options);
 
+export function encodePlaylistThumbnail(image) {
+  return encodeThumbnail(image, [
+    'drawbox=x=136:y=0:w=56:h=192:color=black@0.65:t=fill',
+    ...[78, 90, 102].map((y) => `drawbox=x=148:y=${y}:w=25:h=4:color=white:t=fill`),
+    'drawbox=x=177:y=78:w=4:h=4:color=white:t=fill',
+    'drawbox=x=177:y=90:w=4:h=4:color=white:t=fill',
+    'drawbox=x=177:y=102:w=4:h=4:color=white:t=fill'
+  ]);
+}
+
+const playlistImage = async (filePath) => ({
+  mime: 'image/avif', imageBuffer: await readSongThumbnail(filePath, { fallback: true })
+});
+const playlistThumbnails = createThumbnailCache({
+  root: path.resolve('data', 'playlist-thumbnails'),
+  readArtwork: playlistImage,
+  encode: encodePlaylistThumbnail,
+  encodeVideo: async (filePath) => encodePlaylistThumbnail(await playlistImage(filePath))
+});
+export const readPlaylistThumbnail = (filePath, options) => playlistThumbnails.read(filePath, options);
+
 export async function refreshSongThumbnail(filePath, options) {
   try { await readSongThumbnail(filePath, options); }
   catch (error) { console.warn(`Unable to refresh album artwork thumbnail: ${error.message}`); }
 }
 
 export async function removeSongThumbnail(filePath) {
-  try { await thumbnails.remove(filePath); }
+  try {
+    await thumbnails.remove(filePath);
+    await playlistThumbnails.remove(filePath);
+  }
   catch (error) { console.warn(`Unable to remove album artwork thumbnail: ${error.message}`); }
 }

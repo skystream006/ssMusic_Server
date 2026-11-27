@@ -13,7 +13,8 @@ import { isSongFile } from './transcription.js';
 import { isPlayableFile, mediaType } from './media.js';
 import { readSongMetadata, readSongSummary } from './music.js';
 import { readSongVideo, songVideoMetadata } from './songVideos.js';
-import { readSongThumbnail } from './artworkThumbnails.js';
+import { readPlaylistThumbnail, readSongThumbnail } from './artworkThumbnails.js';
+import { playlistThumbnailSources } from './playlistThumbnails.js';
 import { createMediaStreamHandler } from './audioCompatibility.js';
 import { getVideoCacheSettings, setVideoCacheSettings, startVideoCacheMaintenance, videoCache } from './videoCache.js';
 import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
@@ -119,7 +120,9 @@ app.use(helmet({
 }));
 app.use(['/api/public', '/share'], mediaShareHeaders);
 app.use('/api', (req, res, next) => {
-  const artwork = ['GET', 'HEAD'].includes(req.method) && /^\/jobs\/[^/]+\/artwork\/[^/]+\/?$/i.test(req.path);
+  const artwork = ['GET', 'HEAD'].includes(req.method)
+    && (/^\/jobs\/[^/]+\/artwork\/[^/]+\/?$/i.test(req.path)
+      || /^\/library\/playlists\/[^/]+\/artwork\/?$/i.test(req.path));
   const streaming = ['GET', 'HEAD'].includes(req.method)
     && (/^\/jobs\/[^/]+\/(?:stream|video)\/[^/]+\/?$/i.test(req.path)
       || /^\/public\/(?:media\/[^/]+|playlists\/[^/]+\/tracks\/[^/]+)\/stream\/?$/i.test(req.path));
@@ -196,15 +199,19 @@ app.get('/api/libraries', requireSearchKey, async (_req, res) => {
   res.json({ users });
 });
 
+async function resolveThumbnailFile(song) {
+  if (!song.output_dir || !isValidJobFileName(song.name)) throw new Error('Invalid thumbnail source');
+  const outputDir = await fs.realpath(song.output_dir);
+  const filePath = await fs.realpath(path.join(outputDir, song.name));
+  if (!isFileInsideJobFolder({ outputDir }, filePath)) throw new Error('Invalid thumbnail source');
+  return filePath;
+}
+
 const thumbnailMaintenance = createThumbnailMaintenance({
   songs: () => thumbnailSongs(openDatabase()),
-  async resolveFile(song) {
-    if (!song.output_dir || !isValidJobFileName(song.name)) throw new Error('Invalid thumbnail source');
-    const outputDir = await fs.realpath(song.output_dir);
-    const filePath = await fs.realpath(path.join(outputDir, song.name));
-    if (!isFileInsideJobFolder({ outputDir }, filePath)) throw new Error('Invalid thumbnail source');
-    return filePath;
-  }
+  playlists: () => playlistThumbnailSources(openDatabase()),
+  generatePlaylist: readPlaylistThumbnail,
+  resolveFile: resolveThumbnailFile
 });
 app.use('/api/admin/artwork-thumbnails', requireAdmin, (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
@@ -258,6 +265,24 @@ app.get('/api/library', async (req, res) => {
     }
     res.json({ ...library, ownerId, readOnly });
   } catch (error) { res.status(error.statusCode || 500).json({ error: error.message }); }
+});
+
+app.get('/api/library/playlists/:id/artwork', async (req, res) => {
+  try {
+    const userId = await libraryReaderId(req.user, req.query.userId);
+    if (!userId) return res.status(404).end();
+    for await (const source of playlistThumbnailSources(openDatabase(), {
+      userId, playlistId: req.params.id, viewerId: req.user.id
+    })) {
+      if (!source.name) return res.status(404).end();
+      const thumbnail = await readPlaylistThumbnail(await resolveThumbnailFile(source));
+      if (!thumbnail) return res.status(404).end();
+      return res.type('image/avif').send(thumbnail);
+    }
+    return res.status(404).end();
+  } catch (error) {
+    return res.status(error.statusCode || (error.code === 'ENOENT' ? 404 : 500)).json({ error: error.message });
+  }
 });
 
 app.put('/api/library', async (req, res) => {
@@ -720,7 +745,8 @@ app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
   res.set('Cache-Control', 'private, no-cache');
   try {
     const filePath = await resolveRequestedFile(req, isPlayableFile);
-    const artwork = await readSongThumbnail(filePath, { fallback: req.query.fallback === '1' });
+    const artwork = req.query.playlist === '1' ? await readPlaylistThumbnail(filePath)
+      : await readSongThumbnail(filePath, { fallback: req.query.fallback === '1' });
     if (!artwork) return res.status(404).end();
     return res.type('image/avif').send(artwork);
   } catch (error) {

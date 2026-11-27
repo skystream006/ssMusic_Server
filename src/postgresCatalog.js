@@ -223,6 +223,9 @@ export async function readPostgresLibrary(database, userId, viewerId = userId) {
       protected: Boolean(entry.protected), private: entry.private === true, status: jobMap.get(entry.id)?.status || 'completed',
       initiatedBy: Object.hasOwn(individualPlaylistNames, entry.id) ? { id: userId } : jobMap.get(entry.id)?.initiatedBy,
       contributors: jobMap.get(entry.id)?.contributors || [],
+      playlistArtworkUrl: `/api/library/playlists/${encodeURIComponent(entry.id)}/artwork?${new URLSearchParams({
+        userId, v: String(catalog?.revision || 0)
+      })}`,
       updatedAt: jobMap.get(entry.id)?.updatedAt, songCount: counts.get(entry.id) || 0 })) };
 }
 

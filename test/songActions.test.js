@@ -1862,6 +1862,19 @@ test('job list thumbnails select visible originals and preserve revisions and sh
   }
 });
 
+test('library playlist previews use generated covers even when no tracks have been paged into the UI', () => {
+  const artworkUrl = '/api/library/playlists/individual-songs/artwork?userId=owner&v=8';
+  const html = renderToStaticMarkup(createElement(JobArtwork, {
+    job: { id: 'individual-songs', playlistArtworkUrl: artworkUrl, files: [] }
+  }));
+  assert.match(html, /src="\/api\/library\/playlists\/individual-songs\/artwork\?userId=owner&amp;v=8"/);
+  assert.match(html, /loading="lazy"[^>]*decoding="async"/);
+  const jobHtml = renderToStaticMarkup(createElement(JobArtwork, {
+    job: { id: 'job', isPlaylist: true, files: ['Song.mp3'] }
+  }));
+  assert.match(jobHtml, /src="\/api\/jobs\/job\/artwork\/Song\.mp3\?playlist=1"/);
+});
+
 test('metadata viewer has close controls but no save or transcription-lock actions', () => {
   for (const transcriptionLocked of [false, true]) {
     const html = renderToStaticMarkup(createElement(MetadataDialog, {

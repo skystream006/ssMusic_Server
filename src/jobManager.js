@@ -12,7 +12,8 @@ import { isPlayableFile, mediaType } from './media.js';
 import { readSongArtwork, readSongMetadata, readSongSourceUrl, readSongSummary, updateSongMetadata } from './music.js';
 import { retrieveYoutubeArtwork, retrieveYoutubeMetadata } from './youtubeMetadata.js';
 import { readSongVideo, removeSongVideo, songVideoPath } from './songVideos.js';
-import { readDownloadedArtwork, refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
+import { readDownloadedArtwork, readPlaylistThumbnail, refreshSongThumbnail, removeSongThumbnail } from './artworkThumbnails.js';
+import { playlistThumbnailSources } from './playlistThumbnails.js';
 import { isNoVocals, songMetadataFields, songStem } from './library.js';
 import { countLibraryFileLinks, lockLibraryFile, removeLibrarySongLink } from './libraryStore.js';
 import { assertPrivacyEnabled, attachPrivacyAliases, canReadAllFiles, canReadFile, canReadJob, ownsJob, visibleJob } from './privacy.js';
@@ -239,6 +240,21 @@ async function refreshJobThumbnails(job, names = job.files || [], options) {
     const filePath = await fs.realpath(getFilePath(job, name)).catch(() => null);
     if (filePath && isFileInsideJobFolder({ outputDir }, filePath)) await refreshSongThumbnail(filePath, options);
   }
+}
+
+async function refreshJobPlaylistThumbnails(job) {
+  try {
+    for await (const source of playlistThumbnailSources(database, { jobId: job.id })) {
+      if (!source.name) continue;
+      try {
+        if (!source.output_dir || !isValidJobFileName(source.name)) throw new Error('Invalid playlist thumbnail source');
+        const outputDir = await fs.realpath(source.output_dir);
+        const filePath = await fs.realpath(path.join(outputDir, source.name));
+        if (!isFileInsideJobFolder({ outputDir }, filePath)) throw new Error('Invalid playlist thumbnail source');
+        await readPlaylistThumbnail(filePath, { force: true });
+      } catch (error) { console.warn(`Unable to refresh playlist thumbnail: ${error.message}`); }
+    }
+  } catch (error) { console.warn(`Unable to list playlist thumbnail sources: ${error.message}`); }
 }
 
 function waitForUpdateGate() {
@@ -1091,6 +1107,7 @@ async function executeJobWork(job, signal) {
       job.updatedAt = new Date().toISOString();
       await persistJob({ ...job, status: completedStatus || job.status });
       if (!publisher) await refreshJobThumbnails(job, job.files, { force: !job.metadataOnly });
+      await refreshJobPlaylistThumbnails(job);
       if (completedStatus) job.status = completedStatus;
     }
   }
@@ -1310,6 +1327,7 @@ export async function importJobFiles({ files, playlistId, playlistTitle, source 
     job.updatedAt = new Date().toISOString();
     await persistJob(job);
     await refreshJobThumbnails(job, added);
+    await refreshJobPlaylistThumbnails(job);
     return job;
   } catch (error) {
     await Promise.all(added.map((name) => fs.rm(path.join(job.outputDir, name), { force: true })));
@@ -1441,6 +1459,7 @@ async function retrieveJobMetadataWork(job, signal, { artistPrefix = '', artistP
   appendJobOutput(job, `[system]\nVideo URLs available: ${videoUrls} of ${eligible.length} songs.\nMetadata retrieval complete: ${updated} updated, ${eligible.length - updated} unchanged.`);
   job.updatedAt = new Date().toISOString();
   await persistJob(job);
+  await refreshJobPlaylistThumbnails(job);
 }
 
 export async function downloadSongVideo(id, name, user = null) {
