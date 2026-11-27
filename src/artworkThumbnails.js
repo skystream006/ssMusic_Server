@@ -11,11 +11,17 @@ const thumbnailVersion = '192-avif-v1';
 const maxThumbnailBytes = 64 * 1024;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const signature = (stat) => hash(`${thumbnailVersion}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`);
+const sourceKey = (source) => Array.isArray(source) ? source[0] : source;
+const sourceRevision = async (source) => Array.isArray(source)
+  ? hash(`192-collage-v1:${JSON.stringify(await Promise.all(source.map(async (filePath) => [
+    filePath, signature(await fs.stat(filePath))
+  ])))}`)
+  : signature(await fs.stat(source));
 const isAvif = async (buffer) => buffer.length > 0 && buffer.length <= maxThumbnailBytes
   && (await fileTypeFromBuffer(buffer).catch(() => null))?.mime === 'image/avif';
 let audioFallback;
 
-async function encodeThumbnailSource(inputArguments, imageBuffer, video = false, filters = []) {
+async function encodeThumbnailSource(inputArguments, imageBuffer, video = false, complexFilter = null) {
   const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
   const directory = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
   const executable = path.join(directory, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
@@ -25,8 +31,9 @@ async function encodeThumbnailSource(inputArguments, imageBuffer, video = false,
     await new Promise((resolve, reject) => {
       const child = execFile(executable, ['-nostdin', '-v', 'error', '-max_alloc', '33554432',
         ...inputArguments,
-        '-vf', ['scale=192:192:force_original_aspect_ratio=decrease', ...(video ? ['thumbnail=30'] : []),
-          'pad=192:192:(ow-iw)/2:(oh-ih)/2:color=0x00000000', ...filters].join(','),
+        ...(complexFilter ? ['-filter_complex_threads', '1', '-filter_complex', complexFilter, '-map', '[collage]']
+          : ['-vf', ['scale=192:192:force_original_aspect_ratio=decrease', ...(video ? ['thumbnail=30'] : []),
+            'pad=192:192:(ow-iw)/2:(oh-ih)/2:color=0x00000000'].join(',')]),
         '-frames:v', '1', '-threads', '1', '-c:v', 'libaom-av1', '-still-picture', '1', '-cpu-used', '8',
         '-crf', '32', '-b:v', '0', '-pix_fmt', 'yuv420p', '-f', 'avif', target],
       { encoding: 'buffer', timeout: 15_000, maxBuffer: maxThumbnailBytes, windowsHide: true }, (error) => {
@@ -45,14 +52,14 @@ async function encodeThumbnailSource(inputArguments, imageBuffer, video = false,
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
-export function encodeThumbnail(image, filters = []) {
+export function encodeThumbnail(image) {
   const format = { 'image/jpeg': 'mjpeg', 'image/png': 'png', 'image/webp': 'webp' }[image.mime];
   if (!format && image.mime !== 'image/avif') throw new Error('Unsupported artwork image');
   const input = image.mime === 'image/avif'
     ? ['-f', 'mov', '-enable_drefs', '0', '-use_absolute_path', '0']
     : ['-f', 'image2pipe', '-c:v', format];
   return encodeThumbnailSource(['-protocol_whitelist', 'pipe', ...input,
-    '-max_pixels', '16777216', '-threads', '1', '-i', 'pipe:0'], image.imageBuffer, false, filters);
+    '-max_pixels', '16777216', '-threads', '1', '-i', 'pipe:0'], image.imageBuffer);
 }
 
 export function encodeVideoThumbnail(filePath) {
@@ -104,18 +111,20 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
     if (running >= 2) await new Promise((resolve) => waiting.push(resolve));
     else running += 1;
     try {
-      const directory = path.join(root, hash(filePath));
+      const directory = path.join(root, hash(sourceKey(filePath)));
       for (let attempt = 0; attempt < 3; attempt++) {
-        const stat = await fs.stat(filePath);
+        const stat = await fs.stat(sourceKey(filePath));
         if (!stat.isFile()) return null;
-        const revision = signature(stat);
+        const revision = await sourceRevision(filePath);
         const target = path.join(directory, `${revision}.avif`);
         if (!force) {
           const cached = await readCached(target);
           if (cached) return cached.length ? cached : null;
         }
         let thumbnail;
-        if (mediaType(filePath) === 'video') {
+        if (Array.isArray(filePath)) {
+          thumbnail = await encode(await readArtwork(filePath));
+        } else if (mediaType(filePath) === 'video') {
           const image = await readDownloadedArtwork(filePath).catch(() => null);
           if (image) {
             try { thumbnail = await encode(image); }
@@ -126,7 +135,7 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
           const image = await readArtwork(filePath);
           thumbnail = image ? await encode(image) : Buffer.alloc(0);
         }
-        if (signature(await fs.stat(filePath)) !== revision) continue;
+        if (await sourceRevision(filePath) !== revision) continue;
         await fs.mkdir(directory, { recursive: true, mode: 0o700 });
         const temporary = path.join(directory, `${randomUUID()}.tmp`);
         try {
@@ -148,27 +157,34 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
   }
 
   async function readSource(filePath, { force = false } = {}) {
-    if (!/\.mp3$/i.test(filePath) && mediaType(filePath) !== 'video') return null;
-    const realPath = await fs.realpath(filePath);
+    if (Array.isArray(filePath)) {
+      if (!filePath.length) return null;
+      if (filePath.length > 4 || filePath.some((source) => typeof source !== 'string' || !mediaType(source))) {
+        throw new Error('Playlist thumbnails require one to four media files');
+      }
+    } else if (!/\.mp3$/i.test(filePath) && mediaType(filePath) !== 'video') return null;
+    const realPath = Array.isArray(filePath)
+      ? await Promise.all(filePath.map((source) => fs.realpath(source))) : await fs.realpath(filePath);
+    const key = sourceKey(realPath);
     if (!force) {
-      const revision = signature(await fs.stat(realPath));
-      const cached = await readCached(path.join(root, hash(realPath), `${revision}.avif`));
+      const revision = await sourceRevision(realPath);
+      const cached = await readCached(path.join(root, hash(key), `${revision}.avif`));
       if (cached) return cached.length ? cached : null;
     }
-    const existing = pending.get(realPath);
+    const existing = pending.get(key);
     if (existing) {
       await existing;
       return readSource(realPath, { force });
     }
     const operation = generate(realPath, force);
-    pending.set(realPath, operation);
+    pending.set(key, operation);
     try { return await operation; }
-    finally { if (pending.get(realPath) === operation) pending.delete(realPath); }
+    finally { if (pending.get(key) === operation) pending.delete(key); }
   }
 
   async function read(filePath, options = {}) {
     const thumbnail = await readSource(filePath, options);
-    if (thumbnail || options.fallback !== true || mediaType(filePath) !== 'audio') return thumbnail;
+    if (thumbnail || options.fallback !== true || Array.isArray(filePath) || mediaType(filePath) !== 'audio') return thumbnail;
     audioFallback ??= fs.readFile(new URL('./assets/audio-thumbnail.avif', import.meta.url));
     return audioFallback;
   }
@@ -185,14 +201,30 @@ export function createThumbnailCache({ root = path.resolve('data', 'artwork-thum
 const thumbnails = createThumbnailCache();
 export const readSongThumbnail = (filePath, options) => thumbnails.read(filePath, options);
 
-export function encodePlaylistThumbnail(image) {
-  return encodeThumbnail(image, [
-    'drawbox=x=136:y=0:w=56:h=192:color=black@0.65:t=fill',
-    ...[78, 90, 102].map((y) => `drawbox=x=148:y=${y}:w=25:h=4:color=white:t=fill`),
-    'drawbox=x=177:y=78:w=4:h=4:color=white:t=fill',
-    'drawbox=x=177:y=90:w=4:h=4:color=white:t=fill',
-    'drawbox=x=177:y=102:w=4:h=4:color=white:t=fill'
-  ]);
+export async function encodePlaylistThumbnail(images) {
+  if (!Array.isArray(images) || !images.length || images.length > 4) {
+    throw new Error('Playlist thumbnails require one to four images');
+  }
+  if (images.length === 1) return encodeThumbnail(images[0]);
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-collage-'));
+  try {
+    const inputs = [];
+    const tiles = images.length === 2 ? [[96, 192, 0, 0], [96, 192, 96, 0]]
+      : images.length === 3 ? [[96, 192, 0, 0], [96, 96, 96, 0], [96, 96, 96, 96]]
+        : [[96, 96, 0, 0], [96, 96, 96, 0], [96, 96, 0, 96], [96, 96, 96, 96]];
+    for (const [index, image] of images.entries()) {
+      if (image.mime !== 'image/avif' || !await isAvif(image.imageBuffer)) throw new Error('Invalid playlist source thumbnail');
+      const input = path.join(temporary, `${index}.avif`);
+      await fs.writeFile(input, image.imageBuffer, { flag: 'wx', mode: 0o600 });
+      inputs.push('-protocol_whitelist', 'file,pipe', '-f', 'mov', '-enable_drefs', '0', '-use_absolute_path', '0',
+        '-max_pixels', '16777216', '-threads', '1', '-i', input);
+    }
+    const filters = tiles.map(([width, height], index) =>
+      `[${index}:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1[t${index}]`);
+    filters.push(`${tiles.map((_, index) => `[t${index}]`).join('')}xstack=inputs=${images.length}:layout=${
+      tiles.map(([, , x, y]) => `${x}_${y}`).join('|')}:shortest=1[collage]`);
+    return await encodeThumbnailSource(inputs, undefined, false, filters.join(';'));
+  } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
 const playlistImage = async (filePath) => ({
@@ -200,11 +232,10 @@ const playlistImage = async (filePath) => ({
 });
 const playlistThumbnails = createThumbnailCache({
   root: path.resolve('data', 'playlist-thumbnails'),
-  readArtwork: playlistImage,
+  readArtwork: (filePaths) => Promise.all(filePaths.map(playlistImage)),
   encode: encodePlaylistThumbnail,
-  encodeVideo: async (filePath) => encodePlaylistThumbnail(await playlistImage(filePath))
 });
-export const readPlaylistThumbnail = (filePath, options) => playlistThumbnails.read(filePath, options);
+export const readPlaylistThumbnail = (filePaths, options) => playlistThumbnails.read(filePaths, options);
 
 export async function refreshSongThumbnail(filePath, options) {
   try { await readSongThumbnail(filePath, options); }

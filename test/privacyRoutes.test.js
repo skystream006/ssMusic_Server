@@ -126,8 +126,12 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       image: { mime: 'image/png', type: { id: 3 }, imageBuffer }
     }, Buffer.from('audio')));
     await fs.writeFile(path.join(outputDir, 'open.mp3'), 'audio');
+    for (const name of ['third.mp3', 'fourth.mp3', 'fifth.flac']) await fs.writeFile(path.join(outputDir, name), 'audio');
+    await fs.mkdir(path.join(outputDir, '[NoVocals]'));
+    await fs.writeFile(path.join(outputDir, '[NoVocals]', 'open.mp3'), 'audio');
     const job = { id, url: `import:${id}`, status: 'completed', isPlaylist: true,
-      initiatedBy: { id: users.Owner.id }, outputDir, files: ['secret.mp3', 'open.mp3'],
+      initiatedBy: { id: users.Owner.id }, outputDir,
+      files: ['secret.mp3', '[NoVocals]/open.mp3', 'open.mp3', 'third.mp3', 'fourth.mp3', 'fifth.flac'],
       privateFiles: ['secret.mp3'], playlistTitle: 'Playlist cover', createdAt: new Date().toISOString() };
     await writeJob(database, job);
     subcontext.after(() => call(`/api/jobs/${id}`, headers.Owner, 'DELETE'));
@@ -136,9 +140,11 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       for await (const row of playlistThumbnailSources(database, { userId: users.Owner.id, playlistId: id, viewerId })) rows.push(row);
       return rows;
     };
-    assert.equal((await sources(users.Owner.id))[0].name, 'secret.mp3');
-    assert.equal((await sources(users.Reader.id))[0].name, 'open.mp3');
-    assert.equal((await sources(null))[0].name, 'open.mp3', 'catalog credentials cannot inherit owner privacy');
+    const sourceNames = async (viewerId) => (await sources(viewerId))[0].sources.map((source) => source.name);
+    assert.deepEqual(await sourceNames(users.Owner.id), ['secret.mp3', 'open.mp3', 'third.mp3', 'fourth.mp3']);
+    assert.deepEqual(await sourceNames(users.Reader.id), ['open.mp3', 'third.mp3', 'fourth.mp3', 'fifth.flac']);
+    assert.deepEqual(await sourceNames(null), ['open.mp3', 'third.mp3', 'fourth.mp3', 'fifth.flac'],
+      'catalog credentials cannot inherit owner privacy');
     const route = `/api/library/playlists/${id}/artwork`;
     assert.equal((await call(route, {})).status, 401);
     assert.equal((await call(route, headers.Linked)).status, 404);
@@ -160,7 +166,7 @@ test('privacy and search keys enforce owner-only access through HTTP', { timeout
       }
       await database.prepare(`UPDATE library_memberships SET position = CASE name WHEN 'open.mp3' THEN 0 ELSE 1 END
         WHERE user_id = $1 AND playlist_id = $2`).run(users.Owner.id, id);
-      assert.equal((await sources(users.Owner.id))[0].name, 'open.mp3');
+      assert.equal((await sourceNames(users.Owner.id))[0], 'open.mp3');
       assert.notDeepEqual((await call(route)).buffer, ownerCover.buffer, 'reordering chooses the new first cover');
       const cacheRoot = path.join(directory, 'data', 'playlist-thumbnails');
       await fs.rm(cacheRoot, { recursive: true, force: true });

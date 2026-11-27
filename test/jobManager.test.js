@@ -2574,7 +2574,7 @@ for (const [downloadType, artworkQuality] of [['audio', null], ['video', 'maxres
     let playlistCount = 0;
     for await (const first of playlistThumbnailSources(openDatabase(), { jobId: job.id })) {
       playlistCount++;
-      const sourcePath = await fs.realpath(path.join(first.output_dir, first.name));
+      const sourcePath = await fs.realpath(path.join(first.sources[0].output_dir, first.sources[0].name));
       const playlistCache = path.resolve('data', 'playlist-thumbnails', createHash('sha256').update(sourcePath).digest('hex'));
       const [cover] = await fs.readdir(playlistCache);
       assert.equal((await fileTypeFromBuffer(await fs.readFile(path.join(playlistCache, cover)))).mime, 'image/avif',

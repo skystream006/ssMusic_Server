@@ -1922,14 +1922,17 @@ unchanged.
 The Jobs table, admin job queue, import results, job-player queue, shared-link
 song list, and public playlist tracks also show lazy-loaded thumbnails. Job
 previews use a representative visible MP3 or video when available. Library
-playlist covers use the first visible original MP3 or video in playlist order,
-with a YouTube-style dark playlist badge. They are generated after download,
+playlist covers are collages of up to four visible original media thumbnails in
+playlist order. One image fills the cover, two use side-by-side tiles, three use
+one tall tile beside two stacked tiles, and four form a 2 by 2 grid.
+They are generated after download,
 import, and metadata jobs finish, and cached under `data/playlist-thumbnails`
 in the existing Docker data volume. Songs without embedded covers use the bundled
 audio cover. Linked songs and the Individual Songs/Videos playlists are included.
 Every cover request rechecks library access and source privacy; shared viewers
 never receive covers from hidden tracks. Reordering or changing membership selects
-the new first visible track on the next request;
+the new visible tracks on the next request; changes to any included media file
+invalidate the collage cache.
 empty jobs and playlists retain their icons. Public playlist thumbnail requests
 use the playlist's share-scoped endpoint and stop working when its link is revoked.
 

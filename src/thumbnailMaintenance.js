@@ -15,7 +15,8 @@ export async function* thumbnailSongs(database) {
 }
 
 export function createThumbnailMaintenance({ songs, resolveFile, generate = readSongThumbnail,
-  playlists = async function* () {}, generatePlaylist = readPlaylistThumbnail }) {
+  playlists = async function* () {}, generatePlaylist = async (playlist, options) =>
+    readPlaylistThumbnail(await Promise.all(playlist.sources.map(resolveFile)), options) }) {
   let state = { running: false, processed: 0, generated: 0, missing: 0, failed: 0,
     startedAt: null, completedAt: null, error: null };
   let operation = Promise.resolve();
@@ -23,8 +24,9 @@ export function createThumbnailMaintenance({ songs, resolveFile, generate = read
   async function regenerate(sources, encode, kind) {
     for await (const source of sources) {
       try {
-        const thumbnail = kind === 'Playlist' && !source.name
-          ? null : await encode(await resolveFile(source), { force: true });
+        const thumbnail = kind === 'Playlist'
+          ? source.sources.length ? await encode(source, { force: true }) : null
+          : await encode(await resolveFile(source), { force: true });
         state[thumbnail ? 'generated' : 'missing'] += 1;
       } catch (error) {
         if (error.code === 'ENOENT') state.missing += 1;

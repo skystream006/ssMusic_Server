@@ -383,20 +383,73 @@ test('FFmpeg encodes bounded 192px AVIF thumbnails without modifying original ar
   assert.ok(thumbnail.length < source.length);
   assert.ok(thumbnail.length <= 64 * 1024);
   assert.deepEqual(source, original);
-  const white = execFileSync(path.join(bin, `ffmpeg${suffix}`), ['-v', 'error', '-f', 'lavfi',
-    '-i', 'color=white:size=192x192', '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1']);
-  const playlist = await encodePlaylistThumbnail({ mime: 'image/png', imageBuffer: white });
-  const playlistProbe = JSON.parse(execFileSync(path.join(bin, `ffprobe${suffix}`), ['-v', 'error',
-    '-show_entries', 'stream=codec_name,width,height', '-of', 'json', 'pipe:0'], { input: playlist }));
-  assert.deepEqual(playlistProbe.streams, [{ codec_name: 'av1', width: 192, height: 192 }]);
-  assert.equal((await fileTypeFromBuffer(playlist)).mime, 'image/avif');
-  assert.ok(playlist.length <= 64 * 1024);
-  const pixels = execFileSync(path.join(bin, `ffmpeg${suffix}`), ['-v', 'error', '-i', 'pipe:0',
-    '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { input: playlist });
-  assert.ok(pixels[(10 * 192 + 100) * 3] > 220, 'source cover is retained');
-  assert.ok(pixels[(10 * 192 + 145) * 3] < 130, 'playlist band darkens the right side');
-  assert.ok(pixels[(79 * 192 + 150) * 3] > 200, 'playlist badge is visible');
   await assert.rejects(encodeThumbnail({ mime: 'image/png', imageBuffer: Buffer.from('broken') }), /could not generate|Invalid artwork/);
+});
+
+test('playlist collages render one to four ordered media thumbnails as bounded 192px AVIF images', async (context) => {
+  const location = process.env.FFMPEG_PATH || path.resolve('runtime', 'ffmpeg', 'bin');
+  const bin = /^ffmpeg(?:\.exe)?$/i.test(path.basename(location)) ? path.dirname(location) : location;
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  const executable = path.join(bin, `ffmpeg${suffix}`);
+  try { await fs.access(executable); }
+  catch { context.skip('FFmpeg runtime is not installed'); return; }
+  const images = [];
+  for (const color of ['red', 'lime', 'blue', 'yellow']) {
+    const imageBuffer = execFileSync(executable, ['-v', 'error', '-f', 'lavfi', '-i', `color=${color}:size=192x192`,
+      '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'png', 'pipe:1']);
+    images.push({ mime: 'image/avif', imageBuffer: await encodeThumbnail({ mime: 'image/png', imageBuffer }) });
+  }
+  const centers = [
+    [[96, 96]],
+    [[48, 96], [144, 96]],
+    [[48, 96], [144, 48], [144, 144]],
+    [[48, 48], [144, 48], [48, 144], [144, 144]]
+  ];
+  const colors = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]];
+  for (let count = 1; count <= 4; count++) {
+    const collage = await encodePlaylistThumbnail(images.slice(0, count));
+    assert.equal((await fileTypeFromBuffer(collage)).mime, 'image/avif');
+    assert.ok(collage.length <= 64 * 1024);
+    const probe = JSON.parse(execFileSync(path.join(bin, `ffprobe${suffix}`), ['-v', 'error',
+      '-show_entries', 'stream=codec_name,width,height', '-of', 'json', 'pipe:0'], { input: collage }));
+    assert.deepEqual(probe.streams, [{ codec_name: 'av1', width: 192, height: 192 }]);
+    const pixels = execFileSync(executable, ['-v', 'error', '-i', 'pipe:0', '-frames:v', '1',
+      '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { input: collage });
+    for (const [index, [x, y]] of centers[count - 1].entries()) {
+      const actual = [...pixels.subarray((y * 192 + x) * 3, (y * 192 + x) * 3 + 3)];
+      assert.ok(actual.every((channel, color) => Math.abs(channel - colors[index][color]) < 35),
+        `${count}-image collage tile ${index + 1} must retain its source color`);
+    }
+  }
+  await assert.rejects(encodePlaylistThumbnail([]), /one to four/);
+  await assert.rejects(encodePlaylistThumbnail([...images, images[0]]), /one to four/);
+});
+
+test('collage caching invalidates changes to any source, membership and ordering', async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ssmusic-collage-cache-'));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const files = ['A.mp3', 'B.mp3', 'C.mp4', 'D.flac'].map((name) => path.join(directory, name));
+  await Promise.all(files.map((file, index) => fs.writeFile(file, `media ${index}`)));
+  let encodes = 0;
+  const options = { root: path.join(directory, 'cache'),
+    readArtwork: async (sources) => sources,
+    encode: async () => thumbnailFixture(`collage ${++encodes}`) };
+  const cache = createThumbnailCache(options);
+  const original = await cache.read(files);
+  assert.deepEqual(await createThumbnailCache(options).read(files), original);
+  assert.equal(encodes, 1, 'collages persist across cache instances');
+  await fs.writeFile(files[3], 'changed fourth media');
+  assert.notDeepEqual(await cache.read(files), original);
+  assert.equal(encodes, 2, 'changes to the fourth source invalidate the cover');
+  await cache.read([files[0], files[2], files[1], files[3]]);
+  assert.equal(encodes, 3, 'reordering non-first sources invalidates the cover');
+  await cache.read(files.slice(0, 3));
+  assert.equal(encodes, 4, 'removing a source invalidates the cover');
+  const rootEntries = await fs.readdir(path.join(directory, 'cache'));
+  assert.equal(rootEntries.length, 1);
+  assert.equal((await fs.readdir(path.join(directory, 'cache', rootEntries[0]))).length, 1, 'old revisions are removed');
+  await cache.remove(files[0]);
+  assert.deepEqual(await fs.readdir(path.join(directory, 'cache')), []);
 });
 
 test('AVIF artwork uploads round-trip through MP3 metadata and cached AVIF thumbnails', async (context) => {
@@ -526,10 +579,11 @@ test('bulk regeneration rebuilds playlists after songs and counts empty and fail
   const calls = [];
   const maintenance = createThumbnailMaintenance({
     async *songs() { yield 'song'; },
-    async *playlists() { yield { name: 'playlist' }; yield { name: null }; yield { name: 'broken' }; },
+    async *playlists() { yield { sources: ['playlist'] }; yield { sources: [] }; yield { sources: ['broken'] }; },
     resolveFile: async (source) => source.name || source,
     async generate(file, options) { calls.push([file, options.force]); return Buffer.from('song'); },
-    async generatePlaylist(file, options) {
+    async generatePlaylist(playlist, options) {
+      const [file] = playlist.sources;
       calls.push([file, options.force]);
       if (file === 'broken') throw new Error('Encoder failed');
       return Buffer.from('playlist');

@@ -245,13 +245,17 @@ async function refreshJobThumbnails(job, names = job.files || [], options) {
 async function refreshJobPlaylistThumbnails(job) {
   try {
     for await (const source of playlistThumbnailSources(database, { jobId: job.id })) {
-      if (!source.name) continue;
+      if (!source.sources.length) continue;
       try {
-        if (!source.output_dir || !isValidJobFileName(source.name)) throw new Error('Invalid playlist thumbnail source');
-        const outputDir = await fs.realpath(source.output_dir);
-        const filePath = await fs.realpath(path.join(outputDir, source.name));
-        if (!isFileInsideJobFolder({ outputDir }, filePath)) throw new Error('Invalid playlist thumbnail source');
-        await readPlaylistThumbnail(filePath, { force: true });
+        const filePaths = [];
+        for (const song of source.sources) {
+          if (!song.output_dir || !isValidJobFileName(song.name)) throw new Error('Invalid playlist thumbnail source');
+          const outputDir = await fs.realpath(song.output_dir);
+          const filePath = await fs.realpath(path.join(outputDir, song.name));
+          if (!isFileInsideJobFolder({ outputDir }, filePath)) throw new Error('Invalid playlist thumbnail source');
+          filePaths.push(filePath);
+        }
+        await readPlaylistThumbnail(filePaths, { force: true });
       } catch (error) { console.warn(`Unable to refresh playlist thumbnail: ${error.message}`); }
     }
   } catch (error) { console.warn(`Unable to list playlist thumbnail sources: ${error.message}`); }

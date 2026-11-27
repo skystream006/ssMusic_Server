@@ -18,7 +18,7 @@ import { playlistThumbnailSources } from './playlistThumbnails.js';
 import { createMediaStreamHandler } from './audioCompatibility.js';
 import { getVideoCacheSettings, setVideoCacheSettings, startVideoCacheMaintenance, videoCache } from './videoCache.js';
 import { createThumbnailMaintenance, thumbnailSongs } from './thumbnailMaintenance.js';
-import { findNoVocals, individualPlaylistId, orderFiles, reconcileLibrary, songKey } from './library.js';
+import { findNoVocals, individualPlaylistId, isNoVocals, orderFiles, reconcileLibrary, songKey } from './library.js';
 import { addLibraryJobFiles, getLibrary, getPreferences, linkLibraryJob, moveLibrarySong, moveLibraryPlaylists, mutateLibraryEntry, reorderLibrarySong, saveLibraryQueue, setLibrary, setLibraryPlaylistPrivacy, setTheme, transferLibrarySongs } from './libraryStore.js';
 import { createLibraryBackupService } from './libraryBackup.js';
 import { prepareLibraryExport } from './libraryExport.js';
@@ -210,7 +210,6 @@ async function resolveThumbnailFile(song) {
 const thumbnailMaintenance = createThumbnailMaintenance({
   songs: () => thumbnailSongs(openDatabase()),
   playlists: () => playlistThumbnailSources(openDatabase()),
-  generatePlaylist: readPlaylistThumbnail,
   resolveFile: resolveThumbnailFile
 });
 app.use('/api/admin/artwork-thumbnails', requireAdmin, (_req, res, next) => {
@@ -274,8 +273,9 @@ app.get('/api/library/playlists/:id/artwork', async (req, res) => {
     for await (const source of playlistThumbnailSources(openDatabase(), {
       userId, playlistId: req.params.id, viewerId: req.user.id
     })) {
-      if (!source.name) return res.status(404).end();
-      const thumbnail = await readPlaylistThumbnail(await resolveThumbnailFile(source));
+      if (!source.sources.length) return res.status(404).end();
+      const filePaths = await Promise.all(source.sources.map(resolveThumbnailFile));
+      const thumbnail = await readPlaylistThumbnail(filePaths);
       if (!thumbnail) return res.status(404).end();
       return res.type('image/avif').send(thumbnail);
     }
@@ -672,16 +672,15 @@ async function listJobFiles(job, order, names) {
   });
 }
 
-async function resolveRequestedFile(req, acceptsFile = null) {
-  if (req.query.userId !== undefined && !await canReadLibrarySong(req.user, req.query.userId, req.params.id, req.params.name)) {
+async function resolveRequestedFile(req, acceptsFile = null, name = req.params.name) {
+  if (req.query.userId !== undefined && !await canReadLibrarySong(req.user, req.query.userId, req.params.id, name)) {
     throw Object.assign(new Error('Library song access denied'), { statusCode: 403 });
   }
-  if (req.user.role === 'shared' && !await canReadSharedSong(req.user.id, req.params.id, req.params.name)) {
+  if (req.user.role === 'shared' && !await canReadSharedSong(req.user.id, req.params.id, name)) {
     throw Object.assign(new Error('Library song access denied'), { statusCode: 403 });
   }
   const job = (await getJob(req.params.id));
   if (!job) throw Object.assign(new Error('Job not found'), { statusCode: 404 });
-  const name = req.params.name;
   if (!canReadFile(job, name, req.user)) throw Object.assign(new Error('Song not found'), { statusCode: 404 });
   if (!isValidJobFileName(name) || (acceptsFile && !acceptsFile(name))) {
     throw Object.assign(new Error('Invalid file path'), { statusCode: 400 });
@@ -745,8 +744,19 @@ app.get('/api/jobs/:id/artwork/:name', async (req, res) => {
   res.set('Cache-Control', 'private, no-cache');
   try {
     const filePath = await resolveRequestedFile(req, isPlayableFile);
-    const artwork = req.query.playlist === '1' ? await readPlaylistThumbnail(filePath)
-      : await readSongThumbnail(filePath, { fallback: req.query.fallback === '1' });
+    let artwork;
+    if (req.query.playlist === '1') {
+      const job = visibleJob(await getJob(req.params.id), req.user);
+      const filePaths = [];
+      for (const name of job?.files || []) {
+        if (!isPlayableFile(name) || isNoVocals({ name })) continue;
+        if (req.query.userId !== undefined && !await canReadLibrarySong(req.user, req.query.userId, job.id, name)) continue;
+        if (req.user.role === 'shared' && !await canReadSharedSong(req.user.id, job.id, name)) continue;
+        filePaths.push(await resolveRequestedFile(req, isPlayableFile, name));
+        if (filePaths.length === 4) break;
+      }
+      artwork = await readPlaylistThumbnail(filePaths);
+    } else artwork = await readSongThumbnail(filePath, { fallback: req.query.fallback === '1' });
     if (!artwork) return res.status(404).end();
     return res.type('image/avif').send(artwork);
   } catch (error) {
